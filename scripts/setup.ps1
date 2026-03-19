@@ -67,6 +67,17 @@ if (Get-Command clang -ErrorAction SilentlyContinue) {
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
+# Set LIBCLANG_PATH permanently (bindgen needs this to find libclang.dll)
+$llvmBin = "C:\Program Files\LLVM\bin"
+if (Test-Path $llvmBin) {
+    $current = [Environment]::GetEnvironmentVariable("LIBCLANG_PATH", "User")
+    if ($current -ne $llvmBin) {
+        [Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmBin, "User")
+        $env:LIBCLANG_PATH = $llvmBin
+        Info "LIBCLANG_PATH set to $llvmBin"
+    }
+}
+
 # Check for C++ compiler (Visual Studio Build Tools)
 $clExe = Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio" -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($clExe) {
