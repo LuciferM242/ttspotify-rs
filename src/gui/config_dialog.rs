@@ -308,6 +308,10 @@ fn add_checkbox(parent: &Panel, sizer: &FlexGridSizer, label: &str, value: bool)
     // Empty spacer for the label column to keep the grid aligned
     let spacer = StaticText::builder(parent).with_label("").build();
     let input = CheckBox::builder(parent).with_label(label).with_value(value).build();
+    // Explicitly set the window name so screen readers announce the label.
+    // wxCheckBox defaults the window name to "check" which is what gets
+    // read by MSAA/UIA instead of the label text.
+    input.set_name(label);
     sizer.add(&spacer, 0, SizerFlag::AlignCenterVertical, 0);
     sizer.add(&input, 0, SizerFlag::AlignCenterVertical, 0);
     input
