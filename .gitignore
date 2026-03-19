@@ -1,0 +1,15 @@
+/target
+**/target
+
+# Config and credentials (contains passwords, tokens)
+/data/
+*.credentials.json
+
+# Claude Code
+/.claude/
+CLAUDE.md
+
+# Build artifacts
+/TEAMTALK_DLL/
+/TeamTalkRust/
+/api/

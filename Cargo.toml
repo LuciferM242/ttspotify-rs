@@ -1,0 +1,66 @@
+[package]
+name = "tt-spotify-bot"
+version = "0.1.0"
+edition = "2021"
+default-run = "tt-spotify-bot"
+
+[dependencies]
+# TeamTalk SDK (local)
+teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", branch = "main", features = ["bot", "bot-serde", "async-tokio", "logging"] }
+
+# Spotify (librespot - native Rust)
+librespot-core = "0.8"
+librespot-playback = "0.8"
+librespot-metadata = "0.8"
+librespot-audio = "0.8"
+librespot-oauth = "0.8"
+librespot-discovery = "0.8"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Audio
+crossbeam-channel = "0.5"
+rubato = "0.16"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Config & serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP (for Spotify Web API)
+reqwest = { version = "0.12", features = ["json"] }
+
+# Error handling
+thiserror = "2"
+
+# Utilities
+regex = "1"
+rand = "0.8"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+
+[profile.release]
+strip = true
+lto = true
+panic = "abort"
+
+# GUI (Windows tray + config editor)
+[target.'cfg(windows)'.dependencies]
+wxdragon = "0.9"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-manifest = "1.5"
+
+[[bin]]
+name = "tt-spotify-bot"
+path = "src/main.rs"
+
+[[bin]]
+name = "tt-spotify-win"
+path = "src/bin/tray.rs"
+
