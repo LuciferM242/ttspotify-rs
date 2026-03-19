@@ -146,7 +146,8 @@ pub fn run() {
         // Cleanup on exit
         let taskbar_destroy = taskbar.clone();
         hidden_frame.on_destroy(move |evt| {
-            manager.borrow_mut().stop_all();
+            timer.stop();
+            manager.borrow_mut().stop_all_nonblocking();
             taskbar_destroy.destroy();
             evt.skip(true);
         });
@@ -163,7 +164,7 @@ fn handle_menu_action(
 ) {
     match id {
         ID_EXIT => {
-            mgr.borrow_mut().stop_all();
+            // close triggers on_destroy which does non-blocking stop
             hidden_frame.close(true);
         }
         ID_ADD_SERVER => {

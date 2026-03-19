@@ -222,6 +222,15 @@ impl BotManager {
         }
     }
 
+    /// Signal all bots to stop without blocking. Use this from the GUI
+    /// thread (e.g. on_destroy) to avoid freezing the event loop.
+    pub fn stop_all_nonblocking(&mut self) {
+        let names: Vec<String> = self.instances.keys().cloned().collect();
+        for name in names {
+            self.stop_nonblocking(&name);
+        }
+    }
+
     pub fn config_path(&self, name: &str) -> Option<PathBuf> {
         self.instances.get(name).map(|i| i.config_path.clone())
     }
@@ -300,6 +309,12 @@ fn run_bot_instance(
                     tracing::info!("[{name}] Restart requested, restarting...");
                     update_status(BotStatus::Starting);
                     shutdown.store(false, std::sync::atomic::Ordering::Relaxed);
+                    // Verify event bridge is still alive before restarting
+                    if event_tx.send(RunnerEvent::Idle).is_err() {
+                        tracing::warn!("[{name}] Event bridge dead, cannot restart");
+                        update_status(BotStatus::Stopped);
+                        break;
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 }
