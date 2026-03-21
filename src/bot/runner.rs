@@ -30,6 +30,7 @@ pub enum BotExit {
 
 /// Status events sent to the tray (or any observer).
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // All variants used via gui module (cfg(windows))
 pub enum RunnerEvent {
     Connected,
     Playing(String),
@@ -117,11 +118,7 @@ pub async fn run_bot(
         Arc::new(std::sync::Mutex::new(None));
 
     // Spawn command processor
-    let bot_gender = match config.bot_gender.to_lowercase().as_str() {
-        "male" | "m" => ::teamtalk::types::UserGender::Male,
-        "female" | "f" => ::teamtalk::types::UserGender::Female,
-        _ => ::teamtalk::types::UserGender::Neutral,
-    };
+    let bot_gender = crate::config::parse_gender(&config.bot_gender);
     let cmd_ctx = CmdContext {
         player,
         metadata,
@@ -272,6 +269,18 @@ pub async fn run_bot(
     }
 }
 
+fn schedule_radio_prefetch(
+    tx: &tokio::sync::mpsc::UnboundedSender<BotCommand>,
+    seed_uri: String,
+    delay_secs: f32,
+) {
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
+        let _ = tx.send(BotCommand::RadioPreFetch { seed_uri });
+    });
+}
+
 /// All shared context needed by the command processor, bundled to avoid parameter explosion.
 struct CmdContext {
     player: SpotifyPlayer,
@@ -375,14 +384,13 @@ async fn command_processor(
         player.stop();
         set_status("Idle");
         send_event(RunnerEvent::Idle);
-        if let Ok(mut cfg) = crate::config::BotConfig::load(&config_path) {
-            let s = state.lock().unwrap();
-            cfg.radio_enabled = s.radio_enabled;
-            drop(s);
-            cfg.volume = volume_for_save.load(Ordering::Relaxed);
-            if let Err(e) = cfg.save(std::path::Path::new(&config_path)) {
-                tracing::error!("Failed to flush config: {e}");
-            }
+        {
+            let radio = state.lock().unwrap().radio_enabled;
+            let vol = volume_for_save.load(Ordering::Relaxed);
+            crate::config::BotConfig::update(&config_path, |cfg| {
+                cfg.radio_enabled = radio;
+                cfg.volume = vol;
+            });
         }
         let _ = client.disconnect();
         *exit_reason.lock().unwrap() = Some(reason);
@@ -435,13 +443,7 @@ async fn command_processor(
                             if !is_multi {
                                 let radio_on = state.lock().unwrap().radio_enabled;
                                 if radio_on {
-                                    let tx = radio_cmd_tx.clone();
-                                    let seed = first_uri.clone();
-                                    let delay_secs = radio_delay;
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
-                                        let _ = tx.send(BotCommand::RadioPreFetch { seed_uri: seed });
-                                    });
+                                    schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
                                 }
                             }
                         } else {
@@ -512,13 +514,7 @@ async fn command_processor(
                         (s.radio_enabled, at_end, allow)
                     };
                     if radio_on && at_end && allow_rec {
-                        let tx = radio_cmd_tx.clone();
-                        let seed = uri_str.clone();
-                        let delay_secs = radio_delay;
-                        tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
-                            let _ = tx.send(BotCommand::RadioPreFetch { seed_uri: seed });
-                        });
+                        schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
                     }
                 } else {
                     let (radio_on, allow_rec, seed_uri, played_ids) = {
@@ -598,7 +594,13 @@ async fn command_processor(
                 player.seek(new_pos);
             }
 
-            BotCommand::SetVolume { percent: _, user_id: _ } => {}
+            BotCommand::SetVolume { .. } => {
+                // Volume is set atomically in the dispatcher; persist to config
+                let vol = volume_for_save.load(Ordering::Relaxed);
+                crate::config::BotConfig::update(&config_path, |cfg| {
+                    cfg.volume = vol;
+                });
+            }
 
             BotCommand::SetMode { mode, user_id: _ } => {
                 let mut s = state.lock().unwrap();
@@ -630,12 +632,9 @@ async fn command_processor(
                 let mut s = state.lock().unwrap();
                 s.radio_enabled = enable;
                 drop(s);
-                if let Ok(mut cfg) = crate::config::BotConfig::load(&config_path) {
+                crate::config::BotConfig::update(&config_path, |cfg| {
                     cfg.radio_enabled = enable;
-                    if let Err(e) = cfg.save(std::path::Path::new(&config_path)) {
-                        tracing::error!("Failed to save config: {e}");
-                    }
-                }
+                });
             }
 
             BotCommand::QueueClear { user_id: _ } => {
@@ -676,28 +675,20 @@ async fn command_processor(
             }
 
             BotCommand::SearchPick { user_id, pick, user_name } => {
-                let track = {
-                    let s = state.lock().unwrap();
-                    s.search_results.get(&user_id)
-                        .and_then(|results| results.get(pick).cloned())
-                };
-                if let Some(track) = track {
-                    let uri_str = track.uri.clone();
-                    let track_name = track.display_name();
-
-                    let is_idle = {
-                        let s = state.lock().unwrap();
-                        !s.is_playing && !s.is_paused && !s.is_loading
-                    };
-
-                    {
-                        let mut s = state.lock().unwrap();
-                        if is_idle {
-                            s.clear();
-                        }
+                let picked = {
+                    let mut s = state.lock().unwrap();
+                    let track = s.search_results.get(&user_id)
+                        .and_then(|results| results.get(pick).cloned());
+                    track.map(|track| {
+                        let idle = !s.is_playing && !s.is_paused && !s.is_loading;
+                        if idle { s.clear(); }
+                        let uri_str = track.uri.clone();
+                        let track_name = track.display_name();
                         s.enqueue(track, user_name, true);
-                    }
-
+                        (uri_str, track_name, idle)
+                    })
+                };
+                if let Some((uri_str, track_name, is_idle)) = picked {
                     if is_idle {
                         if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
                             reply(user_id, &format!("Now playing: {track_name}"));
@@ -727,22 +718,15 @@ async fn command_processor(
             }
 
             BotCommand::SetGender { gender, user_id: _ } => {
-                let new_gender = match gender.as_str() {
-                    "male" | "m" | "man" => ::teamtalk::types::UserGender::Male,
-                    "female" | "f" | "woman" => ::teamtalk::types::UserGender::Female,
-                    _ => ::teamtalk::types::UserGender::Neutral,
-                };
+                let new_gender = crate::config::parse_gender(&gender);
                 let status = ::teamtalk::types::UserStatus {
                     gender: new_gender,
                     ..Default::default()
                 };
                 client.set_status(status, "Idle");
-                if let Ok(mut cfg) = crate::config::BotConfig::load(&config_path) {
+                crate::config::BotConfig::update(&config_path, |cfg| {
                     cfg.bot_gender = gender;
-                    if let Err(e) = cfg.save(std::path::Path::new(&config_path)) {
-                        tracing::error!("Failed to save config: {e}");
-                    }
-                }
+                });
             }
 
             BotCommand::PreloadNext => {

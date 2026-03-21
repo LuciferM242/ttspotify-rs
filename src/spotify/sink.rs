@@ -8,15 +8,11 @@ use librespot_playback::decoder::AudioPacket;
 /// to the audio pipeline thread for TeamTalk injection.
 pub struct TeamTalkSink {
     sender: Sender<Vec<i16>>,
-    _format: AudioFormat,
 }
 
 impl TeamTalkSink {
     pub fn new(sender: Sender<Vec<i16>>) -> Self {
-        Self {
-            sender,
-            _format: AudioFormat::S16,
-        }
+        Self { sender }
     }
 }
 
@@ -27,7 +23,7 @@ impl Open for TeamTalkSink {
         // Create a dummy sink with a disconnected channel - it will error on write.
         tracing::error!("TeamTalkSink::open() called directly - this should not happen");
         let (tx, _) = crossbeam_channel::bounded(0);
-        Self { sender: tx, _format: AudioFormat::S16 }
+        Self { sender: tx }
     }
 }
 

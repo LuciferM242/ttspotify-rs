@@ -60,6 +60,7 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
     guard
 }
 
+#[allow(dead_code)] // Used by gui/tray.rs (cfg(windows))
 /// Initialize file-only logging (no stdout). Used by tray app.
 /// Logs to {log_dir}/{name}.log with thread names for per-instance identification.
 /// Returns a guard that must be kept alive for the file logger to flush.

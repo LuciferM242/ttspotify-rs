@@ -6,6 +6,7 @@ use crate::spotify::types::SpotifyTrack;
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
     pub track: SpotifyTrack,
+    #[allow(dead_code)] // stored for future "who queued this" display
     pub requester: String,
     /// Only allow radio recommendations for single-track plays (not playlists/albums)
     pub allow_recommend: bool,

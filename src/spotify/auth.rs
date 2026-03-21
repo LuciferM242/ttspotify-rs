@@ -3,8 +3,6 @@ use librespot_core::config::SessionConfig;
 use librespot_core::session::Session;
 use librespot_core::authentication::Credentials;
 use librespot_oauth::OAuthClientBuilder;
-use std::path::Path;
-
 use crate::error::BotError;
 
 /// Spotify client ID (same one librespot uses internally)
@@ -112,7 +110,4 @@ impl SpotifyAuth {
         Ok(credentials)
     }
 
-    pub fn session(&self) -> Option<&Session> {
-        self.session.as_ref()
-    }
 }

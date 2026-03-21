@@ -14,10 +14,6 @@ impl SpotifyMetadata {
         Self { session }
     }
 
-    pub fn session(&self) -> &Session {
-        &self.session
-    }
-
     // ---- helpers ----
 
     /// Convert a librespot Track + URI into our SpotifyTrack.
@@ -82,30 +78,6 @@ impl SpotifyMetadata {
         }
 
         Ok(tracks)
-    }
-
-    /// Fetch artist info including related artists and top tracks.
-    pub async fn get_artist_meta(&self, uri: &SpotifyUri) -> Result<ArtistInfo, BotError> {
-        let artist = librespot_metadata::Artist::get(&self.session, uri).await
-            .map_err(|e| BotError::Playback(format!("Failed to fetch artist metadata: {e}")))?;
-
-        let related: Vec<String> = artist.related.0.iter()
-            .map(|a| a.name.clone())
-            .collect();
-
-        // Get top tracks for all countries (take first available)
-        let top_track_uris: Vec<SpotifyUri> = artist.top_tracks.0.iter()
-            .flat_map(|tt| tt.tracks.0.iter().cloned())
-            .collect();
-
-        Ok(ArtistInfo {
-            name: artist.name.clone(),
-            related_names: related,
-            top_track_uris,
-            related_artists: artist.related.0.iter()
-                .map(|a| a.id.clone())
-                .collect(),
-        })
     }
 
     /// Fetch radio recommendations using Spotify's radio-apollo endpoint.
@@ -234,10 +206,3 @@ impl SpotifyMetadata {
     }
 }
 
-/// Artist info returned by get_artist_meta
-pub struct ArtistInfo {
-    pub name: String,
-    pub related_names: Vec<String>,
-    pub top_track_uris: Vec<SpotifyUri>,
-    pub related_artists: Vec<SpotifyUri>,
-}

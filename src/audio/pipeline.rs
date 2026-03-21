@@ -19,6 +19,13 @@ const FRAME_SIZE: usize = FRAME_SAMPLES * CHANNELS as usize; // 1764
 /// Block duration in microseconds (~20ms)
 const BLOCK_DURATION_US: u64 = (FRAME_SAMPLES as u64 * 1_000_000) / SAMPLE_RATE as u64;
 
+fn new_stream_id() -> i32 {
+    (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() & 0xFFFFFFFF) as i32
+}
+
 pub struct AudioPipeline {
     audio_rx: Receiver<Vec<i16>>,
     client: Arc<Client>,
@@ -29,6 +36,7 @@ pub struct AudioPipeline {
     pause_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     accumulator: Vec<i16>,
+    frame_buf: Vec<i16>,
     stream_id: i32,
     sample_index: u32,
     next_block_time: Option<Instant>,
@@ -57,10 +65,8 @@ impl AudioPipeline {
             pause_flag,
             volume_controller,
             accumulator: Vec::with_capacity(FRAME_SIZE * 4),
-            stream_id: (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() & 0xFFFFFFFF) as i32,
+            frame_buf: Vec::with_capacity(FRAME_SIZE),
+            stream_id: new_stream_id(),
             sample_index: 0,
             next_block_time: None,
         }
@@ -80,10 +86,7 @@ impl AudioPipeline {
                 // Ensure voice transmission is disabled (like Python bot does before each track)
                 self.client.enable_voice_transmission(false);
                 // New stream ID for new track (like Python bot: time-based)
-                self.stream_id = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() & 0xFFFFFFFF) as i32;
+                self.stream_id = new_stream_id();
                 self.accumulator.clear();
                 self.next_block_time = None;
                 self.sample_index = 0;
@@ -131,8 +134,9 @@ impl AudioPipeline {
                 if self.reset_flag.load(Ordering::Relaxed) || self.pause_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                let mut frame: Vec<i16> = self.accumulator.drain(..FRAME_SIZE).collect();
-                if frame.len() < FRAME_SIZE {
+                self.frame_buf.clear();
+                self.frame_buf.extend(self.accumulator.drain(..FRAME_SIZE));
+                if self.frame_buf.len() < FRAME_SIZE {
                     break;
                 }
 
@@ -143,7 +147,7 @@ impl AudioPipeline {
                 // Update volume
                 let vol = self.volume.load(Ordering::Relaxed);
                 self.volume_controller.set_target(vol, self.max_volume);
-                self.volume_controller.apply(&mut frame);
+                self.volume_controller.apply(&mut self.frame_buf);
 
                 // Timing: wait until it's time to inject this block
                 self.wait_for_next_block();
@@ -152,7 +156,7 @@ impl AudioPipeline {
                 let mut retries = 0u32;
                 while !audio_inject::inject_audio_block(
                     &self.client,
-                    &frame,
+                    &self.frame_buf,
                     SAMPLE_RATE,
                     CHANNELS,
                     self.stream_id,

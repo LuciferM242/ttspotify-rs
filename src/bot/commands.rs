@@ -8,6 +8,7 @@ use crate::bot::state::SharedState;
 
 /// Commands sent from the bot thread to the async command processor.
 #[derive(Debug)]
+#[allow(dead_code)] // user_id fields kept for consistent command protocol + debug logging
 pub enum BotCommand {
     SearchAndPlay { query: String, user_id: i32, user_name: String },
     Play { user_id: i32 },

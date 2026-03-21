@@ -69,10 +69,6 @@ impl SpotifyPlayer {
     pub fn preload(&self, uri: &SpotifyUri) {
         self.player.preload(uri.clone());
     }
-
-    pub fn inner(&self) -> &Arc<Player> {
-        &self.player
-    }
 }
 
 fn parse_bitrate(quality: &str) -> Bitrate {

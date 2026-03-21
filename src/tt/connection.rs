@@ -1,6 +1,6 @@
 use std::time::Duration;
 use teamtalk::{Client, Event};
-use teamtalk::types::{ChannelId, UserGender, UserStatus};
+use teamtalk::types::{ChannelId, UserStatus};
 
 use crate::config::BotConfig;
 use crate::error::BotError;
@@ -41,11 +41,7 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     client.enable_voice_transmission(false);
 
     // Set bot gender
-    let gender = match config.bot_gender.to_lowercase().as_str() {
-        "male" | "m" => UserGender::Male,
-        "female" | "f" => UserGender::Female,
-        _ => UserGender::Neutral,
-    };
+    let gender = crate::config::parse_gender(&config.bot_gender);
     let status = UserStatus {
         gender,
         ..Default::default()

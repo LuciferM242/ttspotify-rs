@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,11 +58,11 @@ pub fn parse_spotify_ref(input: &str) -> Option<SpotifyRef> {
     }
 
     // URL format: https://open.spotify.com/type/id(?params)
-    let re = regex::Regex::new(
-        r"https?://open\.spotify\.com/(track|album|playlist)/([a-zA-Z0-9]+)"
-    ).ok()?;
+    static SPOTIFY_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"https?://open\.spotify\.com/(track|album|playlist)/([a-zA-Z0-9]+)").unwrap()
+    });
 
-    if let Some(caps) = re.captures(input) {
+    if let Some(caps) = SPOTIFY_URL_RE.captures(input) {
         let kind = caps.get(1)?.as_str();
         let id = caps.get(2)?.as_str().to_string();
         return match kind {

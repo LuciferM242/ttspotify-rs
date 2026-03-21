@@ -12,12 +12,6 @@ pub enum BotError {
     NoResults,
     #[error("TeamTalk: {0}")]
     TeamTalk(String),
-    #[error("Audio pipeline: {0}")]
-    Audio(String),
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
-    #[error("HTTP: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("Channel send error: {0}")]
-    ChannelSend(String),
 }

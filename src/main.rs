@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod audio;
 mod bot;
 mod config;

@@ -3,6 +3,16 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BotError;
 
+/// Parse a gender string into a TeamTalk UserGender.
+/// Accepts: male/m/man, female/f/woman, neutral/n/nb (and anything else defaults to Neutral).
+pub fn parse_gender(s: &str) -> ::teamtalk::types::UserGender {
+    match s.to_lowercase().as_str() {
+        "male" | "m" | "man" => ::teamtalk::types::UserGender::Male,
+        "female" | "f" | "woman" => ::teamtalk::types::UserGender::Female,
+        _ => ::teamtalk::types::UserGender::Neutral,
+    }
+}
+
 /// Platform-aware config directory.
 /// Linux/macOS: ~/.config/ttspotify/
 /// Windows: data/ (next to the executable)
@@ -158,7 +168,6 @@ impl BotConfig {
             {
                 crate::wizard::run_wizard(None)?;
                 // Re-check if a config was created in the default config dir
-                let _config_dir = config_dir();
                 let configs = list_configs();
                 if let Some((_, created_path)) = configs.first() {
                     let contents = std::fs::read_to_string(created_path)
@@ -178,6 +187,16 @@ impl BotConfig {
         let config: Self = serde_json::from_str(&contents)
             .map_err(|e| BotError::Config(format!("Failed to parse config: {e}")))?;
         Ok(config)
+    }
+
+    /// Load config, apply a mutation, and save it back.
+    pub fn update(path: &str, f: impl FnOnce(&mut BotConfig)) {
+        if let Ok(mut cfg) = Self::load(path) {
+            f(&mut cfg);
+            if let Err(e) = cfg.save(Path::new(path)) {
+                tracing::error!("Failed to save config: {e}");
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<(), BotError> {

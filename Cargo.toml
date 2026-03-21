@@ -12,16 +12,13 @@ teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", branch =
 librespot-core = "0.8"
 librespot-playback = "0.8"
 librespot-metadata = "0.8"
-librespot-audio = "0.8"
 librespot-oauth = "0.8"
-librespot-discovery = "0.8"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # Audio
 crossbeam-channel = "0.5"
-rubato = "0.16"
 
 # Logging
 tracing = "0.1"
@@ -31,9 +28,6 @@ tracing-appender = "0.2"
 # Config & serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# HTTP (for Spotify Web API)
-reqwest = { version = "0.12", features = ["json"] }
 
 # Error handling
 thiserror = "2"

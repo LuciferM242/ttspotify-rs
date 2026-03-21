@@ -209,12 +209,6 @@ impl BotManager {
         inst.shutdown = Some(shutdown);
     }
 
-    pub fn restart(&mut self, name: &str) -> bool {
-        self.stop(name);
-        thread::sleep(std::time::Duration::from_millis(500));
-        self.start(name)
-    }
-
     pub fn stop_all(&mut self) {
         let names: Vec<String> = self.instances.keys().cloned().collect();
         for name in names {
