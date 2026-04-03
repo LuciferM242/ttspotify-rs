@@ -681,6 +681,7 @@ async fn command_processor(
                     let track = s.search_results.get(&user_id)
                         .and_then(|results| results.get(pick).cloned());
                     track.map(|track| {
+                        s.search_results.remove(&user_id);
                         let idle = !s.is_playing && !s.is_paused && !s.is_loading;
                         if idle { s.clear(); }
                         let uri_str = track.uri.clone();
