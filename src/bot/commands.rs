@@ -248,7 +248,8 @@ impl CommandDispatcher {
 
             // -- Volume (also handles v50, v 50, volume 50) --
             cmd_str if cmd_str == "v" || cmd_str == "volume"
-                || (cmd_str.starts_with('v') && cmd_str[1..].parse::<u8>().is_ok()) =>
+                || (cmd_str.starts_with('v') && cmd_str.len() > 1
+                    && cmd_str[1..].chars().all(|c| c.is_ascii_digit())) =>
             {
                 // Handle v50 (no space)
                 let vol_str = if cmd_str.len() > 1 && cmd_str.starts_with('v') && cmd_str != "volume" {
@@ -257,11 +258,16 @@ impl CommandDispatcher {
                     args
                 };
 
-                if let Ok(vol) = vol_str.parse::<u8>() {
-                    let capped = vol.min(self.max_volume);
-                    self.volume.store(capped, Ordering::Relaxed);
-                    self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
-                    self.reply(client, sender_id,&format!("Volume: {capped}%"));
+                if let Ok(vol) = vol_str.parse::<u16>() {
+                    if vol > self.max_volume as u16 {
+                        self.reply(client, sender_id,
+                            &format!("Volume must be 0-{}. Got: {vol}", self.max_volume));
+                    } else {
+                        let capped = (vol as u8).min(self.max_volume);
+                        self.volume.store(capped, Ordering::Relaxed);
+                        self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
+                        self.reply(client, sender_id,&format!("Volume: {capped}%"));
+                    }
                 } else {
                     let vol = self.volume.load(Ordering::Relaxed);
                     self.reply(client, sender_id,&format!("Volume: {vol}% (max: {})", self.max_volume));
