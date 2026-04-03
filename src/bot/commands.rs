@@ -292,14 +292,21 @@ impl CommandDispatcher {
                 }
             }
             "pick" => {
-                if let Ok(n) = args.trim().parse::<usize>() {
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    self.reply(client, sender_id, "Usage: pick <number>");
+                } else if let Ok(n) = trimmed.parse::<usize>() {
                     if n > 0 {
                         self.send(BotCommand::SearchPick {
                             user_id: sender_id,
                             pick: n - 1,
                             user_name: format!("User#{sender_id}"),
                         });
+                    } else {
+                        self.reply(client, sender_id, "Pick number must be 1 or higher");
                     }
+                } else {
+                    self.reply(client, sender_id, "Usage: pick <number>");
                 }
             }
 
