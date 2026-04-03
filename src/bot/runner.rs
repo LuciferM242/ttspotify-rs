@@ -256,17 +256,18 @@ pub async fn run_bot(
         }
     }).await.map_err(|e| BotError::TeamTalk(format!("Event loop failed: {e}")))?;
 
-    // Determine exit reason
+    // Determine exit reason: check explicit exit_reason first (quit/restart
+    // command), then fall back to external shutdown signal (tray/systemd).
+    // do_exit() sets both exit_reason AND shutdown=true, so we must check
+    // exit_reason first to avoid masking quit/restart as Shutdown.
     let exit = exit_reason.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if shutdown.load(Ordering::Relaxed) {
-        let _ = client.disconnect();
-        Ok(BotExit::Shutdown)
-    } else {
-        match exit {
-            Some(reason) => Ok(reason),
-            None => Ok(BotExit::Quit),
-        }
-    }
+    let reason = match exit {
+        Some(reason) => reason,
+        None if shutdown.load(Ordering::Relaxed) => BotExit::Shutdown,
+        None => BotExit::Quit,
+    };
+    let _ = client.disconnect();
+    Ok(reason)
 }
 
 fn schedule_radio_prefetch(
