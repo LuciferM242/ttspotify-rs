@@ -15,7 +15,7 @@ librespot-metadata = "0.8"
 librespot-oauth = "0.8"
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 # Audio
 crossbeam-channel = "0.5"
