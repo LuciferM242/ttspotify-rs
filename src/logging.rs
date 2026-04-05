@@ -35,8 +35,13 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    // File appender with daily rotation
-    let file_appender = tracing_appender::rolling::daily(&log_dir, &log_filename);
+    // File appender with daily rotation, keep last 7 days
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(&log_filename)
+        .max_log_files(7)
+        .build(&log_dir)
+        .expect("failed to create log file appender");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     // Stdout layer
@@ -67,7 +72,12 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
 pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
     std::fs::create_dir_all(log_dir).ok();
 
-    let file_appender = tracing_appender::rolling::daily(log_dir, format!("{name}.log"));
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix(format!("{name}.log"))
+        .max_log_files(7)
+        .build(log_dir)
+        .expect("failed to create log file appender");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = EnvFilter::try_from_default_env()
