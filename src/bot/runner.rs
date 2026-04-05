@@ -357,6 +357,9 @@ async fn command_processor(
         volume_for_save, exit_reason, shutdown, event_tx,
     } = ctx;
 
+    // Debounce flag for volume config writes
+    let pending_volume_save = Arc::new(AtomicBool::new(false));
+
     let send_event = {
         let tx = event_tx;
         move |evt: RunnerEvent| {
@@ -651,11 +654,23 @@ async fn command_processor(
             }
 
             BotCommand::SetVolume { .. } => {
-                // Volume is set atomically in the dispatcher; persist to config
-                let vol = volume_for_save.load(Ordering::Relaxed);
-                crate::config::BotConfig::update(&config_path, |cfg| {
-                    cfg.volume = vol;
-                });
+                // Volume is set atomically in the dispatcher.
+                // Debounce config write: only save if no further volume change
+                // arrives within 3 seconds to avoid disk thrashing.
+                if !pending_volume_save.load(Ordering::Relaxed) {
+                    pending_volume_save.store(true, Ordering::Relaxed);
+                    let save_flag = pending_volume_save.clone();
+                    let vol_ref = volume_for_save.clone();
+                    let path = config_path.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        let vol = vol_ref.load(Ordering::Relaxed);
+                        crate::config::BotConfig::update(&path, |cfg| {
+                            cfg.volume = vol;
+                        });
+                        save_flag.store(false, Ordering::Relaxed);
+                    });
+                }
             }
 
             BotCommand::SetMode { mode, user_id: _ } => {
