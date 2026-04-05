@@ -29,6 +29,7 @@ impl SpotifyPlayer {
             normalisation_pregain_db: config.normalisation_pregain_db,
             normalisation_threshold_dbfs: config.normalisation_threshold_dbfs,
             normalisation_knee_db: config.normalisation_knee_db,
+            position_update_interval: Some(std::time::Duration::from_secs(1)),
             ..Default::default()
         };
 
