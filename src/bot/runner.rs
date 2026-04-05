@@ -158,6 +158,7 @@ pub async fn run_bot(
         volume: volume.clone(),
         cmd_tx,
         max_volume: config.max_volume,
+        start_time: std::time::Instant::now(),
     };
 
     tracing::info!("Bot is ready! Listening for commands...");
@@ -411,6 +412,7 @@ async fn command_processor(
                 s.is_loading = true;
                 s.is_playing = false;
                 s.is_paused = false;
+                s.tracks_played += 1;
             }
             true
         } else {

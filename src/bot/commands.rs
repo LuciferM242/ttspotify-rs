@@ -49,6 +49,7 @@ pub struct CommandDispatcher {
     pub volume: Arc<AtomicU8>,
     pub cmd_tx: UnboundedSender<BotCommand>,
     pub max_volume: u8,
+    pub start_time: std::time::Instant,
 }
 
 impl CommandDispatcher {
@@ -393,6 +394,24 @@ impl CommandDispatcher {
                     env!("CARGO_PKG_VERSION")
                 ));
             }
+            "stats" => {
+                let uptime = self.start_time.elapsed();
+                let hours = uptime.as_secs() / 3600;
+                let mins = (uptime.as_secs() % 3600) / 60;
+                let state = self.state.lock().unwrap();
+                let tracks = state.tracks_played;
+                let queue_len = state.queue.len();
+                let vol = self.volume.load(Ordering::Relaxed);
+                drop(state);
+                let uptime_str = if hours > 0 {
+                    format!("{hours}h {mins}m")
+                } else {
+                    format!("{mins}m")
+                };
+                self.reply(client, sender_id, &format!(
+                    "Uptime: {uptime_str}\nTracks played: {tracks}\nQueue: {queue_len} tracks\nVolume: {vol}%"
+                ));
+            }
             "q" | "quit" => {
                 self.reply(client, sender_id,"Shutting down...");
                 self.send(BotCommand::Quit { user_id: sender_id });
@@ -421,6 +440,7 @@ impl CommandDispatcher {
                         "search" => HELP_SEARCH,
                         "radio" => HELP_RADIO,
                         "link" | "url" => "link / url\nGet the Spotify URL for the currently playing track.\nOpen it in the Spotify app or share it with others.",
+                        "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
                         "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
                         "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
@@ -468,6 +488,7 @@ Search:
 
 Bot:
   link         Get Spotify URL for current track
+  stats        Show bot uptime and session stats
   jc <path>    Join channel
   cn <name>    Change nickname
   gender       Set bot gender

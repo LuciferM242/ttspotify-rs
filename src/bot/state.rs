@@ -33,6 +33,9 @@ pub struct PlayerState {
 
     // Track position tracking
     pub position_ms: u32,
+
+    // Stats
+    pub tracks_played: u32,
 }
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
@@ -51,6 +54,7 @@ impl PlayerState {
             radio_enabled: false,
             search_results: HashMap::new(),
             position_ms: 0,
+            tracks_played: 0,
         }
     }
 
