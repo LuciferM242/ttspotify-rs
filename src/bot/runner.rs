@@ -32,6 +32,8 @@ pub enum BotExit {
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // All variants used via gui module (cfg(windows))
 pub enum RunnerEvent {
+    Connecting,
+    Authenticating,
     Connected,
     Playing(String),
     Idle,
@@ -77,6 +79,7 @@ pub async fn run_bot(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<BotCommand>();
 
     // Setup TeamTalk
+    send_event(RunnerEvent::Connecting);
     let tt_config = config.clone();
     let client = tokio::task::spawn_blocking(move || {
         crate::tt::connection::setup_teamtalk(&tt_config)
@@ -109,6 +112,7 @@ pub async fn run_bot(
     });
 
     // Spotify auth
+    send_event(RunnerEvent::Authenticating);
     let mut auth = crate::spotify::auth::SpotifyAuth::new();
     let session = auth.connect().await?;
 

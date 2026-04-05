@@ -260,7 +260,7 @@ fn build_tooltip(statuses: &[(String, BotStatus)]) -> String {
             }
             BotStatus::Error(_) | BotStatus::Disconnected => failed += 1,
             BotStatus::Stopped => stopped += 1,
-            BotStatus::Starting => starting += 1,
+            BotStatus::Starting | BotStatus::Connecting | BotStatus::Authenticating => starting += 1,
         }
     }
 

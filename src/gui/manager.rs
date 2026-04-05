@@ -16,6 +16,8 @@ use crate::bot::runner::{BotExit, RunnerEvent};
 pub enum BotStatus {
     Stopped,
     Starting,
+    Connecting,
+    Authenticating,
     Connected,
     Playing(String),
     Disconnected,
@@ -27,6 +29,8 @@ impl std::fmt::Display for BotStatus {
         match self {
             BotStatus::Stopped => write!(f, "Stopped"),
             BotStatus::Starting => write!(f, "Starting..."),
+            BotStatus::Connecting => write!(f, "Connecting to server..."),
+            BotStatus::Authenticating => write!(f, "Authenticating Spotify..."),
             BotStatus::Connected => write!(f, "Connected, Idle"),
             BotStatus::Playing(track) => write!(f, "Connected, Playing: {track}"),
             BotStatus::Disconnected => write!(f, "Disconnected"),
@@ -266,6 +270,8 @@ fn run_bot_instance(
     std::thread::spawn(move || {
         while let Ok(evt) = event_rx.recv() {
             let new_status = match evt {
+                RunnerEvent::Connecting => BotStatus::Connecting,
+                RunnerEvent::Authenticating => BotStatus::Authenticating,
                 RunnerEvent::Connected | RunnerEvent::Idle => BotStatus::Connected,
                 RunnerEvent::Playing(track) => BotStatus::Playing(track),
                 RunnerEvent::Disconnected => BotStatus::Disconnected,
