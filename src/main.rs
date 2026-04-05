@@ -34,6 +34,14 @@ struct Args {
     /// Remove systemd user service (Linux only)
     #[arg(long)]
     uninstall_service: bool,
+
+    /// Authenticate with Spotify and exit (no bot startup)
+    #[arg(long)]
+    auth: bool,
+
+    /// Check if Spotify credentials are cached and exit
+    #[arg(long)]
+    auth_status: bool,
 }
 
 #[tokio::main]
@@ -53,6 +61,43 @@ async fn main() -> Result<(), BotError> {
     }
     if args.uninstall_service {
         return service::uninstall_service();
+    }
+
+    // Handle --auth-status (read-only check, no connection)
+    if args.auth_status {
+        let auth = spotify::auth::SpotifyAuth::new();
+        if auth.has_cached_credentials() {
+            println!("Spotify: Cached credentials found.");
+            println!("  (Note: credentials may be expired or revoked.)");
+            std::process::exit(0);
+        } else {
+            println!("Spotify: No cached credentials.");
+            println!("  Run with --auth to authenticate.");
+            std::process::exit(1);
+        }
+    }
+
+    // Handle --auth (standalone OAuth flow)
+    if args.auth {
+        tracing_subscriber::fmt()
+            .with_target(false)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+            )
+            .init();
+
+        let mut auth = spotify::auth::SpotifyAuth::new();
+        match auth.connect().await {
+            Ok(_) => {
+                println!("Spotify authentication successful. Credentials cached.");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("Spotify authentication failed: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // Resolve config path: explicit --config, or first config in platform config dir

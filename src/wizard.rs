@@ -137,6 +137,42 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
 
     println!();
     println!("  Config saved to: {}", config_path.display());
+
+    // Offer Spotify authentication
+    println!();
+    println!("Spotify Authentication");
+    let do_auth = ask("Authenticate with Spotify now? (Y/n)", "y", false);
+    match do_auth {
+        Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
+            println!("  Skipping Spotify authentication.");
+            println!("  You can authenticate later with: tt-spotify-bot --auth");
+        }
+        _ => {
+            println!("  Starting Spotify authentication...");
+            // Spawn a new thread with its own tokio runtime to avoid
+            // nested-runtime panic (wizard is sync, may be called from async main)
+            let auth_result = std::thread::spawn(|| {
+                let rt = tokio::runtime::Runtime::new().ok()?;
+                let mut auth = crate::spotify::auth::SpotifyAuth::new();
+                Some(rt.block_on(auth.connect()))
+            }).join().ok().flatten();
+
+            match auth_result {
+                Some(Ok(_)) => {
+                    println!("  Spotify authentication successful! Credentials cached.");
+                }
+                Some(Err(e)) => {
+                    println!("  Spotify authentication failed: {e}");
+                    println!("  You can try again with: tt-spotify-bot --auth");
+                }
+                None => {
+                    println!("  Could not initialize authentication.");
+                    println!("  You can authenticate later with: tt-spotify-bot --auth");
+                }
+            }
+        }
+    }
+
     println!();
     println!("  Run the bot with: tt-spotify-bot --config {}", config_path.display());
     println!();
