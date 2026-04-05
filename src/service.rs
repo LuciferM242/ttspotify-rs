@@ -56,6 +56,7 @@ Wants=network-online.target
 Type=simple
 ExecStart={exec_start}
 Restart=on-failure
+RestartForceExitStatus=42
 RestartSec=5
 
 [Install]
