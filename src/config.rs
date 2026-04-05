@@ -116,6 +116,14 @@ pub struct BotConfig {
     // Search
     #[serde(rename = "spotifySearchLimit")]
     pub search_limit: u8,
+
+    // Playback modes (persisted across restarts)
+    #[serde(default, rename = "repeatTrack")]
+    pub repeat_track: bool,
+    #[serde(default, rename = "repeatQueue")]
+    pub repeat_queue: bool,
+    #[serde(default)]
+    pub shuffle: bool,
 }
 
 impl Default for BotConfig {
@@ -150,6 +158,10 @@ impl Default for BotConfig {
             radio_delay: 10.0,
 
             search_limit: 5,
+
+            repeat_track: false,
+            repeat_queue: false,
+            shuffle: false,
         }
     }
 }

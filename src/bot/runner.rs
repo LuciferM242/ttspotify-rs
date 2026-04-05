@@ -66,6 +66,9 @@ pub async fn run_bot(
     // Create shared state
     let mut initial_state = PlayerState::new();
     initial_state.radio_enabled = config.radio_enabled;
+    initial_state.repeat_track = config.repeat_track;
+    initial_state.repeat_queue = config.repeat_queue;
+    initial_state.shuffle = config.shuffle;
     let state: SharedState = Arc::new(std::sync::Mutex::new(initial_state));
     let volume = Arc::new(AtomicU8::new(config.volume));
 
@@ -386,11 +389,19 @@ async fn command_processor(
         set_status("Idle");
         send_event(RunnerEvent::Idle);
         {
-            let radio = state.lock().unwrap().radio_enabled;
+            let s = state.lock().unwrap();
             let vol = volume_for_save.load(Ordering::Relaxed);
+            let radio = s.radio_enabled;
+            let repeat_track = s.repeat_track;
+            let repeat_queue = s.repeat_queue;
+            let shuffle = s.shuffle;
+            drop(s);
             crate::config::BotConfig::update(&config_path, |cfg| {
                 cfg.radio_enabled = radio;
                 cfg.volume = vol;
+                cfg.repeat_track = repeat_track;
+                cfg.repeat_queue = repeat_queue;
+                cfg.shuffle = shuffle;
             });
         }
         let _ = client.disconnect();
