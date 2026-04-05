@@ -294,7 +294,25 @@ impl CommandDispatcher {
                     });
                     self.reply(client, sender_id,"Searching...");
                 } else {
-                    self.reply(client, sender_id,"Usage: search <query>");
+                    // Re-display active search results if available
+                    let state = self.state.lock().unwrap();
+                    if let Some(results) = state.search_results.get(&sender_id) {
+                        let mut msg = String::from("Search results:\n");
+                        for (i, track) in results.iter().enumerate() {
+                            msg.push_str(&format!(
+                                "  {}: {} [{}]\n",
+                                i + 1,
+                                track.display_name(),
+                                track.duration_display()
+                            ));
+                        }
+                        msg.push_str("Type a number to play, or a to cancel");
+                        drop(state);
+                        self.reply(client, sender_id, &msg);
+                    } else {
+                        drop(state);
+                        self.reply(client, sender_id, "Usage: search <query>");
+                    }
                 }
             }
             "pick" => {

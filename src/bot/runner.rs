@@ -675,7 +675,7 @@ async fn command_processor(
                                 track.duration_display()
                             ));
                         }
-                        msg.push_str("Type a number to play");
+                        msg.push_str("Type a number to play, or a to cancel");
                         reply(user_id, &msg);
                         let mut s = state.lock().unwrap();
                         s.search_results.insert(user_id, tracks);
