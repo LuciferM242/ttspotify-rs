@@ -285,6 +285,40 @@ fn schedule_radio_prefetch(
     });
 }
 
+/// Format queue position and estimated wait time for a newly queued track.
+/// Returns a string like " (3rd up, ~8 min)" or empty if not applicable.
+fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
+    let current_idx = match state.current_index {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    let total = state.queue.len();
+    if total <= current_idx + 1 {
+        return String::new();
+    }
+    // Position in upcoming queue (1-based)
+    let upcoming_pos = total - current_idx - 1;
+    // Estimate wait: sum durations of tracks between current and the end,
+    // minus elapsed time on current track
+    let mut wait_ms: u64 = 0;
+    if let Some(current) = state.queue.get(current_idx) {
+        wait_ms += current.track.duration_ms.saturating_sub(state.position_ms) as u64;
+    }
+    for entry in state.queue.iter().skip(current_idx + 1).take(upcoming_pos - 1) {
+        wait_ms += entry.track.duration_ms as u64;
+    }
+    let wait_min = (wait_ms + 30_000) / 60_000; // round to nearest minute
+    let pos_str = match upcoming_pos {
+        1 => "next".to_string(),
+        _ => format!("{upcoming_pos} ahead"),
+    };
+    if wait_min > 0 {
+        format!(" ({pos_str}, ~{wait_min} min)")
+    } else {
+        format!(" ({pos_str})")
+    }
+}
+
 /// All shared context needed by the command processor, bundled to avoid parameter explosion.
 struct CmdContext {
     player: SpotifyPlayer,
@@ -459,10 +493,14 @@ async fn command_processor(
                                 }
                             }
                         } else {
-                            let msg = if count > 1 {
-                                format!("Queued {count} tracks")
-                            } else {
-                                format!("Queued: {first_name}")
+                            let msg = {
+                                let s = state.lock().unwrap();
+                                let upcoming = queue_wait_info(&s);
+                                if count > 1 {
+                                    format!("Queued {count} tracks{upcoming}")
+                                } else {
+                                    format!("Queued: {first_name}{upcoming}")
+                                }
                             };
                             reply(user_id, &msg);
                         }
@@ -710,7 +748,8 @@ async fn command_processor(
                             send_event(RunnerEvent::Playing(track_name.clone()));
                         }
                     } else {
-                        reply(user_id, &format!("Queued: {track_name}"));
+                        let upcoming = queue_wait_info(&state.lock().unwrap());
+                        reply(user_id, &format!("Queued: {track_name}{upcoming}"));
                     }
                 } else {
                     reply(user_id, "Invalid pick or no search results");
