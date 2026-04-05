@@ -351,6 +351,20 @@ impl CommandDispatcher {
                 }
             }
 
+            // -- Link --
+            "link" | "url" => {
+                let state = self.state.lock().unwrap();
+                if let Some(entry) = state.current() {
+                    let url = entry.track.uri
+                        .replace("spotify:track:", "https://open.spotify.com/track/")
+                        .replace("spotify:episode:", "https://open.spotify.com/episode/");
+                    drop(state);
+                    self.reply(client, sender_id, &url);
+                } else {
+                    self.reply(client, sender_id, "Nothing playing");
+                }
+            }
+
             // -- Bot management --
             "jc" => {
                 if !args.is_empty() {
@@ -406,6 +420,7 @@ impl CommandDispatcher {
                         "sf" | "sb" | "seek" => HELP_SEEK,
                         "search" => HELP_SEARCH,
                         "radio" => HELP_RADIO,
+                        "link" | "url" => "link / url\nGet the Spotify URL for the currently playing track.\nOpen it in the Spotify app or share it with others.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
                         "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
                         "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
@@ -452,6 +467,7 @@ Search:
   a / cancel      Cancel search
 
 Bot:
+  link         Get Spotify URL for current track
   jc <path>    Join channel
   cn <name>    Change nickname
   gender       Set bot gender
