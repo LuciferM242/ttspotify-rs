@@ -129,6 +129,7 @@ pub async fn run_bot(
     let cmd_ctx = CmdContext {
         player,
         metadata,
+        session,
         state: state.clone(),
         client: client.clone(),
         search_limit: config.search_limit,
@@ -328,6 +329,7 @@ fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
 struct CmdContext {
     player: SpotifyPlayer,
     metadata: SpotifyMetadata,
+    session: librespot_core::session::Session,
     state: SharedState,
     client: Arc<::teamtalk::Client>,
     search_limit: u8,
@@ -345,17 +347,54 @@ struct CmdContext {
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
 }
 
+/// Attempt to reconnect the Spotify session using cached credentials.
+async fn try_reconnect_session(session: &librespot_core::session::Session) -> bool {
+    let creds = session.cache().and_then(|c| c.credentials());
+    if let Some(creds) = creds {
+        tracing::info!("Spotify session error, reconnecting with cached credentials...");
+        match session.connect(creds, true).await {
+            Ok(()) => {
+                tracing::info!("Spotify session reconnected");
+                true
+            }
+            Err(e) => {
+                tracing::error!("Spotify reconnection failed: {e}");
+                false
+            }
+        }
+    } else {
+        tracing::error!("No cached credentials available for reconnection");
+        false
+    }
+}
+
 async fn command_processor(
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<BotCommand>,
     ctx: CmdContext,
 ) {
     // Destructure context for ergonomic access
     let CmdContext {
-        player, metadata, state, client,
+        player, metadata, session, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_path, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx,
     } = ctx;
+
+    // Macro to retry a metadata operation once after reconnecting on failure.
+    macro_rules! with_reconnect {
+        ($expr:expr) => {{
+            let result = $expr.await;
+            if result.is_err() {
+                if try_reconnect_session(&session).await {
+                    $expr.await
+                } else {
+                    result
+                }
+            } else {
+                result
+            }
+        }};
+    }
 
     // Debounce flag for volume config writes
     let pending_volume_save = Arc::new(AtomicBool::new(false));
@@ -455,7 +494,7 @@ async fn command_processor(
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BotCommand::SearchAndPlay { query, user_id, user_name } => {
-                match metadata.resolve(&query, search_limit).await {
+                match with_reconnect!(metadata.resolve(&query, search_limit)) {
                     Ok(tracks) => {
                         if tracks.is_empty() {
                             reply(user_id, "No results found");
@@ -588,7 +627,7 @@ async fn command_processor(
                         if let Some(seed) = seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
                                 reply(user_id, "Radio: fetching recommendations...");
-                                match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
+                                match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
                                         let first_uri = tracks[0].uri.clone();
                                         let first_name = tracks[0].display_name();
@@ -723,7 +762,7 @@ async fn command_processor(
             }
 
             BotCommand::SearchOnly { query, user_id } => {
-                match metadata.search_tracks(&query, search_limit).await {
+                match with_reconnect!(metadata.search_tracks(&query, search_limit)) {
                     Ok(tracks) => {
                         let mut msg = String::from("Search results:\n");
                         for (i, track) in tracks.iter().enumerate() {
