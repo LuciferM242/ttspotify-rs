@@ -34,6 +34,7 @@ pub struct AudioPipeline {
     reset_flag: Arc<AtomicBool>,
     timing_reset_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
+    shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     accumulator: Vec<i16>,
     frame_buf: Vec<i16>,
@@ -50,6 +51,7 @@ impl AudioPipeline {
         reset_flag: Arc<AtomicBool>,
         timing_reset_flag: Arc<AtomicBool>,
         pause_flag: Arc<AtomicBool>,
+        shutdown_flag: Arc<AtomicBool>,
         config: &BotConfig,
     ) -> Self {
         let mut volume_controller = VolumeController::new(config.volume_ramp_step);
@@ -63,6 +65,7 @@ impl AudioPipeline {
             reset_flag,
             timing_reset_flag,
             pause_flag,
+            shutdown_flag,
             volume_controller,
             accumulator: Vec::with_capacity(FRAME_SIZE * 4),
             frame_buf: Vec::with_capacity(FRAME_SIZE),
@@ -77,6 +80,12 @@ impl AudioPipeline {
         tracing::info!("Audio pipeline started");
 
         loop {
+            // Check shutdown signal
+            if self.shutdown_flag.load(Ordering::Relaxed) {
+                tracing::info!("Audio pipeline shutting down");
+                break;
+            }
+
             // Check if we need to reset (new track loaded)
             if self.reset_flag.swap(false, Ordering::Relaxed) {
                 // Drain all old PCM from channel so stale audio isn't injected
@@ -163,6 +172,9 @@ impl AudioPipeline {
                     self.sample_index,
                 ) {
                     retries += 1;
+                    if self.shutdown_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if retries == 1 {
                         tracing::warn!("insert_audio_block failed, retrying...");
                     }

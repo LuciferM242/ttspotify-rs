@@ -98,6 +98,7 @@ pub async fn run_bot(
     let pipeline_reset = audio_reset.clone();
     let pipeline_timing_reset = timing_reset.clone();
     let pipeline_pause = pause_flag.clone();
+    let pipeline_shutdown = shutdown.clone();
     std::thread::spawn(move || {
         let mut pipeline = crate::audio::pipeline::AudioPipeline::new(
             audio_rx,
@@ -106,6 +107,7 @@ pub async fn run_bot(
             pipeline_reset,
             pipeline_timing_reset,
             pipeline_pause,
+            pipeline_shutdown,
             &pipeline_config,
         );
         pipeline.run();
@@ -264,6 +266,18 @@ pub async fn run_bot(
             }
         }
     }).await.map_err(|e| BotError::TeamTalk(format!("Event loop failed: {e}")))?;
+
+    // Give the command processor a moment to finish do_exit() if it's
+    // still running (event loop may break before the async command handler
+    // has set exit_reason).
+    for _ in 0..20 {
+        if exit_reason.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            || shutdown.load(Ordering::Relaxed)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 
     // Determine exit reason: check explicit exit_reason first (quit/restart
     // command), then fall back to external shutdown signal (tray/systemd).
