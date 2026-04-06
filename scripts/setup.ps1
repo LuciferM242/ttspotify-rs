@@ -1,5 +1,5 @@
 # Build setup for TT Spotify (Windows)
-# Installs required dependencies and builds both binaries.
+# Installs required build dependencies.
 # Run: powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 
 $ErrorActionPreference = "Stop"

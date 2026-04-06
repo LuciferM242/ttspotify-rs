@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build setup for tt-spotify-bot (Linux)
-# Installs required dependencies and builds the bot binary.
+# Installs required build dependencies.
 
 set -e
 
