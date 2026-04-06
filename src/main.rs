@@ -114,13 +114,17 @@ async fn main() -> Result<(), BotError> {
     // Init logging (stdout + file)
     let _log_guard = logging::init_logging(&config_path);
 
-    // Load config and run the bot
-    let config = BotConfig::load(&config_path)?;
-    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    loop {
+        // Reload config each iteration so edits take effect on restart
+        let config = BotConfig::load(&config_path)?;
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    match bot::runner::run_bot(config, config_path, shutdown, None).await? {
-        BotExit::Quit => std::process::exit(0),
-        BotExit::Restart => std::process::exit(42),
-        BotExit::Shutdown => std::process::exit(0),
+        match bot::runner::run_bot(config, config_path.clone(), shutdown, None).await? {
+            BotExit::Restart => {
+                tracing::info!("Restarting bot...");
+                continue;
+            }
+            _ => std::process::exit(0),
+        }
     }
 }

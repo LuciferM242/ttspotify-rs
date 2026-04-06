@@ -77,9 +77,22 @@ fn join_channel(client: &Client, config: &BotConfig) -> Result<(), BotError> {
     let channel_path = &config.channel_name;
     tracing::info!("Joining channel '{channel_path}'...");
 
-    let channel_id = client.get_channel_id_from_path(channel_path);
+    // Wait for the channel tree to be populated after login.
+    // The server sends channels after MySelfLoggedIn but the client
+    // may not have processed them yet on fast restarts.
+    let mut channel_id = client.get_channel_id_from_path(channel_path);
     if channel_id == ChannelId(0) {
-        // Try root channel
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            client.poll(100);
+            channel_id = client.get_channel_id_from_path(channel_path);
+            if channel_id != ChannelId(0) {
+                break;
+            }
+        }
+    }
+
+    if channel_id == ChannelId(0) {
         tracing::warn!("Channel '{channel_path}' not found, joining root channel");
         client.join_channel(ChannelId(1), &config.channel_password);
     } else {

@@ -57,7 +57,7 @@ Type=simple
 ExecStart={exec_start}
 Restart=on-failure
 RestartForceExitStatus=42
-RestartSec=5
+RestartSec=2
 
 [Install]
 WantedBy=default.target
