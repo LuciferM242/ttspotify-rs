@@ -96,7 +96,7 @@ impl BotManager {
             .instances
             .iter()
             .map(|(name, inst)| {
-                let status = inst.status.lock().unwrap().clone();
+                let status = inst.status.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 (name.clone(), status)
             })
             .collect();
@@ -120,15 +120,22 @@ impl BotManager {
         let status_tx = self.status_tx.clone();
         let bot_name = name.to_string();
 
-        *status.lock().unwrap() = BotStatus::Starting;
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Starting;
         let _ = status_tx.send((bot_name.clone(), BotStatus::Starting));
 
-        let handle = thread::Builder::new()
+        let handle = match thread::Builder::new()
             .name(format!("bot-{name}"))
             .spawn(move || {
                 run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name);
-            })
-            .ok();
+            }) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::error!("[{}] Failed to spawn bot thread: {e}", inst.name);
+                *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Error(format!("Thread spawn failed: {e}"));
+                let _ = self.status_tx.send((name.to_string(), BotStatus::Error(format!("Thread spawn failed: {e}"))));
+                return false;
+            }
+        };
 
         inst.thread = handle;
         inst.shutdown = Some(shutdown);
@@ -149,7 +156,7 @@ impl BotManager {
         if let Some(handle) = inst.thread.take() {
             let _ = handle.join();
         }
-        *inst.status.lock().unwrap() = BotStatus::Stopped;
+        *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Stopped;
         let _ = self.status_tx.send((name.to_string(), BotStatus::Stopped));
         inst.shutdown = None;
         true
@@ -194,10 +201,10 @@ impl BotManager {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_flag = shutdown.clone();
 
-        *status.lock().unwrap() = BotStatus::Starting;
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Starting;
         let _ = status_tx.send((bot_name.clone(), BotStatus::Starting));
 
-        let handle = thread::Builder::new()
+        let handle = match thread::Builder::new()
             .name(format!("bot-{name}"))
             .spawn(move || {
                 // Wait for old thread to finish
@@ -206,8 +213,15 @@ impl BotManager {
                 }
                 thread::sleep(std::time::Duration::from_millis(500));
                 run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name);
-            })
-            .ok();
+            }) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::error!("[{}] Failed to spawn restart thread: {e}", inst.name);
+                *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Error(format!("Restart failed: {e}"));
+                let _ = self.status_tx.send((name.to_string(), BotStatus::Error(format!("Restart failed: {e}"))));
+                return;
+            }
+        };
 
         inst.thread = handle;
         inst.shutdown = Some(shutdown);
@@ -246,8 +260,13 @@ fn run_bot_instance(
     status_tx: crossbeam_channel::Sender<(String, BotStatus)>,
     name: String,
 ) {
+    // Per-instance log file (e.g. logs/myserver.log)
+    let log_dir = crate::config::config_dir().join("logs");
+    let (dispatch, _log_guard) = crate::logging::create_instance_logging(&log_dir, &name);
+    let _dispatch_guard = tracing::dispatcher::set_default(&dispatch);
+
     let update_status = |new_status: BotStatus| {
-        *status.lock().unwrap() = new_status.clone();
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = new_status.clone();
         let _ = status_tx.send((name.clone(), new_status));
     };
 
@@ -277,7 +296,7 @@ fn run_bot_instance(
                 RunnerEvent::Disconnected => BotStatus::Disconnected,
                 RunnerEvent::Error(msg) => BotStatus::Error(msg),
             };
-            *bridge_status.lock().unwrap() = new_status.clone();
+            *bridge_status.lock().unwrap_or_else(|e| e.into_inner()) = new_status.clone();
             let _ = bridge_tx.send((bridge_name.clone(), new_status));
         }
     });

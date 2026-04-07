@@ -203,7 +203,7 @@ fn handle_menu_action(
                         mgr.borrow_mut().restart_nonblocking(&name);
                     }
                     ACTION_LOGS => {
-                        let log_path = config_dir().join("logs").join("tray.log");
+                        let log_path = config_dir().join("logs").join(format!("{name}.log"));
                         open_file(&log_path);
                     }
                     ACTION_CONFIG => {
@@ -326,11 +326,33 @@ fn build_menu(manager: &BotManager) -> Menu {
 }
 
 /// Open a file with the default Windows application.
+/// Log files use daily rotation with a date prefix (e.g. `2026-04-07.config.log`),
+/// so we find the most recent file matching the suffix.
 fn open_file(path: &std::path::Path) {
-    if !path.exists() {
+    let target = if path.exists() {
+        path.to_path_buf()
+    } else if let Some(parent) = path.parent() {
+        let suffix = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let mut matches: Vec<_> = std::fs::read_dir(parent)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.ends_with(suffix) && n != suffix)
+            })
+            .collect();
+        matches.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        match matches.first() {
+            Some(entry) => entry.path(),
+            None => return,
+        }
+    } else {
         return;
-    }
+    };
+    let abs_path = std::fs::canonicalize(&target).unwrap_or(target);
     let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &path.display().to_string()])
+        .args(["/c", "start", "", &abs_path.display().to_string()])
         .spawn();
 }

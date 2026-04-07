@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Windows system tray app for TTSpotify.
 //!
 //! Manages multiple bot instances via a wxDragon-based tray icon.
@@ -40,7 +41,7 @@ fn main() {
 
         let _ = wxdragon::main(|_| {
             tt_spotify_bot::gui::config_dialog::open_config_dialog(config, path, |saved_path| {
-                eprintln!("Config saved to: {}", saved_path.display());
+                tracing::info!("Config saved to: {}", saved_path.display());
             });
         });
         return;

@@ -117,15 +117,14 @@ impl SpotifyAuth {
     /// In headless mode, skips browser launch and prints instructions.
     fn oauth_login(&self) -> Result<Credentials, BotError> {
         if self.headless {
-            tracing::info!("Running in headless mode (no browser available).");
-            tracing::info!("The OAuth server will listen on {OAUTH_REDIRECT}");
-            tracing::info!("If running on a remote server, set up an SSH tunnel first:");
-            tracing::info!("  ssh -L 5588:localhost:5588 your-server");
-            tracing::info!("Then open the URL below in your local browser.");
+            println!("Running in headless mode (no browser available).");
+            println!("The OAuth server will listen on {OAUTH_REDIRECT}");
+            println!("If running on a remote server, set up an SSH tunnel first:");
+            println!("  ssh -L 5588:localhost:5588 your-server");
+            println!("Then open the URL below in your local browser.");
         } else {
-            tracing::info!("Starting Spotify OAuth login...");
-            tracing::info!("A browser window will open. Log in to Spotify and authorize the app.");
-            tracing::info!("If no browser opens, visit the URL printed below.");
+            println!("A browser window will open. Log in to Spotify and authorize the app.");
+            println!("If no browser opens, visit the URL printed below.");
         }
 
         let mut builder = OAuthClientBuilder::new(
