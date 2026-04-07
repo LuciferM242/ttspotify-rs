@@ -116,12 +116,15 @@ impl SpotifyAuth {
     /// Opens a browser URL for the user to authorize, then catches the callback.
     /// In headless mode, skips browser launch and prints instructions.
     fn oauth_login(&self) -> Result<Credentials, BotError> {
+        // In headless mode, use a port-less redirect URI so librespot-oauth
+        // falls back to stdin input instead of starting a local HTTP server.
+        // The user pastes the redirect URL from their browser's address bar.
+        let redirect = if self.headless { "http://127.0.0.1/login" } else { OAUTH_REDIRECT };
+
+        println!("Spotify Authentication");
         if self.headless {
-            println!("Running in headless mode (no browser available).");
-            println!("The OAuth server will listen on {OAUTH_REDIRECT}");
-            println!("If running on a remote server, set up an SSH tunnel first:");
-            println!("  ssh -L 5588:localhost:5588 your-server");
-            println!("Then open the URL below in your local browser.");
+            println!("Open the URL below in a browser and authorize the app.");
+            println!("After authorizing, copy the URL from the address bar and paste it below.");
         } else {
             println!("A browser window will open. Log in to Spotify and authorize the app.");
             println!("If no browser opens, visit the URL printed below.");
@@ -129,7 +132,7 @@ impl SpotifyAuth {
 
         let mut builder = OAuthClientBuilder::new(
             SPOTIFY_CLIENT_ID,
-            OAUTH_REDIRECT,
+            redirect,
             OAUTH_SCOPES.to_vec(),
         );
 
@@ -147,13 +150,10 @@ impl SpotifyAuth {
         let token = oauth_client.get_access_token()
             .map_err(|e| BotError::SpotifyAuth(format!("OAuth flow failed: {e}")))?;
 
+        println!("Spotify account connected successfully.");
         tracing::info!("OAuth token obtained successfully");
 
-        // Convert OAuth token to librespot Credentials
-        let credentials = Credentials::with_access_token(&token.access_token);
-
-        // The session will cache reusable credentials on successful connect
-        Ok(credentials)
+        Ok(Credentials::with_access_token(&token.access_token))
     }
 
 }
