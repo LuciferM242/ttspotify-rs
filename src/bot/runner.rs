@@ -437,7 +437,7 @@ async fn command_processor(
     };
 
     let now_playing_status = |track_name: &str, st: &SharedState| -> String {
-        let s = st.lock().unwrap();
+        let s = st.lock().unwrap_or_else(|e| e.into_inner());
         let total = s.queue.len();
         if total > 1 {
             let pos = s.current_index.map(|i| i + 1).unwrap_or(1);
@@ -453,7 +453,7 @@ async fn command_processor(
         crate::tt::audio_inject::flush_audio(client);
         client.enable_voice_transmission(false);
         audio_reset.store(true, Ordering::Relaxed);
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.is_playing = false;
         s.is_paused = false;
         s.is_loading = false;
@@ -468,7 +468,7 @@ async fn command_processor(
             audio_reset.store(true, Ordering::Relaxed);
             player.load_track(&uri);
             {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.is_loading = true;
                 s.is_playing = false;
                 s.is_paused = false;
@@ -485,7 +485,7 @@ async fn command_processor(
         set_status("Idle");
         send_event(RunnerEvent::Idle);
         {
-            let s = state.lock().unwrap();
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             let vol = volume_for_save.load(Ordering::Relaxed);
             let radio = s.radio_enabled;
             let repeat_track = s.repeat_track;
@@ -501,7 +501,7 @@ async fn command_processor(
             });
         }
         let _ = client.disconnect();
-        *exit_reason.lock().unwrap() = Some(reason);
+        *exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
         shutdown.store(true, Ordering::Relaxed);
     };
 
@@ -519,7 +519,7 @@ async fn command_processor(
                         let tracks_to_add = if is_multi {
                             tracks
                         } else {
-                            vec![tracks.into_iter().next().unwrap()]
+                            vec![tracks.into_iter().next().expect("empty check above")]
                         };
 
                         let first_name = tracks_to_add[0].display_name();
@@ -528,7 +528,7 @@ async fn command_processor(
 
                         // Hold lock across idle check + enqueue to prevent race
                         let is_idle = {
-                            let mut s = state.lock().unwrap();
+                            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                             let idle = !s.is_playing && !s.is_paused && !s.is_loading;
                             if idle {
                                 s.clear();
@@ -549,14 +549,14 @@ async fn command_processor(
                             send_event(RunnerEvent::Playing(first_name.clone()));
 
                             if !is_multi {
-                                let radio_on = state.lock().unwrap().radio_enabled;
+                                let radio_on = state.lock().unwrap_or_else(|e| e.into_inner()).radio_enabled;
                                 if radio_on {
                                     schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
                                 }
                             }
                         } else {
                             let msg = {
-                                let s = state.lock().unwrap();
+                                let s = state.lock().unwrap_or_else(|e| e.into_inner());
                                 let upcoming = queue_wait_info(&s);
                                 if count > 1 {
                                     format!("Queued {count} tracks{upcoming}")
@@ -577,7 +577,7 @@ async fn command_processor(
                 pause_flag.store(false, Ordering::Relaxed);
                 timing_reset.store(true, Ordering::Relaxed);
                 player.play();
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.is_playing = true;
                 s.is_paused = false;
                 // Send playing event with current track name
@@ -590,7 +590,7 @@ async fn command_processor(
                 pause_flag.store(true, Ordering::Relaxed);
                 player.pause();
                 crate::tt::audio_inject::flush_audio(&client);
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.is_paused = true;
                 s.is_playing = false;
                 send_event(RunnerEvent::Idle);
@@ -599,7 +599,7 @@ async fn command_processor(
             BotCommand::Stop { user_id: _ } => {
                 stop_playback(&player, &client, &state, &audio_reset, &pause_flag);
                 {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                     s.clear();
                 }
                 set_status("Idle");
@@ -608,7 +608,7 @@ async fn command_processor(
 
             BotCommand::Next { user_id } => {
                 let next = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                     s.advance().map(|e| (e.track.uri.clone(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = next {
@@ -620,7 +620,7 @@ async fn command_processor(
                     }
 
                     let (radio_on, at_end, allow_rec) = {
-                        let s = state.lock().unwrap();
+                        let s = state.lock().unwrap_or_else(|e| e.into_inner());
                         let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                         let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                         (s.radio_enabled, at_end, allow)
@@ -630,7 +630,7 @@ async fn command_processor(
                     }
                 } else {
                     let (radio_on, allow_rec, seed_uri, played_ids) = {
-                        let s = state.lock().unwrap();
+                        let s = state.lock().unwrap_or_else(|e| e.into_inner());
                         let seed = s.current().map(|e| e.track.uri.clone());
                         let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                         let played: Vec<String> = s.queue.iter().map(|e| e.track.id.clone()).collect();
@@ -646,7 +646,7 @@ async fn command_processor(
                                         let first_uri = tracks[0].uri.clone();
                                         let first_name = tracks[0].display_name();
                                         {
-                                            let mut s = state.lock().unwrap();
+                                            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                                             s.enqueue_all(tracks, "Radio".to_string(), true);
                                         }
                                         if start_track(&first_uri, &player, &client, &state, &audio_reset, &pause_flag) {
@@ -671,7 +671,7 @@ async fn command_processor(
                         }
                     } else {
                         player.stop();
-                        let mut s = state.lock().unwrap();
+                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                         s.is_playing = false;
                         s.is_paused = false;
                         set_status("Idle");
@@ -683,7 +683,7 @@ async fn command_processor(
 
             BotCommand::Prev { user_id } => {
                 let prev = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                     s.go_prev().map(|e| (e.track.uri.clone(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = prev {
@@ -698,7 +698,7 @@ async fn command_processor(
 
             BotCommand::Seek { offset_ms, user_id: _ } => {
                 let new_pos = {
-                    let s = state.lock().unwrap();
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     let current = s.position_ms as i32;
                     (current + offset_ms).max(0) as u32
                 };
@@ -727,7 +727,7 @@ async fn command_processor(
             }
 
             BotCommand::SetMode { mode, user_id: _ } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 match mode {
                     PlaybackMode::RepeatTrack => {
                         s.repeat_track = true;
@@ -753,7 +753,7 @@ async fn command_processor(
             }
 
             BotCommand::RadioToggle { enable, user_id: _ } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.radio_enabled = enable;
                 drop(s);
                 crate::config::BotConfig::update(&config_path, |cfg| {
@@ -762,7 +762,7 @@ async fn command_processor(
             }
 
             BotCommand::QueueClear { user_id: _ } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(idx) = s.current_index {
                     s.queue.truncate(idx + 1);
                 } else {
@@ -771,7 +771,7 @@ async fn command_processor(
             }
 
             BotCommand::QueueRemove { index, user_id: _ } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.remove(index);
             }
 
@@ -789,7 +789,7 @@ async fn command_processor(
                         }
                         msg.push_str("Type a number to play, or a to cancel");
                         reply(user_id, &msg);
-                        let mut s = state.lock().unwrap();
+                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                         s.search_results.insert(user_id, tracks);
                     }
                     Err(e) => {
@@ -800,7 +800,7 @@ async fn command_processor(
 
             BotCommand::SearchPick { user_id, pick, user_name } => {
                 let picked = {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                     let track = s.search_results.get(&user_id)
                         .and_then(|results| results.get(pick).cloned());
                     track.map(|track| {
@@ -822,7 +822,7 @@ async fn command_processor(
                             send_event(RunnerEvent::Playing(track_name.clone()));
                         }
                     } else {
-                        let upcoming = queue_wait_info(&state.lock().unwrap());
+                        let upcoming = queue_wait_info(&state.lock().unwrap_or_else(|e| e.into_inner()));
                         reply(user_id, &format!("Queued: {track_name}{upcoming}"));
                     }
                 } else {
@@ -857,7 +857,7 @@ async fn command_processor(
 
             BotCommand::PreloadNext => {
                 let next_uri = {
-                    let s = state.lock().unwrap();
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     if s.repeat_track {
                         s.current().map(|e| e.track.uri.clone())
                     } else if let Some(idx) = s.current_index {
@@ -883,7 +883,7 @@ async fn command_processor(
 
             BotCommand::RadioPreFetch { seed_uri } => {
                 let (radio_on, is_playing, current_uri, queue_at_end, allow_rec) = {
-                    let s = state.lock().unwrap();
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
                     let cur_uri = s.current().map(|e| e.track.uri.clone());
                     let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
@@ -893,14 +893,14 @@ async fn command_processor(
                 if radio_on && is_playing && allow_rec && current_uri.as_deref() == Some(&seed_uri) && queue_at_end {
                     if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
                         let played_ids: Vec<String> = {
-                            let s = state.lock().unwrap();
+                            let s = state.lock().unwrap_or_else(|e| e.into_inner());
                             s.queue.iter().map(|e| e.track.id.clone()).collect()
                         };
                         match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
                             Ok(tracks) if !tracks.is_empty() => {
                                 let count = tracks.len();
                                 {
-                                    let mut s = state.lock().unwrap();
+                                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                                     s.enqueue_all(tracks, "Radio".to_string(), true);
                                 }
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
@@ -939,14 +939,14 @@ async fn player_event_loop(
     while let Some(event) = events.recv().await {
         match event {
             PlayerEvent::Playing { position_ms, .. } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.is_playing = true;
                 s.is_paused = false;
                 s.is_loading = false;
                 s.position_ms = position_ms;
             }
             PlayerEvent::Paused { position_ms, .. } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.is_playing = false;
                 s.is_paused = true;
                 s.position_ms = position_ms;
@@ -965,7 +965,7 @@ async fn player_event_loop(
             PlayerEvent::PositionChanged { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. }
             | PlayerEvent::Seeked { position_ms, .. } => {
-                let mut s = state.lock().unwrap();
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.position_ms = position_ms;
             }
             _ => {}

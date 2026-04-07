@@ -152,7 +152,13 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
             // Spawn a new thread with its own tokio runtime to avoid
             // nested-runtime panic (wizard is sync, may be called from async main)
             let auth_result = std::thread::spawn(|| {
-                let rt = tokio::runtime::Runtime::new().ok()?;
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("  Failed to create async runtime: {e}");
+                        return None;
+                    }
+                };
                 let mut auth = crate::spotify::auth::SpotifyAuth::new();
                 Some(rt.block_on(auth.connect()))
             }).join().ok().flatten();

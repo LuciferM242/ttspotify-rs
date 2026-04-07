@@ -195,18 +195,23 @@ impl BotConfig {
             )));
         }
         let contents = std::fs::read_to_string(path)
-            .map_err(|e| BotError::Config(format!("Failed to read config: {e}")))?;
+            .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
         let config: Self = serde_json::from_str(&contents)
-            .map_err(|e| BotError::Config(format!("Failed to parse config: {e}")))?;
+            .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))?;
         Ok(config)
     }
 
     /// Load config, apply a mutation, and save it back.
     pub fn update(path: &str, f: impl FnOnce(&mut BotConfig)) {
-        if let Ok(mut cfg) = Self::load(path) {
-            f(&mut cfg);
-            if let Err(e) = cfg.save(Path::new(path)) {
-                tracing::error!("Failed to save config: {e}");
+        match Self::load(path) {
+            Ok(mut cfg) => {
+                f(&mut cfg);
+                if let Err(e) = cfg.save(Path::new(path)) {
+                    tracing::error!("Failed to save config {path}: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load config for update {path}: {e}");
             }
         }
     }
