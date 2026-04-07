@@ -5,11 +5,10 @@
 set -e
 
 echo "Building Linux release..."
-cargo build --release
+cargo build --release --quiet
 
-echo ""
-echo "Building Windows release (via PowerShell)..."
-powershell.exe -ExecutionPolicy Bypass -Command "cargo build --release"
+echo "Building Windows release..."
+powershell.exe -ExecutionPolicy Bypass -Command "cargo build --release --quiet"
 
 echo ""
 echo "Done. Binaries:"
