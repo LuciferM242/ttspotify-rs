@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::fmt::Write;
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use crate::spotify::types::SpotifyTrack;
 
@@ -12,13 +15,19 @@ pub struct QueueEntry {
     pub allow_recommend: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackStatus {
+    Idle,
+    Loading,
+    Playing,
+    Paused,
+}
+
 #[derive(Debug)]
 pub struct PlayerState {
     pub queue: Vec<QueueEntry>,
     pub current_index: Option<usize>,
-    pub is_playing: bool,
-    pub is_paused: bool,
-    pub is_loading: bool,
+    pub status: PlaybackStatus,
 
     // Modes
     pub repeat_track: bool,
@@ -45,9 +54,7 @@ impl PlayerState {
         Self {
             queue: Vec::new(),
             current_index: None,
-            is_playing: false,
-            is_paused: false,
-            is_loading: false,
+            status: PlaybackStatus::Idle,
             repeat_track: false,
             repeat_queue: false,
             shuffle: false,
@@ -159,9 +166,7 @@ impl PlayerState {
     pub fn clear(&mut self) {
         self.queue.clear();
         self.current_index = None;
-        self.is_playing = false;
-        self.is_paused = false;
-        self.is_loading = false;
+        self.status = PlaybackStatus::Idle;
         self.position_ms = 0;
     }
 
@@ -192,18 +197,14 @@ impl PlayerState {
             return "Queue is empty".to_string();
         }
 
-        let mut lines = Vec::new();
+        let mut out = String::new();
         for (i, entry) in self.queue.iter().enumerate() {
             let marker = if self.current_index == Some(i) { "> " } else { "  " };
-            lines.push(format!(
-                "{}{}: {} [{}]",
-                marker,
-                i + 1,
-                entry.track.display_name(),
-                entry.track.duration_display()
-            ));
+            if i > 0 { out.push('\n'); }
+            let _ = write!(out, "{}{}: {} [{}]",
+                marker, i + 1, entry.track.display_name(), entry.track.duration_display());
         }
-        lines.join("\n")
+        out
     }
 
     pub fn mode_display(&self) -> String {

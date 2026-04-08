@@ -80,7 +80,6 @@ impl AudioPipeline {
         tracing::info!("Audio pipeline started");
 
         loop {
-            // Check shutdown signal
             if self.shutdown_flag.load(Ordering::Relaxed) {
                 tracing::info!("Audio pipeline shutting down");
                 break;
@@ -137,7 +136,6 @@ impl AudioPipeline {
                 self.accumulator.extend_from_slice(&pcm_data);
             }
 
-            // Inject complete frames
             while self.accumulator.len() >= FRAME_SIZE {
                 // Check reset or pause mid-injection (for instant stop/pause)
                 if self.reset_flag.load(Ordering::Relaxed) || self.pause_flag.load(Ordering::Relaxed) {

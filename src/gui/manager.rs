@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::thread;
 
 use crate::bot::runner::{BotExit, RunnerEvent};
@@ -96,7 +97,7 @@ impl BotManager {
             .instances
             .iter()
             .map(|(name, inst)| {
-                let status = inst.status.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let status = inst.status.lock().clone();
                 (name.clone(), status)
             })
             .collect();
@@ -120,7 +121,7 @@ impl BotManager {
         let status_tx = self.status_tx.clone();
         let bot_name = name.to_string();
 
-        *status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Starting;
+        *status.lock() = BotStatus::Starting;
         let _ = status_tx.send((bot_name.clone(), BotStatus::Starting));
 
         let handle = match thread::Builder::new()
@@ -131,7 +132,7 @@ impl BotManager {
             Ok(h) => Some(h),
             Err(e) => {
                 tracing::error!("[{}] Failed to spawn bot thread: {e}", inst.name);
-                *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Error(format!("Thread spawn failed: {e}"));
+                *inst.status.lock() = BotStatus::Error(format!("Thread spawn failed: {e}"));
                 let _ = self.status_tx.send((name.to_string(), BotStatus::Error(format!("Thread spawn failed: {e}"))));
                 return false;
             }
@@ -156,7 +157,7 @@ impl BotManager {
         if let Some(handle) = inst.thread.take() {
             let _ = handle.join();
         }
-        *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Stopped;
+        *inst.status.lock() = BotStatus::Stopped;
         let _ = self.status_tx.send((name.to_string(), BotStatus::Stopped));
         inst.shutdown = None;
         true
@@ -201,7 +202,7 @@ impl BotManager {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_flag = shutdown.clone();
 
-        *status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Starting;
+        *status.lock() = BotStatus::Starting;
         let _ = status_tx.send((bot_name.clone(), BotStatus::Starting));
 
         let handle = match thread::Builder::new()
@@ -217,7 +218,7 @@ impl BotManager {
             Ok(h) => Some(h),
             Err(e) => {
                 tracing::error!("[{}] Failed to spawn restart thread: {e}", inst.name);
-                *inst.status.lock().unwrap_or_else(|e| e.into_inner()) = BotStatus::Error(format!("Restart failed: {e}"));
+                *inst.status.lock() = BotStatus::Error(format!("Restart failed: {e}"));
                 let _ = self.status_tx.send((name.to_string(), BotStatus::Error(format!("Restart failed: {e}"))));
                 return;
             }
@@ -266,7 +267,7 @@ fn run_bot_instance(
     let _dispatch_guard = tracing::dispatcher::set_default(&dispatch);
 
     let update_status = |new_status: BotStatus| {
-        *status.lock().unwrap_or_else(|e| e.into_inner()) = new_status.clone();
+        *status.lock() = new_status.clone();
         let _ = status_tx.send((name.clone(), new_status));
     };
 
@@ -296,7 +297,7 @@ fn run_bot_instance(
                 RunnerEvent::Disconnected => BotStatus::Disconnected,
                 RunnerEvent::Error(msg) => BotStatus::Error(msg),
             };
-            *bridge_status.lock().unwrap_or_else(|e| e.into_inner()) = new_status.clone();
+            *bridge_status.lock() = new_status.clone();
             let _ = bridge_tx.send((bridge_name.clone(), new_status));
         }
     });

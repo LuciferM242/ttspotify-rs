@@ -1,10 +1,11 @@
+use std::fmt::Write;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 use teamtalk::Client;
 
-use crate::bot::state::SharedState;
+use crate::bot::state::{PlaybackStatus, SharedState};
 
 /// Commands sent from the bot thread to the async command processor.
 #[derive(Debug)]
@@ -100,7 +101,7 @@ impl CommandDispatcher {
         // Search cancellation
         match stripped.to_lowercase().as_str() {
             "a" | "cancel" | "abort" | "exit" => {
-                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut state = self.state.lock();
                 if state.search_results.remove(&sender_id).is_some() {
                     self.reply(client, sender_id, "Search cancelled");
                 }
@@ -138,19 +139,22 @@ impl CommandDispatcher {
                     });
                     self.reply(client, sender_id,"Searching...");
                 } else {
-                    let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    if state.is_loading {
-                        self.reply(client, sender_id, "Loading track...");
-                    } else if state.is_paused {
-                        drop(state);
-                        self.send(BotCommand::Play { user_id: sender_id });
-                        self.reply(client, sender_id, "Resuming");
-                    } else if state.is_playing {
-                        drop(state);
-                        self.send(BotCommand::Pause { user_id: sender_id });
-                        self.reply(client, sender_id, "Paused");
-                    } else {
-                        self.reply(client, sender_id, "Nothing to play. Use: p <query>");
+                    let status = self.state.lock().status;
+                    match status {
+                        PlaybackStatus::Loading => {
+                            self.reply(client, sender_id, "Loading track...");
+                        }
+                        PlaybackStatus::Paused => {
+                            self.send(BotCommand::Play { user_id: sender_id });
+                            self.reply(client, sender_id, "Resuming");
+                        }
+                        PlaybackStatus::Playing => {
+                            self.send(BotCommand::Pause { user_id: sender_id });
+                            self.reply(client, sender_id, "Paused");
+                        }
+                        PlaybackStatus::Idle => {
+                            self.reply(client, sender_id, "Nothing to play. Use: p <query>");
+                        }
                     }
                 }
             }
@@ -166,7 +170,7 @@ impl CommandDispatcher {
 
             // -- Info --
             "c" | "current" => {
-                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let state = self.state.lock();
                 if let Some(entry) = state.current() {
                     let pos_secs = state.position_ms / 1000;
                     let pos = format!("{}:{:02}", pos_secs / 60, pos_secs % 60);
@@ -198,7 +202,7 @@ impl CommandDispatcher {
                             self.reply(client, sender_id,"Index starts at 1");
                         } else {
                             // Offset from current position (rm 1 = next upcoming track)
-                            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                            let state = self.state.lock();
                             let base = state.current_index.map(|i| i + 1).unwrap_or(0);
                             let abs_idx = base + n - 1;
                             if abs_idx >= state.queue.len() {
@@ -212,7 +216,7 @@ impl CommandDispatcher {
                         }
                     }
                 } else {
-                    let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let state = self.state.lock();
                     let display = state.queue_display();
                     drop(state);
                     self.reply(client, sender_id,&display);
@@ -239,7 +243,7 @@ impl CommandDispatcher {
                         self.reply(client, sender_id,"All modes disabled");
                     }
                     _ => {
-                        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                        let state = self.state.lock();
                         let display = state.mode_display();
                         drop(state);
                         self.reply(client, sender_id,&format!("{display}\nUsage: mode [r|rq|s|off]"));
@@ -296,16 +300,12 @@ impl CommandDispatcher {
                     self.reply(client, sender_id,"Searching...");
                 } else {
                     // Re-display active search results if available
-                    let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let state = self.state.lock();
                     if let Some(results) = state.search_results.get(&sender_id) {
                         let mut msg = String::from("Search results:\n");
                         for (i, track) in results.iter().enumerate() {
-                            msg.push_str(&format!(
-                                "  {}: {} [{}]\n",
-                                i + 1,
-                                track.display_name(),
-                                track.duration_display()
-                            ));
+                            let _ = write!(msg, "  {}: {} [{}]\n",
+                                i + 1, track.display_name(), track.duration_display());
                         }
                         msg.push_str("Type a number to play, or a to cancel");
                         drop(state);
@@ -345,7 +345,7 @@ impl CommandDispatcher {
                     self.send(BotCommand::RadioToggle { enable: false, user_id: sender_id });
                     self.reply(client, sender_id,"Radio disabled");
                 } else {
-                    let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let state = self.state.lock();
                     let status = if state.radio_enabled { "ON" } else { "OFF" };
                     drop(state);
                     self.reply(client, sender_id,&format!("Radio: {status}"));
@@ -354,7 +354,7 @@ impl CommandDispatcher {
 
             // -- Link --
             "link" | "url" => {
-                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let state = self.state.lock();
                 if let Some(entry) = state.current() {
                     let url = entry.track.uri
                         .replace("spotify:track:", "https://open.spotify.com/track/")
@@ -398,7 +398,7 @@ impl CommandDispatcher {
                 let uptime = self.start_time.elapsed();
                 let hours = uptime.as_secs() / 3600;
                 let mins = (uptime.as_secs() % 3600) / 60;
-                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                let state = self.state.lock();
                 let tracks = state.tracks_played;
                 let queue_len = state.queue.len();
                 let vol = self.volume.load(Ordering::Relaxed);

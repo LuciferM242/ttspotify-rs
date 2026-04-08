@@ -4,6 +4,7 @@
 //! audio pipeline, command processor, and event loop.
 //! Used by both the standalone binary and the Windows tray manager.
 
+use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use librespot_core::spotify_uri::SpotifyUri;
 use librespot_playback::player::PlayerEvent;
 
 use crate::bot::commands::{BotCommand, PlaybackMode};
-use crate::bot::state::{PlayerState, SharedState};
+use crate::bot::state::{PlaybackStatus, PlayerState, SharedState};
 use crate::config::BotConfig;
 use crate::error::BotError;
 use crate::spotify::metadata::SpotifyMetadata;
@@ -65,20 +66,17 @@ pub async fn run_bot(
     tracing::info!("TeamTalk Spotify Bot starting...");
     tracing::info!("Config loaded from {}", config_path);
 
-    // Create shared state
     let mut initial_state = PlayerState::new();
     initial_state.radio_enabled = config.radio_enabled;
     initial_state.repeat_track = config.repeat_track;
     initial_state.repeat_queue = config.repeat_queue;
     initial_state.shuffle = config.shuffle;
-    let state: SharedState = Arc::new(std::sync::Mutex::new(initial_state));
+    let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
     let volume = Arc::new(AtomicU8::new(config.volume));
 
-    // Create channels
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<i16>>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<BotCommand>();
 
-    // Setup TeamTalk
     send_event(RunnerEvent::Connecting);
     let tt_config = config.clone();
     let client = tokio::task::spawn_blocking(move || {
@@ -113,18 +111,16 @@ pub async fn run_bot(
         pipeline.run();
     });
 
-    // Spotify auth
     send_event(RunnerEvent::Authenticating);
     let mut auth = crate::spotify::auth::SpotifyAuth::new();
     let session = auth.connect().await?;
 
-    // Create Spotify player + metadata
     let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx);
     let metadata = SpotifyMetadata::new(session.clone());
 
     // Exit signal: command_processor sets this instead of process::exit
-    let exit_reason: Arc<std::sync::Mutex<Option<BotExit>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>> =
+        Arc::new(parking_lot::Mutex::new(None));
 
     // Spawn command processor
     let bot_gender = crate::config::parse_gender(&config.bot_gender);
@@ -159,7 +155,6 @@ pub async fn run_bot(
         player_event_loop(event_rx, event_state, event_cmd_tx).await;
     });
 
-    // Command dispatcher
     let dispatcher = crate::bot::commands::CommandDispatcher {
         state: state.clone(),
         volume: volume.clone(),
@@ -170,7 +165,6 @@ pub async fn run_bot(
 
     tracing::info!("Bot is ready! Listening for commands...");
 
-    // Set initial idle status
     {
         let status = ::teamtalk::types::UserStatus {
             gender: bot_gender,
@@ -188,12 +182,10 @@ pub async fn run_bot(
     let event_event_tx = event_tx.clone();
     tokio::task::spawn_blocking(move || {
         loop {
-            // Check external shutdown signal
             if event_shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            // Check internal exit signal (quit/restart from command_processor)
-            if event_exit.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            if event_exit.lock().is_some() {
                 break;
             }
 
@@ -271,7 +263,7 @@ pub async fn run_bot(
     // still running (event loop may break before the async command handler
     // has set exit_reason).
     for _ in 0..20 {
-        if exit_reason.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        if exit_reason.lock().is_some()
             || shutdown.load(Ordering::Relaxed)
         {
             break;
@@ -283,7 +275,7 @@ pub async fn run_bot(
     // command), then fall back to external shutdown signal (tray/systemd).
     // do_exit() sets both exit_reason AND shutdown=true, so we must check
     // exit_reason first to avoid masking quit/restart as Shutdown.
-    let exit = exit_reason.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let exit = exit_reason.lock().take();
     let reason = match exit {
         Some(reason) => reason,
         None if shutdown.load(Ordering::Relaxed) => BotExit::Shutdown,
@@ -356,7 +348,7 @@ struct CmdContext {
     timing_reset: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
     volume_for_save: Arc<AtomicU8>,
-    exit_reason: Arc<std::sync::Mutex<Option<BotExit>>>,
+    exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>>,
     shutdown: Arc<AtomicBool>,
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
 }
@@ -410,7 +402,6 @@ async fn command_processor(
         }};
     }
 
-    // Debounce flag for volume config writes
     let pending_volume_save = Arc::new(AtomicBool::new(false));
 
     let send_event = {
@@ -437,7 +428,7 @@ async fn command_processor(
     };
 
     let now_playing_status = |track_name: &str, st: &SharedState| -> String {
-        let s = st.lock().unwrap_or_else(|e| e.into_inner());
+        let s = st.lock();
         let total = s.queue.len();
         if total > 1 {
             let pos = s.current_index.map(|i| i + 1).unwrap_or(1);
@@ -453,10 +444,8 @@ async fn command_processor(
         crate::tt::audio_inject::flush_audio(client);
         client.enable_voice_transmission(false);
         audio_reset.store(true, Ordering::Relaxed);
-        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        s.is_playing = false;
-        s.is_paused = false;
-        s.is_loading = false;
+        let mut s = state.lock();
+        s.status = PlaybackStatus::Idle;
     };
 
     let start_track = |uri_str: &str, player: &SpotifyPlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
@@ -468,10 +457,8 @@ async fn command_processor(
             audio_reset.store(true, Ordering::Relaxed);
             player.load_track(&uri);
             {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.is_loading = true;
-                s.is_playing = false;
-                s.is_paused = false;
+                let mut s = state.lock();
+                s.status = PlaybackStatus::Loading;
                 s.tracks_played += 1;
             }
             true
@@ -485,7 +472,7 @@ async fn command_processor(
         set_status("Idle");
         send_event(RunnerEvent::Idle);
         {
-            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let s = state.lock();
             let vol = volume_for_save.load(Ordering::Relaxed);
             let radio = s.radio_enabled;
             let repeat_track = s.repeat_track;
@@ -501,7 +488,7 @@ async fn command_processor(
             });
         }
         let _ = client.disconnect();
-        *exit_reason.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+        *exit_reason.lock() = Some(reason);
         shutdown.store(true, Ordering::Relaxed);
     };
 
@@ -528,8 +515,8 @@ async fn command_processor(
 
                         // Hold lock across idle check + enqueue to prevent race
                         let is_idle = {
-                            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                            let idle = !s.is_playing && !s.is_paused && !s.is_loading;
+                            let mut s = state.lock();
+                            let idle = s.status == PlaybackStatus::Idle;
                             if idle {
                                 s.clear();
                             }
@@ -549,14 +536,14 @@ async fn command_processor(
                             send_event(RunnerEvent::Playing(first_name.clone()));
 
                             if !is_multi {
-                                let radio_on = state.lock().unwrap_or_else(|e| e.into_inner()).radio_enabled;
+                                let radio_on = state.lock().radio_enabled;
                                 if radio_on {
                                     schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
                                 }
                             }
                         } else {
                             let msg = {
-                                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                let s = state.lock();
                                 let upcoming = queue_wait_info(&s);
                                 if count > 1 {
                                     format!("Queued {count} tracks{upcoming}")
@@ -577,10 +564,8 @@ async fn command_processor(
                 pause_flag.store(false, Ordering::Relaxed);
                 timing_reset.store(true, Ordering::Relaxed);
                 player.play();
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.is_playing = true;
-                s.is_paused = false;
-                // Send playing event with current track name
+                let mut s = state.lock();
+                s.status = PlaybackStatus::Playing;
                 if let Some(entry) = s.current() {
                     send_event(RunnerEvent::Playing(entry.track.display_name()));
                 }
@@ -590,16 +575,15 @@ async fn command_processor(
                 pause_flag.store(true, Ordering::Relaxed);
                 player.pause();
                 crate::tt::audio_inject::flush_audio(&client);
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.is_paused = true;
-                s.is_playing = false;
+                let mut s = state.lock();
+                s.status = PlaybackStatus::Paused;
                 send_event(RunnerEvent::Idle);
             }
 
             BotCommand::Stop { user_id: _ } => {
                 stop_playback(&player, &client, &state, &audio_reset, &pause_flag);
                 {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut s = state.lock();
                     s.clear();
                 }
                 set_status("Idle");
@@ -608,7 +592,7 @@ async fn command_processor(
 
             BotCommand::Next { user_id } => {
                 let next = {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut s = state.lock();
                     s.advance().map(|e| (e.track.uri.clone(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = next {
@@ -620,7 +604,7 @@ async fn command_processor(
                     }
 
                     let (radio_on, at_end, allow_rec) = {
-                        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let s = state.lock();
                         let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                         let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                         (s.radio_enabled, at_end, allow)
@@ -630,7 +614,7 @@ async fn command_processor(
                     }
                 } else {
                     let (radio_on, allow_rec, seed_uri, played_ids) = {
-                        let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let s = state.lock();
                         let seed = s.current().map(|e| e.track.uri.clone());
                         let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                         let played: Vec<String> = s.queue.iter().map(|e| e.track.id.clone()).collect();
@@ -646,7 +630,7 @@ async fn command_processor(
                                         let first_uri = tracks[0].uri.clone();
                                         let first_name = tracks[0].display_name();
                                         {
-                                            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                            let mut s = state.lock();
                                             s.enqueue_all(tracks, "Radio".to_string(), true);
                                         }
                                         if start_track(&first_uri, &player, &client, &state, &audio_reset, &pause_flag) {
@@ -671,9 +655,8 @@ async fn command_processor(
                         }
                     } else {
                         player.stop();
-                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                        s.is_playing = false;
-                        s.is_paused = false;
+                        let mut s = state.lock();
+                        s.status = PlaybackStatus::Idle;
                         set_status("Idle");
                         reply(user_id, "End of queue");
                         send_event(RunnerEvent::Idle);
@@ -683,7 +666,7 @@ async fn command_processor(
 
             BotCommand::Prev { user_id } => {
                 let prev = {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut s = state.lock();
                     s.go_prev().map(|e| (e.track.uri.clone(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = prev {
@@ -698,7 +681,7 @@ async fn command_processor(
 
             BotCommand::Seek { offset_ms, user_id: _ } => {
                 let new_pos = {
-                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let s = state.lock();
                     let current = s.position_ms as i32;
                     (current + offset_ms).max(0) as u32
                 };
@@ -707,9 +690,7 @@ async fn command_processor(
             }
 
             BotCommand::SetVolume { .. } => {
-                // Volume is set atomically in the dispatcher.
-                // Debounce config write: only save if no further volume change
-                // arrives within 3 seconds to avoid disk thrashing.
+                // Debounce: only save if no further volume change within 3 seconds.
                 if !pending_volume_save.load(Ordering::Relaxed) {
                     pending_volume_save.store(true, Ordering::Relaxed);
                     let save_flag = pending_volume_save.clone();
@@ -727,7 +708,7 @@ async fn command_processor(
             }
 
             BotCommand::SetMode { mode, user_id: _ } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state.lock();
                 match mode {
                     PlaybackMode::RepeatTrack => {
                         s.repeat_track = true;
@@ -753,7 +734,7 @@ async fn command_processor(
             }
 
             BotCommand::RadioToggle { enable, user_id: _ } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state.lock();
                 s.radio_enabled = enable;
                 drop(s);
                 crate::config::BotConfig::update(&config_path, |cfg| {
@@ -762,7 +743,7 @@ async fn command_processor(
             }
 
             BotCommand::QueueClear { user_id: _ } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state.lock();
                 if let Some(idx) = s.current_index {
                     s.queue.truncate(idx + 1);
                 } else {
@@ -771,7 +752,7 @@ async fn command_processor(
             }
 
             BotCommand::QueueRemove { index, user_id: _ } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state.lock();
                 s.remove(index);
             }
 
@@ -780,16 +761,12 @@ async fn command_processor(
                     Ok(tracks) => {
                         let mut msg = String::from("Search results:\n");
                         for (i, track) in tracks.iter().enumerate() {
-                            msg.push_str(&format!(
-                                "  {}: {} [{}]\n",
-                                i + 1,
-                                track.display_name(),
-                                track.duration_display()
-                            ));
+                            let _ = write!(msg, "  {}: {} [{}]\n",
+                                i + 1, track.display_name(), track.duration_display());
                         }
                         msg.push_str("Type a number to play, or a to cancel");
                         reply(user_id, &msg);
-                        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut s = state.lock();
                         s.search_results.insert(user_id, tracks);
                     }
                     Err(e) => {
@@ -800,12 +777,12 @@ async fn command_processor(
 
             BotCommand::SearchPick { user_id, pick, user_name } => {
                 let picked = {
-                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut s = state.lock();
                     let track = s.search_results.get(&user_id)
                         .and_then(|results| results.get(pick).cloned());
                     track.map(|track| {
                         s.search_results.remove(&user_id);
-                        let idle = !s.is_playing && !s.is_paused && !s.is_loading;
+                        let idle = s.status == PlaybackStatus::Idle;
                         if idle { s.clear(); }
                         let uri_str = track.uri.clone();
                         let track_name = track.display_name();
@@ -822,7 +799,7 @@ async fn command_processor(
                             send_event(RunnerEvent::Playing(track_name.clone()));
                         }
                     } else {
-                        let upcoming = queue_wait_info(&state.lock().unwrap_or_else(|e| e.into_inner()));
+                        let upcoming = queue_wait_info(&state.lock());
                         reply(user_id, &format!("Queued: {track_name}{upcoming}"));
                     }
                 } else {
@@ -857,7 +834,7 @@ async fn command_processor(
 
             BotCommand::PreloadNext => {
                 let next_uri = {
-                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let s = state.lock();
                     if s.repeat_track {
                         s.current().map(|e| e.track.uri.clone())
                     } else if let Some(idx) = s.current_index {
@@ -882,25 +859,25 @@ async fn command_processor(
             }
 
             BotCommand::RadioPreFetch { seed_uri } => {
-                let (radio_on, is_playing, current_uri, queue_at_end, allow_rec) = {
-                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let (radio_on, is_active, current_uri, queue_at_end, allow_rec) = {
+                    let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri.clone());
                     let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                    (s.radio_enabled, s.is_playing || s.is_paused, cur_uri, at_end, allow)
+                    (s.radio_enabled, s.status != PlaybackStatus::Idle, cur_uri, at_end, allow)
                 };
 
-                if radio_on && is_playing && allow_rec && current_uri.as_deref() == Some(&seed_uri) && queue_at_end {
+                if radio_on && is_active && allow_rec && current_uri.as_deref() == Some(&seed_uri) && queue_at_end {
                     if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
                         let played_ids: Vec<String> = {
-                            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                            let s = state.lock();
                             s.queue.iter().map(|e| e.track.id.clone()).collect()
                         };
                         match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
                             Ok(tracks) if !tracks.is_empty() => {
                                 let count = tracks.len();
                                 {
-                                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                    let mut s = state.lock();
                                     s.enqueue_all(tracks, "Radio".to_string(), true);
                                 }
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
@@ -939,16 +916,13 @@ async fn player_event_loop(
     while let Some(event) = events.recv().await {
         match event {
             PlayerEvent::Playing { position_ms, .. } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.is_playing = true;
-                s.is_paused = false;
-                s.is_loading = false;
+                let mut s = state.lock();
+                s.status = PlaybackStatus::Playing;
                 s.position_ms = position_ms;
             }
             PlayerEvent::Paused { position_ms, .. } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.is_playing = false;
-                s.is_paused = true;
+                let mut s = state.lock();
+                s.status = PlaybackStatus::Paused;
                 s.position_ms = position_ms;
             }
             PlayerEvent::EndOfTrack { .. } => {
@@ -965,7 +939,7 @@ async fn player_event_loop(
             PlayerEvent::PositionChanged { position_ms, .. }
             | PlayerEvent::PositionCorrection { position_ms, .. }
             | PlayerEvent::Seeked { position_ms, .. } => {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let mut s = state.lock();
                 s.position_ms = position_ms;
             }
             _ => {}
