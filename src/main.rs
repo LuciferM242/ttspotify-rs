@@ -1,20 +1,10 @@
-mod audio;
-mod bot;
-mod config;
-mod error;
-mod logging;
-mod service;
-mod spotify;
-mod tt;
-mod wizard;
-
 use std::sync::Arc;
 
 use clap::Parser;
 
-use crate::bot::runner::BotExit;
-use crate::config::BotConfig;
-use crate::error::BotError;
+use tt_spotify_bot::bot::runner::BotExit;
+use tt_spotify_bot::config::BotConfig;
+use tt_spotify_bot::error::BotError;
 
 #[derive(Parser)]
 #[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot")]
@@ -46,26 +36,22 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), BotError> {
-    // Parse CLI args
     let args = Args::parse();
 
-    // Handle setup wizard
     if let Some(ref name) = args.setup {
         let name = if name.is_empty() { None } else { Some(name.as_str()) };
-        return wizard::run_wizard(name);
+        return tt_spotify_bot::wizard::run_wizard(name);
     }
 
-    // Handle systemd service management (Linux only)
     if args.install_service {
-        return service::install_service();
+        return tt_spotify_bot::service::install_service();
     }
     if args.uninstall_service {
-        return service::uninstall_service();
+        return tt_spotify_bot::service::uninstall_service();
     }
 
-    // Handle --auth-status (read-only check, no connection)
     if args.auth_status {
-        let auth = spotify::auth::SpotifyAuth::new();
+        let auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
         if auth.has_cached_credentials() {
             println!("Spotify: Cached credentials found.");
             println!("  (Note: credentials may be expired or revoked.)");
@@ -77,7 +63,6 @@ async fn main() -> Result<(), BotError> {
         }
     }
 
-    // Handle --auth (standalone OAuth flow)
     if args.auth {
         tracing_subscriber::fmt()
             .with_target(false)
@@ -87,7 +72,7 @@ async fn main() -> Result<(), BotError> {
             )
             .init();
 
-        let mut auth = spotify::auth::SpotifyAuth::new();
+        let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
         match auth.connect().await {
             Ok(_) => {
                 println!("Spotify authentication successful. Credentials cached.");
@@ -100,26 +85,23 @@ async fn main() -> Result<(), BotError> {
         }
     }
 
-    // Resolve config path: explicit --config, or first config in platform config dir
     let config_path = args.config.unwrap_or_else(|| {
-        let configs = config::list_configs();
+        let configs = tt_spotify_bot::config::list_configs();
         if let Some((_, path)) = configs.first() {
             path.to_str().unwrap_or("data/config.json").to_string()
         } else {
-            config::config_dir().join("config.json").to_str()
+            tt_spotify_bot::config::config_dir().join("config.json").to_str()
                 .unwrap_or("data/config.json").to_string()
         }
     });
 
-    // Init logging (stdout + file)
-    let _log_guard = logging::init_logging(&config_path);
+    let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
 
     loop {
-        // Reload config each iteration so edits take effect on restart
         let config = BotConfig::load(&config_path)?;
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        match bot::runner::run_bot(config, config_path.clone(), shutdown, None).await? {
+        match tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None).await? {
             BotExit::Restart => {
                 tracing::info!("Restarting bot...");
                 continue;
