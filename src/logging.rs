@@ -70,7 +70,7 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
     guard
 }
 
-#[allow(dead_code)] // Used by gui/tray.rs (cfg(windows))
+#[cfg_attr(not(windows), allow(dead_code))]
 /// Initialize file-only logging (no stdout) as the global subscriber. Used by tray app.
 /// Logs to {log_dir}/{name}.log with thread names for per-instance identification.
 /// Returns a guard that must be kept alive for the file logger to flush.
@@ -91,7 +91,7 @@ pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
     guard
 }
 
-#[allow(dead_code)] // Used by gui/manager.rs (cfg(windows))
+#[cfg_attr(not(windows), allow(dead_code))]
 /// Create a per-instance file logger without setting it as the global subscriber.
 /// Returns a Dispatch and guard. Use `tracing::dispatcher::set_default()` on the
 /// target thread to activate it. Threads without a thread-local subscriber fall
