@@ -5,7 +5,7 @@
 set -e
 
 echo "Building Linux release..."
-cargo build --release --quiet
+cargo build --release --quiet --bin tt-spotify-bot
 
 echo "Building Windows release..."
 powershell.exe -ExecutionPolicy Bypass -Command "cargo build --release --quiet"
