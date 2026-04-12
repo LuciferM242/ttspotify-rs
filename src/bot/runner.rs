@@ -174,9 +174,9 @@ pub async fn run_bot(
     }
     send_event(RunnerEvent::Idle);
 
-    // Event loop runs on a blocking thread
+    // Event loop runs on a blocking thread.
+    // Reconnection is handled automatically by the SDK via enable_full_auto_reconnect().
     let event_client = client.clone();
-    let event_config = config.clone();
     let event_shutdown = shutdown.clone();
     let event_exit = exit_reason.clone();
     let event_event_tx = event_tx.clone();
@@ -190,70 +190,37 @@ pub async fn run_bot(
             }
 
             if let Some((event, message)) = event_client.poll(100) {
-                // Auto-reconnect on connection loss
-                if event == ::teamtalk::Event::ConnectionLost {
-                    tracing::warn!("Connection lost, attempting reconnect...");
-                    if let Some(ref tx) = event_event_tx {
-                        let _ = tx.send(RunnerEvent::Disconnected);
-                    }
-                    for attempt in 1..=5u64 {
-                        // Check shutdown during reconnect so tray/systemd can stop us
-                        if event_shutdown.load(Ordering::Relaxed) {
-                            break;
+                match event {
+                    ::teamtalk::Event::ConnectionLost => {
+                        tracing::warn!("Connection lost, SDK auto-reconnect will handle recovery");
+                        if let Some(ref tx) = event_event_tx {
+                            let _ = tx.send(RunnerEvent::Disconnected);
                         }
-                        std::thread::sleep(std::time::Duration::from_secs(2 * attempt));
-                        tracing::info!("Reconnect attempt {attempt}/5...");
-                        match event_client.reconnect(
-                            &event_config.host, event_config.tcp_port, event_config.udp_port, event_config.encrypted,
-                        ) {
-                            Ok(()) => {
-                                let mut connected = false;
-                                for _ in 0..50 {
-                                    if let Some((ev, _)) = event_client.poll(200) {
-                                        if ev == ::teamtalk::Event::ConnectSuccess {
-                                            connected = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if connected {
-                                    event_client.login(&event_config.bot_name, &event_config.username, &event_config.password, "TTSpotifyBot");
-                                    for _ in 0..50 {
-                                        if let Some((ev, _)) = event_client.poll(200) {
-                                            if ev == ::teamtalk::Event::MySelfLoggedIn { break; }
-                                        }
-                                    }
-                                    let ch_id = event_client.get_channel_id_from_path(&event_config.channel_name);
-                                    if ch_id.0 != 0 {
-                                        event_client.join_channel(ch_id, &event_config.channel_password);
-                                    }
-                                    tracing::info!("Reconnected successfully");
-                                    if let Some(ref tx) = event_event_tx {
-                                        let _ = tx.send(RunnerEvent::Connected);
-                                    }
+                    }
+                    ::teamtalk::Event::ConnectSuccess => {
+                        tracing::info!("Reconnected to server");
+                    }
+                    ::teamtalk::Event::MySelfLoggedIn => {
+                        tracing::info!("Re-logged in after reconnect");
+                        if let Some(ref tx) = event_event_tx {
+                            let _ = tx.send(RunnerEvent::Connected);
+                        }
+                    }
+                    ::teamtalk::Event::TextMessage => {
+                        if let Some(text_msg) = message.text() {
+                            if (text_msg.msg_type as i32) != 1 {
+                                continue;
+                            }
+                            let sender_id = text_msg.from_id.0;
+                            let my_id = event_client.my_id().0;
+                            if sender_id != my_id && !text_msg.text.is_empty() {
+                                if !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
                                     break;
                                 }
                             }
-                            Err(e) => tracing::warn!("Reconnect attempt {attempt} failed: {e}"),
                         }
                     }
-                    continue;
-                }
-
-                // Dispatch private messages only
-                if event == ::teamtalk::Event::TextMessage {
-                    if let Some(text_msg) = message.text() {
-                        if (text_msg.msg_type as i32) != 1 {
-                            continue;
-                        }
-                        let sender_id = text_msg.from_id.0;
-                        let my_id = event_client.my_id().0;
-                        if sender_id != my_id && !text_msg.text.is_empty() {
-                            if !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
-                                break; // quit/restart
-                            }
-                        }
-                    }
+                    _ => {}
                 }
             }
         }

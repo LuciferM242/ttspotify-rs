@@ -1,5 +1,7 @@
 use std::time::Duration;
 use teamtalk::{Client, Event};
+use teamtalk::client::connection::{ConnectParamsOwned, ReconnectConfig, ReconnectWorkflowConfig};
+use teamtalk::client::users::LoginParams;
 use teamtalk::types::{ChannelId, UserStatus};
 
 use crate::config::BotConfig;
@@ -50,7 +52,25 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     tracing::info!("Bot gender set to {:?}", gender);
 
     // Join channel
-    join_channel(&client, config)?;
+    let channel_id = join_channel(&client, config)?;
+
+    // Enable SDK auto-reconnect: handles reconnect -> re-login -> re-join automatically
+    let reconnect_config = ReconnectConfig {
+        max_attempts: 10,
+        min_delay: Duration::from_secs(2),
+        max_delay: Duration::from_secs(30),
+        ..Default::default()
+    };
+    client.enable_full_auto_reconnect(
+        reconnect_config,
+        ReconnectWorkflowConfig::default(),
+        ConnectParamsOwned::new(&config.host, config.tcp_port, config.udp_port, config.encrypted),
+        LoginParams::new(&config.bot_name, &config.username, &config.password, "TTSpotifyBot"),
+    );
+    if channel_id != ChannelId(0) {
+        client.set_last_channel(channel_id, Some(&config.channel_password));
+    }
+    tracing::info!("Auto-reconnect enabled");
 
     Ok(client)
 }
@@ -73,7 +93,7 @@ fn wait_for_event(client: &Client, target: Event, timeout_ms: i32, err_msg: &str
     }
 }
 
-fn join_channel(client: &Client, config: &BotConfig) -> Result<(), BotError> {
+fn join_channel(client: &Client, config: &BotConfig) -> Result<ChannelId, BotError> {
     let channel_path = &config.channel_name;
     tracing::info!("Joining channel '{channel_path}'...");
 
@@ -92,25 +112,26 @@ fn join_channel(client: &Client, config: &BotConfig) -> Result<(), BotError> {
         }
     }
 
-    if channel_id == ChannelId(0) {
+    let joined_id = if channel_id == ChannelId(0) {
         tracing::warn!("Channel '{channel_path}' not found, joining root channel");
         client.join_channel(ChannelId(1), &config.channel_password);
+        ChannelId(1)
     } else {
         client.join_channel(channel_id, &config.channel_password);
-    }
+        channel_id
+    };
 
     // Wait briefly for join to process
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if let Some((event, _)) = client.poll(100) {
-            // UserJoined for ourselves indicates we joined
             if event == Event::UserJoined {
                 tracing::info!("Joined channel successfully");
-                return Ok(());
+                return Ok(joined_id);
             }
         }
     }
 
     tracing::warn!("Channel join confirmation timeout, continuing anyway");
-    Ok(())
+    Ok(joined_id)
 }
