@@ -12,6 +12,20 @@ const VIRTUAL_DEVICE_ID: i32 = 1978;
 
 /// Set up the TeamTalk client: connect, login, init virtual devices, join channel.
 pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
+    // Set license before creating client (compile-time env vars take priority over config)
+    let license_name = option_env!("TT_LICENSE_NAME")
+        .map(String::from)
+        .or(config.license_name.clone());
+    let license_key = option_env!("TT_LICENSE_KEY")
+        .map(String::from)
+        .or(config.license_key.clone());
+
+    if let (Some(name), Some(key)) = (&license_name, &license_key) {
+        teamtalk::set_license(name, key)
+            .map_err(|e| BotError::TeamTalk(format!("Failed to set license: {e}")))?;
+        tracing::info!("TeamTalk license set for '{name}'");
+    }
+
     let client = Client::new()
         .map_err(|e| BotError::TeamTalk(format!("Failed to create client: {e}")))?;
 

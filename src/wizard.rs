@@ -122,6 +122,17 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
         None => return Ok(()),
     };
 
+    println!();
+    println!("License (optional)");
+    let license_name = match ask("License name", "", false) {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let license_key = match ask("License key", "", false) {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+
     // Build config from defaults + user input
     let mut config = BotConfig::default();
     config.host = host;
@@ -132,6 +143,12 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     config.bot_name = bot_name;
     config.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
     config.channel_password = channel_password;
+    if !license_name.is_empty() {
+        config.license_name = Some(license_name);
+    }
+    if !license_key.is_empty() {
+        config.license_key = Some(license_key);
+    }
 
     config.save(&config_path)?;
 

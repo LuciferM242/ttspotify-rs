@@ -80,6 +80,12 @@ pub struct BotConfig {
     #[serde(rename = "botGender")]
     pub bot_gender: String,
 
+    // TeamTalk license (optional, overridden by compile-time TT_LICENSE_NAME/TT_LICENSE_KEY)
+    #[serde(default, rename = "licenseName", skip_serializing_if = "Option::is_none")]
+    pub license_name: Option<String>,
+    #[serde(default, rename = "licenseKey", skip_serializing_if = "Option::is_none")]
+    pub license_key: Option<String>,
+
     // Spotify
     #[serde(rename = "spotifyQuality")]
     pub spotify_quality: String,
@@ -139,6 +145,8 @@ impl Default for BotConfig {
             channel_name: "/".to_string(),
             channel_password: String::new(),
             bot_gender: "neutral".to_string(),
+            license_name: None,
+            license_key: None,
 
             spotify_quality: "VERY_HIGH".to_string(),
             spotify_enable_normalization: true,

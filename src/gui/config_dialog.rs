@@ -60,6 +60,18 @@ pub fn open_config_dialog(
         &["neutral", "male", "female"],
         &config.bot_gender,
     );
+    let license_name_input = add_text_field(
+        &server_panel,
+        &server_sizer,
+        "License Name:",
+        config.license_name.as_deref().unwrap_or(""),
+    );
+    let license_key_input = add_text_field(
+        &server_panel,
+        &server_sizer,
+        "License Key:",
+        config.license_key.as_deref().unwrap_or(""),
+    );
 
     server_sizer.add_growable_col(1, 1);
     server_panel.set_sizer(server_sizer, true);
@@ -169,6 +181,10 @@ pub fn open_config_dialog(
         }
         cfg.channel_password = chanpass_input.get_value();
         cfg.bot_gender = gender_input.get_value();
+        let ln = license_name_input.get_value();
+        cfg.license_name = if ln.is_empty() { None } else { Some(ln) };
+        let lk = license_key_input.get_value();
+        cfg.license_key = if lk.is_empty() { None } else { Some(lk) };
 
         // Audio tab
         cfg.spotify_quality = quality_input.get_value();
