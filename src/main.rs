@@ -18,10 +18,12 @@ struct Args {
     setup: Option<String>,
 
     /// Install systemd user service (Linux only)
+    #[cfg(target_os = "linux")]
     #[arg(long)]
     install_service: bool,
 
     /// Remove systemd user service (Linux only)
+    #[cfg(target_os = "linux")]
     #[arg(long)]
     uninstall_service: bool,
 
@@ -43,9 +45,11 @@ async fn main() -> Result<(), BotError> {
         return tt_spotify_bot::wizard::run_wizard(name);
     }
 
+    #[cfg(target_os = "linux")]
     if args.install_service {
         return tt_spotify_bot::service::install_service();
     }
+    #[cfg(target_os = "linux")]
     if args.uninstall_service {
         return tt_spotify_bot::service::uninstall_service();
     }
@@ -88,10 +92,10 @@ async fn main() -> Result<(), BotError> {
     let config_path = args.config.unwrap_or_else(|| {
         let configs = tt_spotify_bot::config::list_configs();
         if let Some((_, path)) = configs.first() {
-            path.to_str().unwrap_or("data/config.json").to_string()
+            path.to_string_lossy().into_owned()
         } else {
-            tt_spotify_bot::config::config_dir().join("config.json").to_str()
-                .unwrap_or("data/config.json").to_string()
+            tt_spotify_bot::config::config_dir().join("config.json")
+                .to_string_lossy().into_owned()
         }
     });
 

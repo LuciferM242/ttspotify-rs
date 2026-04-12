@@ -3,6 +3,14 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BotError;
 
+/// Check whether a string is a recognised gender alias.
+pub fn is_valid_gender(s: &str) -> bool {
+    matches!(
+        s.to_lowercase().as_str(),
+        "male" | "m" | "man" | "female" | "f" | "woman" | "neutral" | "n" | "nb"
+    )
+}
+
 /// Parse a gender string into a TeamTalk UserGender.
 /// Accepts: male/m/man, female/f/woman, neutral/n/nb (and anything else defaults to Neutral).
 pub fn parse_gender(s: &str) -> ::teamtalk::types::UserGender {

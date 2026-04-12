@@ -109,7 +109,7 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
 
     println!();
     println!("Bot Settings");
-    let bot_name = match ask("Bot nickname", "MusicBot", true) {
+    let bot_name = match ask("Bot nickname", "Spotify", true) {
         Some(v) => v,
         None => return Ok(()),
     };

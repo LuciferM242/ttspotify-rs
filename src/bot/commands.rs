@@ -44,6 +44,30 @@ pub enum PlaybackMode {
     Off,
 }
 
+/// Send a reply to a user, splitting at line boundaries if it exceeds 500 chars.
+pub fn send_reply(client: &Client, user_id: i32, text: &str) {
+    const MAX_LEN: usize = 500;
+    let uid = ::teamtalk::types::UserId(user_id);
+    if text.len() <= MAX_LEN {
+        client.send_to_user(uid, text);
+        return;
+    }
+    let mut chunk = String::new();
+    for line in text.lines() {
+        if !chunk.is_empty() && chunk.len() + 1 + line.len() > MAX_LEN {
+            client.send_to_user(uid, &chunk);
+            chunk.clear();
+        }
+        if !chunk.is_empty() {
+            chunk.push('\n');
+        }
+        chunk.push_str(line);
+    }
+    if !chunk.is_empty() {
+        client.send_to_user(uid, &chunk);
+    }
+}
+
 /// Shared resources for command dispatch.
 pub struct CommandDispatcher {
     pub state: SharedState,
@@ -61,27 +85,7 @@ impl CommandDispatcher {
     }
 
     fn reply(&self, client: &Client, user_id: i32, text: &str) {
-        const MAX_LEN: usize = 500;
-        let uid = ::teamtalk::types::UserId(user_id);
-        if text.len() <= MAX_LEN {
-            client.send_to_user(uid, text);
-            return;
-        }
-        // Split on line boundaries, never mid-line
-        let mut chunk = String::new();
-        for line in text.lines() {
-            if !chunk.is_empty() && chunk.len() + 1 + line.len() > MAX_LEN {
-                client.send_to_user(uid, &chunk);
-                chunk.clear();
-            }
-            if !chunk.is_empty() {
-                chunk.push('\n');
-            }
-            chunk.push_str(line);
-        }
-        if !chunk.is_empty() {
-            client.send_to_user(uid, &chunk);
-        }
+        send_reply(client, user_id, text);
     }
 
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
@@ -137,7 +141,7 @@ impl CommandDispatcher {
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
-                    self.reply(client, sender_id,"Searching...");
+                    self.reply(client, sender_id, "Searching...");
                 } else {
                     let status = self.state.lock().status;
                     match status {
@@ -185,9 +189,9 @@ impl CommandDispatcher {
                         state.mode_display()
                     );
                     drop(state);
-                    self.reply(client, sender_id,&msg);
+                    self.reply(client, sender_id, &msg);
                 } else {
-                    self.reply(client, sender_id,"Nothing playing");
+                    self.reply(client, sender_id, "Nothing playing");
                 }
             }
 
@@ -195,11 +199,11 @@ impl CommandDispatcher {
             "queue" => {
                 if args.starts_with("clear") {
                     self.send(BotCommand::QueueClear { user_id: sender_id });
-                    self.reply(client, sender_id,"Queue cleared");
+                    self.reply(client, sender_id, "Queue cleared");
                 } else if let Some(rest) = args.strip_prefix("rm ") {
                     if let Ok(n) = rest.trim().parse::<usize>() {
                         if n == 0 {
-                            self.reply(client, sender_id,"Index starts at 1");
+                            self.reply(client, sender_id, "Index starts at 1");
                         } else {
                             // Offset from current position (rm 1 = next upcoming track)
                             let state = self.state.lock();
@@ -219,7 +223,7 @@ impl CommandDispatcher {
                     let state = self.state.lock();
                     let display = state.queue_display();
                     drop(state);
-                    self.reply(client, sender_id,&display);
+                    self.reply(client, sender_id, &display);
                 }
             }
 
@@ -228,25 +232,25 @@ impl CommandDispatcher {
                 match args.trim() {
                     "r" | "repeat" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatTrack, user_id: sender_id });
-                        self.reply(client, sender_id,"Repeat track enabled");
+                        self.reply(client, sender_id, "Repeat track enabled");
                     }
                     "rq" | "repeat_queue" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatQueue, user_id: sender_id });
-                        self.reply(client, sender_id,"Repeat queue enabled");
+                        self.reply(client, sender_id, "Repeat queue enabled");
                     }
                     "s" | "shuffle" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::Shuffle, user_id: sender_id });
-                        self.reply(client, sender_id,"Shuffle enabled");
+                        self.reply(client, sender_id, "Shuffle enabled");
                     }
                     "off" | "o" | "none" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::Off, user_id: sender_id });
-                        self.reply(client, sender_id,"All modes disabled");
+                        self.reply(client, sender_id, "All modes disabled");
                     }
                     _ => {
                         let state = self.state.lock();
                         let display = state.mode_display();
                         drop(state);
-                        self.reply(client, sender_id,&format!("{display}\nUsage: mode [r|rq|s|off]"));
+                        self.reply(client, sender_id, &format!("{display}\nUsage: mode [r|rq|s|off]"));
                     }
                 }
             }
@@ -271,11 +275,11 @@ impl CommandDispatcher {
                         let capped = (vol as u8).min(self.max_volume);
                         self.volume.store(capped, Ordering::Relaxed);
                         self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
-                        self.reply(client, sender_id,&format!("Volume: {capped}%"));
+                        self.reply(client, sender_id, &format!("Volume: {capped}%"));
                     }
                 } else {
                     let vol = self.volume.load(Ordering::Relaxed);
-                    self.reply(client, sender_id,&format!("Volume: {vol}% (max: {})", self.max_volume));
+                    self.reply(client, sender_id, &format!("Volume: {vol}% (max: {})", self.max_volume));
                 }
             }
 
@@ -287,7 +291,7 @@ impl CommandDispatcher {
                 let secs: i32 = num_str.parse().unwrap_or(10);
                 self.send(BotCommand::Seek { offset_ms: direction * secs * 1000, user_id: sender_id });
                 let dir_word = if direction > 0 { "forward" } else { "backward" };
-                self.reply(client, sender_id,&format!("Seeking {dir_word} {secs}s"));
+                self.reply(client, sender_id, &format!("Seeking {dir_word} {secs}s"));
             }
 
             // -- Search --
@@ -297,7 +301,7 @@ impl CommandDispatcher {
                         query: args.to_string(),
                         user_id: sender_id,
                     });
-                    self.reply(client, sender_id,"Searching...");
+                    self.reply(client, sender_id, "Searching...");
                 } else {
                     // Re-display active search results if available
                     let state = self.state.lock();
@@ -381,21 +385,20 @@ impl CommandDispatcher {
             "cn" => {
                 if !args.is_empty() {
                     self.send(BotCommand::ChangeNick { name: args.to_string(), user_id: sender_id });
-                    self.reply(client, sender_id,&format!("Nickname: {args}"));
+                    self.reply(client, sender_id, &format!("Nickname: {args}"));
                 }
             }
             "gender" => {
                 let g = args.trim().to_lowercase();
-                match g.as_str() {
-                    "male" | "m" | "man" | "female" | "f" | "woman" | "neutral" | "n" | "nb" => {
-                        self.send(BotCommand::SetGender { gender: g.clone(), user_id: sender_id });
-                        self.reply(client, sender_id,&format!("Gender: {g}"));
-                    }
-                    _ => self.reply(client, sender_id,"Usage: gender [male|female|neutral]"),
+                if crate::config::is_valid_gender(&g) {
+                    self.send(BotCommand::SetGender { gender: g.clone(), user_id: sender_id });
+                    self.reply(client, sender_id, &format!("Gender: {g}"));
+                } else {
+                    self.reply(client, sender_id, "Usage: gender [male|female|neutral]");
                 }
             }
             "info" | "about" => {
-                self.reply(client, sender_id,&format!(
+                self.reply(client, sender_id, &format!(
                     "TeamTalk Spotify Bot (Rust) v{}",
                     env!("CARGO_PKG_VERSION")
                 ));
@@ -419,12 +422,12 @@ impl CommandDispatcher {
                 ));
             }
             "q" | "quit" => {
-                self.reply(client, sender_id,"Shutting down...");
+                self.reply(client, sender_id, "Shutting down...");
                 self.send(BotCommand::Quit { user_id: sender_id });
                 return false;
             }
             "rs" | "restart" => {
-                self.reply(client, sender_id,"Restarting...");
+                self.reply(client, sender_id, "Restarting...");
                 self.send(BotCommand::Restart { user_id: sender_id });
                 return false;
             }

@@ -31,7 +31,7 @@ pub enum BotExit {
 
 /// Status events sent to the tray (or any observer).
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // All variants used via gui module (cfg(windows))
+#[cfg_attr(not(windows), allow(dead_code))]
 pub enum RunnerEvent {
     Connecting,
     Authenticating,
@@ -382,7 +382,7 @@ async fn command_processor(
 
     let reply = |user_id: i32, text: &str| {
         if user_id > 0 {
-            client.send_to_user(::teamtalk::types::UserId(user_id), text);
+            crate::bot::commands::send_reply(&client, user_id, text);
         }
     };
 
@@ -792,11 +792,27 @@ async fn command_processor(
 
             BotCommand::SetGender { gender, user_id: _ } => {
                 let new_gender = crate::config::parse_gender(&gender);
+                let status_text = {
+                    let s = state.lock();
+                    match s.current() {
+                        Some(entry) => {
+                            let name = entry.track.display_name();
+                            let total = s.queue.len();
+                            if total > 1 {
+                                let pos = s.current_index.map(|i| i + 1).unwrap_or(1);
+                                format!("{name} [{pos}/{total}]")
+                            } else {
+                                name
+                            }
+                        }
+                        None => "Idle".to_string(),
+                    }
+                };
                 let status = ::teamtalk::types::UserStatus {
                     gender: new_gender,
                     ..Default::default()
                 };
-                client.set_status(status, "Idle");
+                client.set_status(status, &status_text);
                 crate::config::BotConfig::update(&config_path, |cfg| {
                     cfg.bot_gender = gender;
                 });
