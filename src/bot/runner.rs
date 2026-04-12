@@ -762,6 +762,11 @@ async fn command_processor(
                             let status_text = now_playing_status(&track_name, &state);
                             set_status(&status_text);
                             send_event(RunnerEvent::Playing(track_name.clone()));
+
+                            let radio_on = state.lock().radio_enabled;
+                            if radio_on {
+                                schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
+                            }
                         }
                     } else {
                         let upcoming = queue_wait_info(&state.lock());
