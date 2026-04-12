@@ -558,6 +558,15 @@ async fn command_processor(
             }
 
             BotCommand::Next { user_id } => {
+                // Capture current track info before advance() clears current_index
+                let (pre_seed_uri, pre_allow_rec, pre_played_ids) = {
+                    let s = state.lock();
+                    let seed = s.current().map(|e| e.track.uri.clone());
+                    let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
+                    let played: Vec<String> = s.queue.iter().map(|e| e.track.id.clone()).collect();
+                    (seed, allow, played)
+                };
+
                 let next = {
                     let mut s = state.lock();
                     s.advance().map(|e| (e.track.uri.clone(), e.track.display_name()))
@@ -580,19 +589,13 @@ async fn command_processor(
                         schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
                     }
                 } else {
-                    let (radio_on, allow_rec, seed_uri, played_ids) = {
-                        let s = state.lock();
-                        let seed = s.current().map(|e| e.track.uri.clone());
-                        let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                        let played: Vec<String> = s.queue.iter().map(|e| e.track.id.clone()).collect();
-                        (s.radio_enabled, allow, seed, played)
-                    };
+                    let radio_on = state.lock().radio_enabled;
 
-                    if radio_on && allow_rec {
-                        if let Some(seed) = seed_uri {
+                    if radio_on && pre_allow_rec {
+                        if let Some(seed) = pre_seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
                                 reply(user_id, "Radio: fetching recommendations...");
-                                match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids)) {
+                                match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
                                         let first_uri = tracks[0].uri.clone();
                                         let first_name = tracks[0].display_name();
@@ -620,13 +623,8 @@ async fn command_processor(
                                 }
                             }
                         }
-                    } else {
-                        player.stop();
-                        let mut s = state.lock();
-                        s.status = PlaybackStatus::Idle;
-                        set_status("Idle");
+                    } else if user_id > 0 {
                         reply(user_id, "End of queue");
-                        send_event(RunnerEvent::Idle);
                     }
                 }
             }

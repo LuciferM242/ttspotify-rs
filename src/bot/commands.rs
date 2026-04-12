@@ -339,16 +339,22 @@ impl CommandDispatcher {
             "radio" => {
                 let arg = args.trim().to_lowercase();
                 if arg.starts_with("on") {
-                    self.send(BotCommand::RadioToggle { enable: true, user_id: sender_id });
-                    self.reply(client, sender_id,"Radio enabled");
+                    if self.state.lock().radio_enabled {
+                        self.reply(client, sender_id, "Radio is already on");
+                    } else {
+                        self.send(BotCommand::RadioToggle { enable: true, user_id: sender_id });
+                        self.reply(client, sender_id, "Radio enabled");
+                    }
                 } else if arg.starts_with("off") {
-                    self.send(BotCommand::RadioToggle { enable: false, user_id: sender_id });
-                    self.reply(client, sender_id,"Radio disabled");
+                    if !self.state.lock().radio_enabled {
+                        self.reply(client, sender_id, "Radio is already off");
+                    } else {
+                        self.send(BotCommand::RadioToggle { enable: false, user_id: sender_id });
+                        self.reply(client, sender_id, "Radio disabled");
+                    }
                 } else {
-                    let state = self.state.lock();
-                    let status = if state.radio_enabled { "ON" } else { "OFF" };
-                    drop(state);
-                    self.reply(client, sender_id,&format!("Radio: {status}"));
+                    let status = if self.state.lock().radio_enabled { "ON" } else { "OFF" };
+                    self.reply(client, sender_id, &format!("Radio: {status}"));
                 }
             }
 
