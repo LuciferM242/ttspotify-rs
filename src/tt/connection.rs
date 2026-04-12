@@ -1,5 +1,5 @@
 use std::time::Duration;
-use teamtalk::{Client, Event};
+use teamtalk::Client;
 use teamtalk::client::connection::{ConnectParamsOwned, ReconnectConfig, ReconnectWorkflowConfig};
 use teamtalk::client::users::LoginParams;
 use teamtalk::types::{ChannelId, UserStatus};
@@ -19,15 +19,14 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     tracing::info!("Connecting to TeamTalk server {}:{}...", config.host, config.tcp_port);
     client.connect(&config.host, config.tcp_port, config.udp_port, config.encrypted)
         .map_err(|e| BotError::TeamTalk(format!("Connection failed: {e}")))?;
-
-    // Wait for connection
-    wait_for_event(&client, Event::ConnectSuccess, 10_000, "Connection timeout")?;
+    client.wait_for(teamtalk::Event::ConnectSuccess, 10_000)
+        .ok_or_else(|| BotError::TeamTalk("Connection timeout".into()))?;
     tracing::info!("Connected to TeamTalk server");
 
     // Login
     tracing::info!("Logging in as '{}'...", config.bot_name);
-    client.login(&config.bot_name, &config.username, &config.password, "TTSpotifyBot");
-    wait_for_event(&client, Event::MySelfLoggedIn, 10_000, "Login timeout")?;
+    client.login_and_wait(&config.bot_name, &config.username, &config.password, "TTSpotifyBot", 10_000)
+        .map_err(|e| BotError::TeamTalk(format!("Login failed: {e}")))?;
     tracing::info!("Logged in successfully");
 
     // Init virtual sound devices for audio block injection
@@ -75,24 +74,6 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     Ok(client)
 }
 
-fn wait_for_event(client: &Client, target: Event, timeout_ms: i32, err_msg: &str) -> Result<(), BotError> {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(BotError::TeamTalk(err_msg.to_string()));
-        }
-        if let Some((event, _msg)) = client.poll(remaining.as_millis().min(100) as i32) {
-            if event == target {
-                return Ok(());
-            }
-            if event == Event::ConnectFailed || event == Event::ConnectionLost {
-                return Err(BotError::TeamTalk(format!("Connection lost/failed while waiting for {target:?}")));
-            }
-        }
-    }
-}
-
 fn join_channel(client: &Client, config: &BotConfig) -> Result<ChannelId, BotError> {
     let channel_path = &config.channel_name;
     tracing::info!("Joining channel '{channel_path}'...");
@@ -114,24 +95,15 @@ fn join_channel(client: &Client, config: &BotConfig) -> Result<ChannelId, BotErr
 
     let joined_id = if channel_id == ChannelId(0) {
         tracing::warn!("Channel '{channel_path}' not found, joining root channel");
-        client.join_channel(ChannelId(1), &config.channel_password);
         ChannelId(1)
     } else {
-        client.join_channel(channel_id, &config.channel_password);
         channel_id
     };
 
-    // Wait briefly for join to process
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline {
-        if let Some((event, _)) = client.poll(100) {
-            if event == Event::UserJoined {
-                tracing::info!("Joined channel successfully");
-                return Ok(joined_id);
-            }
-        }
+    match client.join_channel_and_wait(joined_id, &config.channel_password, 5_000) {
+        Ok(_) => tracing::info!("Joined channel successfully"),
+        Err(e) => tracing::warn!("Channel join did not confirm in time: {e}, continuing anyway"),
     }
 
-    tracing::warn!("Channel join confirmation timeout, continuing anyway");
     Ok(joined_id)
 }
