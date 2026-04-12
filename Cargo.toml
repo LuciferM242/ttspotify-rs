@@ -6,7 +6,7 @@ default-run = "tt-spotify-bot"
 
 [dependencies]
 # TeamTalk SDK (local)
-teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", branch = "main", features = ["bot", "bot-serde", "async-tokio", "logging"] }
+teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", branch = "main", features = ["logging"] }
 
 # Spotify (librespot - native Rust)
 librespot-core = "0.8"
