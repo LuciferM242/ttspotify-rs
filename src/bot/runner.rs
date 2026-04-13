@@ -174,8 +174,13 @@ pub async fn run_bot(
     }
     send_event(RunnerEvent::Idle);
 
+    // Track current channel for manual rejoin after reconnects.
+    // SDK auto-join is disabled so admin moves are respected.
+    let last_channel_id = Arc::new(parking_lot::Mutex::new(client.my_channel_id()));
+    let last_channel_pw = Arc::new(parking_lot::Mutex::new(config.channel_password.clone()));
+
     // Event loop runs on a blocking thread.
-    // Reconnection is handled automatically by the SDK via enable_full_auto_reconnect().
+    // Connection + login reconnect is handled by the SDK; channel rejoin is manual.
     let event_client = client.clone();
     let event_shutdown = shutdown.clone();
     let event_exit = exit_reason.clone();
@@ -202,8 +207,28 @@ pub async fn run_bot(
                     }
                     ::teamtalk::Event::MySelfLoggedIn => {
                         tracing::info!("Re-logged in after reconnect");
+                        // Rejoin the last channel after reconnect
+                        let ch = event_client.my_channel_id();
+                        if ch == ::teamtalk::types::ChannelId(0) {
+                            let rejoin_ch = *last_channel_id.lock();
+                            if rejoin_ch != ::teamtalk::types::ChannelId(0) {
+                                let pw = last_channel_pw.lock().clone();
+                                match event_client.join_channel_and_wait(rejoin_ch, &pw, 5_000) {
+                                    Ok(_) => tracing::info!("Rejoined channel {} after reconnect", rejoin_ch.0),
+                                    Err(e) => tracing::warn!("Failed to rejoin channel after reconnect: {e}"),
+                                }
+                            }
+                        }
                         if let Some(ref tx) = event_event_tx {
                             let _ = tx.send(RunnerEvent::Connected);
+                        }
+                    }
+                    ::teamtalk::Event::UserJoined => {
+                        if let Some(user) = message.user() {
+                            if user.id == event_client.my_id() && user.channel_id != ::teamtalk::types::ChannelId(0) {
+                                *last_channel_id.lock() = user.channel_id;
+                                tracing::info!("Now in channel {}", user.channel_id.0);
+                            }
                         }
                     }
                     ::teamtalk::Event::TextMessage => {

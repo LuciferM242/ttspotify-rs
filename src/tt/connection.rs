@@ -65,24 +65,29 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     tracing::info!("Bot gender set to {:?}", gender);
 
     // Join channel
-    let channel_id = join_channel(&client, config)?;
+    let _channel_id = join_channel(&client, config)?;
 
-    // Enable SDK auto-reconnect: handles reconnect -> re-login -> re-join automatically
+    // Enable SDK auto-reconnect for connection + login only.
+    // Channel rejoin is handled by the event loop so admin moves are respected.
     let reconnect_config = ReconnectConfig {
         max_attempts: 10,
         min_delay: Duration::from_secs(2),
         max_delay: Duration::from_secs(30),
         ..Default::default()
     };
+    let workflow = ReconnectWorkflowConfig {
+        join: ReconnectConfig {
+            max_attempts: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     client.enable_full_auto_reconnect(
         reconnect_config,
-        ReconnectWorkflowConfig::default(),
+        workflow,
         ConnectParamsOwned::new(&config.host, config.tcp_port, config.udp_port, config.encrypted),
         LoginParams::new(&config.bot_name, &config.username, &config.password, "TTSpotifyBot"),
     );
-    if channel_id != ChannelId(0) {
-        client.set_last_channel(channel_id, Some(&config.channel_password));
-    }
     tracing::info!("Auto-reconnect enabled");
 
     Ok(client)
