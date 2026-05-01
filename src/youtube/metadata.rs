@@ -1,27 +1,57 @@
 use std::sync::Arc;
 
 use rustypipe::client::RustyPipe;
-use rustypipe::param::StreamFilter;
 
+use crate::config::BotConfig;
 use crate::error::BotError;
+use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
 use crate::youtube::types::YouTubeTrack;
 
-/// YouTube Music metadata service backed by rustypipe.
+/// YouTube Music metadata service.
 ///
-/// Configured with `no_botguard()` so it uses TV/embedded clients that
-/// don't require PO tokens. No external `rustypipe-botguard` binary
-/// needed.
+/// Search and track metadata go through rustypipe (fast, native).
+/// Stream URL resolution goes through `yt-dlp` because rustypipe's
+/// signature deobfuscator can't keep up with YouTube's player JS
+/// changes.
 pub struct YouTubeMetadata {
     client: Arc<RustyPipe>,
+    /// Path passed to `yt-dlp --cookies <file>`. Empty = don't pass.
+    /// Resolved at init: explicit config override → falls back to the
+    /// default `<config_dir>/cookies.txt` if it exists → empty.
+    cookies_file: String,
+    /// Resolved paths for the bundled binaries + plugin dir.
+    /// `Some` if the bot can find them; `None` falls back to PATH.
+    bundle: Option<YoutubeSetupPaths>,
 }
 
 impl YouTubeMetadata {
-    pub fn new() -> Result<Self, BotError> {
+    pub fn new(config: &BotConfig) -> Result<Self, BotError> {
         let client = RustyPipe::builder()
             .no_botguard()
             .build()
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
-        Ok(Self { client: Arc::new(client) })
+        // Resolve bundled paths but don't require them — falling back to PATH
+        // keeps the manual-install path working.
+        let bundle = resolve_paths().ok().filter(|p| p.yt_dlp.is_file());
+
+        // Cookies: explicit override wins; otherwise look for the default path.
+        let cookies_file = if !config.youtube_cookies_file.is_empty() {
+            config.youtube_cookies_file.clone()
+        } else {
+            let default = default_cookies_path();
+            if default.is_file() {
+                tracing::info!("YouTube: auto-loaded cookies from {}", default.display());
+                default.to_string_lossy().into_owned()
+            } else {
+                String::new()
+            }
+        };
+
+        Ok(Self {
+            client: Arc::new(client),
+            cookies_file,
+            bundle,
+        })
     }
 
     /// Search YouTube Music for tracks matching the query.
@@ -45,21 +75,62 @@ impl YouTubeMetadata {
         }
     }
 
-    /// Resolve a YouTube video ID to a direct AAC/M4A audio stream URL.
-    /// Filters to AAC codec only — that's what symphonia decodes today.
-    pub async fn get_audio_url(&self, video_id: &str) -> Result<String, BotError> {
-        let player = self.client.query()
-            .player(video_id)
-            .await
-            .map_err(|e| BotError::Playback(format!("YouTube player fetch failed: {e}")))?;
+    /// Spawn yt-dlp as a child process that streams M4A audio bytes to its
+    /// stdout. The caller owns the `Child` — drop or kill it to stop the
+    /// download (and free the pipe). yt-dlp handles all of YouTube's
+    /// header/cookie/fragment requirements.
+    pub fn spawn_ytdlp(&self, video_id: &str) -> Result<std::process::Child, BotError> {
+        use std::process::{Command, Stdio};
+        let url = format!("https://www.youtube.com/watch?v={video_id}");
 
-        let filter = StreamFilter::default()
-            .audio_codecs(vec![rustypipe::model::AudioCodec::Mp4a]);
+        // Lookup order: yt-dlp on PATH first (lets users keep a system-wide
+        // up-to-date install), then <exe-dir>/lib/yt-dlp as bundled fallback.
+        let mut cmd = if which("yt-dlp").is_some() {
+            Command::new("yt-dlp")
+        } else if let Some(b) = &self.bundle {
+            Command::new(&b.yt_dlp)
+        } else {
+            Command::new("yt-dlp") // last resort; will fail with NotFound
+        };
+        cmd.args([
+            "--no-warnings",
+            "--no-playlist",
+            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "-o", "-",
+        ]);
 
-        let stream = player.select_audio_stream(&filter)
-            .ok_or_else(|| BotError::Playback("No AAC audio stream available".to_string()))?;
+        // Wire the bgutil-pot plugin and binary if bundled.
+        if let Some(b) = &self.bundle {
+            if b.plugin_dir.is_dir() {
+                cmd.arg("--plugin-dirs");
+                cmd.arg(&b.plugin_dir);
+            }
+            if b.bgutil_pot.is_file() {
+                cmd.arg("--extractor-args");
+                cmd.arg(format!(
+                    "youtubepot-bgutilscript:script_path={}",
+                    b.bgutil_pot.display()
+                ));
+            }
+        }
 
-        Ok(stream.url.clone())
+        // Cookies (optional, helps with rate-limited / age-restricted videos).
+        if !self.cookies_file.is_empty() {
+            cmd.arg("--cookies");
+            cmd.arg(&self.cookies_file);
+        }
+
+        cmd.arg("--").arg(&url)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => BotError::Playback(
+                    "yt-dlp not found. Run: tt-spotify-bot --setup-youtube".to_string()
+                ),
+                _ => BotError::Playback(format!("yt-dlp spawn: {e}")),
+            })
     }
 }
 

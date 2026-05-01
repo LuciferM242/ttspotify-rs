@@ -7,7 +7,8 @@
 //! From the pipeline's perspective YouTube and Spotify are indistinguishable
 //! producers.
 
-use std::io::Cursor;
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::process::{Child, ChildStdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +20,7 @@ use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use tokio::sync::mpsc::UnboundedSender;
@@ -125,44 +126,104 @@ impl MediaPlayer for YouTubePlayer {
     }
 }
 
-/// Resolve the audio URL, download, decode + resample on a blocking worker,
-/// stream Vec<i16> frames into `audio_tx`. Honors `ctrl.stopped` and
-/// `ctrl.paused` flags. Returns once the track ends or is cancelled.
+/// Spawn yt-dlp, then decode + resample its stdout on a blocking worker as
+/// bytes arrive. Audio starts playing within a second; livestreams and
+/// hour-long videos work without buffering the whole file.
+///
+/// `ctrl.stopped` set during playback kills the yt-dlp subprocess.
 async fn play_track(
     video_id: String,
     metadata: Arc<YouTubeMetadata>,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
 ) -> Result<(), String> {
-    // 1. Resolve direct stream URL.
-    let url = metadata.get_audio_url(&video_id).await
-        .map_err(|e| format!("URL resolve: {e}"))?;
+    let mut child = metadata.spawn_ytdlp(&video_id)
+        .map_err(|e| format!("yt-dlp spawn: {e}"))?;
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "yt-dlp stdout was not piped".to_string())?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "yt-dlp stderr was not piped".to_string())?;
 
-    // 2. Download the whole M4A blob. Music tracks are 3-10 MB; fits in memory.
-    let bytes = reqwest::get(&url).await
-        .map_err(|e| format!("HTTP fetch: {e}"))?
-        .bytes().await
-        .map_err(|e| format!("HTTP body read: {e}"))?
-        .to_vec();
+    // Drain stderr in the background so yt-dlp doesn't block on a full pipe,
+    // and so we can surface its output on errors.
+    let stderr_handle = std::thread::spawn(move || -> String {
+        let mut buf = String::new();
+        let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stderr), &mut buf);
+        buf
+    });
 
-    if ctrl.stopped.load(Ordering::Relaxed) {
-        return Ok(());
-    }
+    let ctrl_for_kill = ctrl.clone();
+    let mut child_for_kill = child;
+    let watcher_handle = std::thread::spawn(move || -> Option<std::process::ExitStatus> {
+        loop {
+            if ctrl_for_kill.stopped.load(Ordering::Relaxed) {
+                let _ = child_for_kill.kill();
+                return child_for_kill.wait().ok();
+            }
+            match child_for_kill.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+                Err(_) => return None,
+            }
+        }
+    });
 
-    // 3. Decode + resample on a blocking worker.
-    tokio::task::spawn_blocking(move || decode_and_stream(bytes, audio_tx, ctrl))
+    let decode_result = tokio::task::spawn_blocking(move || decode_and_stream(stdout, audio_tx, ctrl))
         .await
-        .map_err(|e| format!("decode worker join: {e}"))?
+        .map_err(|e| format!("decode worker join: {e}"))?;
+
+    let exit_status = watcher_handle.join().ok().flatten();
+    let stderr_text = stderr_handle.join().unwrap_or_default();
+
+    // If decode failed, surface yt-dlp's stderr — most likely the real cause.
+    if let Err(decode_err) = &decode_result {
+        let yt_err = stderr_text.lines()
+            .find(|l| l.to_lowercase().contains("error"))
+            .unwrap_or_else(|| stderr_text.lines().last().unwrap_or(""));
+        let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
+        return Err(format!(
+            "{decode_err} (yt-dlp exit={exit_code}, stderr: {})",
+            yt_err.chars().take(300).collect::<String>()
+        ));
+    }
+    decode_result
 }
 
-/// Sync decode + resample loop. Runs on a blocking worker thread.
+/// Non-seekable wrapper around yt-dlp's stdout pipe. Symphonia accepts
+/// non-seekable sources for fragmented/streaming MP4.
+struct PipeSource {
+    inner: BufReader<ChildStdout>,
+}
+
+impl Read for PipeSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl Seek for PipeSource {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "yt-dlp pipe is not seekable",
+        ))
+    }
+}
+
+impl MediaSource for PipeSource {
+    fn is_seekable(&self) -> bool { false }
+    fn byte_len(&self) -> Option<u64> { None }
+}
+
+/// Sync decode + resample loop. Runs on a blocking worker thread, reading
+/// from the yt-dlp child stdout pipe as bytes arrive.
 fn decode_and_stream(
-    bytes: Vec<u8>,
+    stdout: ChildStdout,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
 ) -> Result<(), String> {
-    let cursor = Cursor::new(bytes);
-    let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+    let source = PipeSource { inner: BufReader::with_capacity(64 * 1024, stdout) };
+    let mss = MediaSourceStream::new(Box::new(source), Default::default());
 
     let mut hint = Hint::new();
     hint.with_extension("m4a");

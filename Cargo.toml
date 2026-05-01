@@ -25,6 +25,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 symphonia = { version = "0.5", features = ["isomp4", "aac"] }
 rubato = "0.16"
 
+# Plugin zip extraction for the YouTube binaries auto-installer.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
