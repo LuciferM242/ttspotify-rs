@@ -304,10 +304,10 @@ pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String 
     // minus elapsed time on current track
     let mut wait_ms: u64 = 0;
     if let Some(current) = state.queue.get(current_idx) {
-        wait_ms += current.track.duration_ms.saturating_sub(state.position_ms) as u64;
+        wait_ms += current.track.duration_ms().saturating_sub(state.position_ms) as u64;
     }
     for entry in state.queue.iter().skip(current_idx + 1).take(upcoming_pos - 1) {
-        wait_ms += entry.track.duration_ms as u64;
+        wait_ms += entry.track.duration_ms() as u64;
     }
     let wait_min = (wait_ms + 30_000) / 60_000; // round to nearest minute
     let pos_str = match upcoming_pos {
@@ -490,6 +490,7 @@ async fn command_processor(
                             continue;
                         }
 
+                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                         let is_multi = query.contains("playlist") || query.contains("album");
                         let tracks_to_add = if is_multi {
                             tracks
@@ -498,7 +499,7 @@ async fn command_processor(
                         };
 
                         let first_name = tracks_to_add[0].display_name();
-                        let first_uri = tracks_to_add[0].uri.clone();
+                        let first_uri = tracks_to_add[0].uri().to_string();
                         let count = tracks_to_add.len();
 
                         // Hold lock across idle check + enqueue to prevent race
@@ -582,15 +583,15 @@ async fn command_processor(
                 // Capture current track info before advance() clears current_index
                 let (pre_seed_uri, pre_allow_rec, pre_played_ids) = {
                     let s = state.lock();
-                    let seed = s.current().map(|e| e.track.uri.clone());
+                    let seed = s.current().map(|e| e.track.uri().to_string());
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                    let played: Vec<String> = s.queue.iter().map(|e| e.track.id.clone()).collect();
+                    let played: Vec<String> = s.queue.iter().map(|e| e.track.id().to_string()).collect();
                     (seed, allow, played)
                 };
 
                 let next = {
                     let mut s = state.lock();
-                    s.advance().map(|e| (e.track.uri.clone(), e.track.display_name()))
+                    s.advance().map(|e| (e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = next {
                     if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
@@ -618,7 +619,8 @@ async fn command_processor(
                                 reply(user_id, "Radio: fetching recommendations...");
                                 match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
-                                        let first_uri = tracks[0].uri.clone();
+                                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
+                                        let first_uri = tracks[0].uri().to_string();
                                         let first_name = tracks[0].display_name();
                                         {
                                             let mut s = state.lock();
@@ -653,7 +655,7 @@ async fn command_processor(
             BotCommand::Prev { user_id } => {
                 let prev = {
                     let mut s = state.lock();
-                    s.go_prev().map(|e| (e.track.uri.clone(), e.track.display_name()))
+                    s.go_prev().map(|e| (e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((uri_str, name)) = prev {
                     if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
@@ -745,6 +747,7 @@ async fn command_processor(
             BotCommand::SearchOnly { query, user_id } => {
                 match with_reconnect!(metadata.search_tracks(&query, search_limit)) {
                     Ok(tracks) => {
+                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                         let mut msg = String::from("Search results:\n");
                         for (i, track) in tracks.iter().enumerate() {
                             let _ = write!(msg, "  {}: {} [{}]\n",
@@ -770,7 +773,7 @@ async fn command_processor(
                         s.search_results.remove(&user_id);
                         let idle = s.status == PlaybackStatus::Idle;
                         if idle { s.clear(); }
-                        let uri_str = track.uri.clone();
+                        let uri_str = track.uri().to_string();
                         let track_name = track.display_name();
                         s.enqueue(track, user_name, true);
                         (uri_str, track_name, idle)
@@ -841,13 +844,13 @@ async fn command_processor(
                 let next_uri = {
                     let s = state.lock();
                     if s.repeat_track {
-                        s.current().map(|e| e.track.uri.clone())
+                        s.current().map(|e| e.track.uri().to_string())
                     } else if let Some(idx) = s.current_index {
                         let next = idx + 1;
                         if next < s.queue.len() {
-                            Some(s.queue[next].track.uri.clone())
+                            Some(s.queue[next].track.uri().to_string())
                         } else if s.repeat_queue && !s.queue.is_empty() {
-                            Some(s.queue[0].track.uri.clone())
+                            Some(s.queue[0].track.uri().to_string())
                         } else {
                             None
                         }
@@ -866,7 +869,7 @@ async fn command_processor(
             BotCommand::RadioPreFetch { seed_uri } => {
                 let (radio_on, is_active, current_uri, queue_at_end, allow_rec) = {
                     let s = state.lock();
-                    let cur_uri = s.current().map(|e| e.track.uri.clone());
+                    let cur_uri = s.current().map(|e| e.track.uri().to_string());
                     let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     (s.radio_enabled, s.status != PlaybackStatus::Idle, cur_uri, at_end, allow)
@@ -876,10 +879,11 @@ async fn command_processor(
                     if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
                         let played_ids: Vec<String> = {
                             let s = state.lock();
-                            s.queue.iter().map(|e| e.track.id.clone()).collect()
+                            s.queue.iter().map(|e| e.track.id().to_string()).collect()
                         };
                         match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
                             Ok(tracks) if !tracks.is_empty() => {
+                                let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                                 let count = tracks.len();
                                 {
                                     let mut s = state.lock();
@@ -957,16 +961,17 @@ mod tests {
     use super::*;
     use crate::bot::state::PlayerState;
     use crate::spotify::types::SpotifyTrack;
+    use crate::track::Track;
 
-    fn track(id: &str, duration_ms: u32) -> SpotifyTrack {
-        SpotifyTrack {
+    fn track(id: &str, duration_ms: u32) -> Track {
+        Track::Spotify(SpotifyTrack {
             id: id.to_string(),
             name: format!("T{id}"),
             artists: vec!["A".to_string()],
             album: "Album".to_string(),
             duration_ms,
             uri: format!("spotify:track:{id}"),
-        }
+        })
     }
 
     fn enqueue(state: &mut PlayerState, durations_ms: &[u32]) {

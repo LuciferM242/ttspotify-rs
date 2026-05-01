@@ -382,7 +382,7 @@ impl CommandDispatcher {
             "link" | "url" => {
                 let state = self.state.lock();
                 if let Some(entry) = state.current() {
-                    let url = entry.track.uri
+                    let url = entry.track.uri()
                         .replace("spotify:track:", "https://open.spotify.com/track/")
                         .replace("spotify:episode:", "https://open.spotify.com/episode/");
                     drop(state);
