@@ -44,19 +44,26 @@ pub enum PlaybackMode {
     Off,
 }
 
-/// Send a reply to a user, splitting at line boundaries if it exceeds 500 chars.
-pub fn send_reply(client: &Client, user_id: i32, text: &str) {
-    const MAX_LEN: usize = 500;
-    let uid = ::teamtalk::types::UserId(user_id);
-    if text.len() <= MAX_LEN {
-        client.send_to_user(uid, text);
-        return;
+/// Maximum reply length before message-chunking kicks in.
+pub const MAX_REPLY_LEN: usize = 500;
+
+/// Split a message into chunks no larger than `max_len`, splitting on line
+/// boundaries (never mid-line). A line that is itself longer than `max_len` is
+/// returned as a single oversized chunk rather than truncated.
+///
+/// Empty input returns an empty Vec (nothing to send).
+pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
     }
+    if text.len() <= max_len {
+        return vec![text.to_string()];
+    }
+    let mut chunks = Vec::new();
     let mut chunk = String::new();
     for line in text.lines() {
-        if !chunk.is_empty() && chunk.len() + 1 + line.len() > MAX_LEN {
-            client.send_to_user(uid, &chunk);
-            chunk.clear();
+        if !chunk.is_empty() && chunk.len() + 1 + line.len() > max_len {
+            chunks.push(std::mem::take(&mut chunk));
         }
         if !chunk.is_empty() {
             chunk.push('\n');
@@ -64,6 +71,15 @@ pub fn send_reply(client: &Client, user_id: i32, text: &str) {
         chunk.push_str(line);
     }
     if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+/// Send a reply to a user, splitting at line boundaries if it exceeds MAX_REPLY_LEN.
+pub fn send_reply(client: &Client, user_id: i32, text: &str) {
+    let uid = ::teamtalk::types::UserId(user_id);
+    for chunk in chunk_message(text, MAX_REPLY_LEN) {
         client.send_to_user(uid, &chunk);
     }
 }
@@ -570,3 +586,104 @@ radio [on|off]
              Does not trigger for playlists or albums.
   radio off  Disable radio mode.
   radio      Show current radio status.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_message_empty_returns_empty_vec() {
+        assert!(chunk_message("", 500).is_empty());
+    }
+
+    #[test]
+    fn chunk_message_short_returns_single_chunk() {
+        let chunks = chunk_message("hello", 500);
+        assert_eq!(chunks, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn chunk_message_exactly_max_len_returns_single_chunk() {
+        let text = "a".repeat(500);
+        let chunks = chunk_message(&text, 500);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 500);
+    }
+
+    #[test]
+    fn chunk_message_multiline_under_max_returns_single_chunk() {
+        let text = "line one\nline two\nline three";
+        let chunks = chunk_message(text, 500);
+        assert_eq!(chunks, vec![text.to_string()]);
+    }
+
+    #[test]
+    fn chunk_message_splits_on_line_boundary_not_mid_line() {
+        // Build a message where each line is 60 chars; with max_len 100,
+        // each chunk should hold exactly one line (since 60+1+60 = 121 > 100).
+        let line = "x".repeat(60);
+        let text = format!("{line}\n{line}\n{line}");
+        let chunks = chunk_message(&text, 100);
+        assert_eq!(chunks.len(), 3);
+        for chunk in &chunks {
+            assert_eq!(chunk.len(), 60);
+            assert!(!chunk.contains('\n'), "chunk must not span line boundaries");
+        }
+    }
+
+    #[test]
+    fn chunk_message_packs_multiple_lines_per_chunk_when_they_fit() {
+        // Three 30-char lines, max 100. First two fit in one chunk
+        // (30 + 1 + 30 = 61), third forces a new chunk
+        // (61 + 1 + 30 = 92 fits actually). Use sizes that force 2 chunks:
+        // 40-char lines, max 100. 40 + 1 + 40 = 81 fits;
+        // 81 + 1 + 40 = 122 > 100 → second chunk.
+        let line = "y".repeat(40);
+        let text = format!("{line}\n{line}\n{line}");
+        let chunks = chunk_message(&text, 100);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], format!("{line}\n{line}"));
+        assert_eq!(chunks[1], line);
+    }
+
+    #[test]
+    fn chunk_message_oversized_single_line_returned_as_one_chunk() {
+        // Single line longer than max_len: current behavior is to return it as
+        // one oversized chunk rather than truncate or split mid-line.
+        let line = "z".repeat(700);
+        let chunks = chunk_message(&line, 500);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 700);
+    }
+
+    #[test]
+    fn chunk_message_short_input_is_returned_verbatim() {
+        // Short inputs (≤ max) round-trip exactly, including any trailing newline.
+        let text = "hello\n";
+        let chunks = chunk_message(text, 500);
+        assert_eq!(chunks, vec!["hello\n".to_string()]);
+    }
+
+    #[test]
+    fn chunk_message_long_input_with_trailing_newline_drops_empty_final_chunk() {
+        // When the message is split via `lines()`, a trailing newline does not
+        // emit an empty final element — `"a\n".lines()` yields just `["a"]`.
+        // Build something long enough to force the split path.
+        let line = "q".repeat(200);
+        let text = format!("{line}\n{line}\n{line}\n");
+        let chunks = chunk_message(&text, 250);
+        // Each line is 200 chars; 200+1+200=401 > 250, so each chunk = 1 line.
+        assert_eq!(chunks.len(), 3);
+        for c in &chunks {
+            assert_eq!(c.len(), 200);
+            assert!(!c.ends_with('\n'));
+        }
+    }
+
+    #[test]
+    fn chunk_message_blank_lines_in_middle_are_preserved() {
+        let text = "alpha\n\nbeta";
+        let chunks = chunk_message(text, 500);
+        assert_eq!(chunks, vec!["alpha\n\nbeta".to_string()]);
+    }
+}

@@ -242,3 +242,70 @@ impl BotConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::teamtalk::types::UserGender;
+
+    // -- is_valid_gender --
+
+    #[test]
+    fn is_valid_gender_male_aliases() {
+        for s in ["male", "m", "man", "MALE", "Man"] {
+            assert!(is_valid_gender(s), "{s} should be valid");
+        }
+    }
+
+    #[test]
+    fn is_valid_gender_female_aliases() {
+        for s in ["female", "f", "woman", "FEMALE", "Woman"] {
+            assert!(is_valid_gender(s), "{s} should be valid");
+        }
+    }
+
+    #[test]
+    fn is_valid_gender_neutral_aliases() {
+        for s in ["neutral", "n", "nb", "NEUTRAL", "NB"] {
+            assert!(is_valid_gender(s), "{s} should be valid");
+        }
+    }
+
+    #[test]
+    fn is_valid_gender_rejects_unknown() {
+        for s in ["", "other", "xyz", "ma", "fem", "neutral!"] {
+            assert!(!is_valid_gender(s), "{s} should be invalid");
+        }
+    }
+
+    // -- parse_gender --
+
+    #[test]
+    fn parse_gender_male_aliases() {
+        for s in ["male", "m", "man", "MALE", "Man"] {
+            assert_eq!(parse_gender(s), UserGender::Male, "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_gender_female_aliases() {
+        for s in ["female", "f", "woman", "FEMALE", "Woman"] {
+            assert_eq!(parse_gender(s), UserGender::Female, "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_gender_neutral_aliases() {
+        for s in ["neutral", "n", "nb", "NEUTRAL"] {
+            assert_eq!(parse_gender(s), UserGender::Neutral, "{s}");
+        }
+    }
+
+    #[test]
+    fn parse_gender_unknown_defaults_to_neutral() {
+        // parse_gender is "anything else defaults to Neutral" by design.
+        for s in ["", "xyz", "other"] {
+            assert_eq!(parse_gender(s), UserGender::Neutral, "{s}");
+        }
+    }
+}
