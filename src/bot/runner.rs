@@ -117,6 +117,7 @@ pub async fn run_bot(
 
     let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx);
     let metadata = SpotifyMetadata::new(session.clone());
+    let youtube_metadata = crate::youtube::metadata::YouTubeMetadata::new()?;
 
     // Exit signal: command_processor sets this instead of process::exit
     let exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>> =
@@ -127,6 +128,7 @@ pub async fn run_bot(
     let cmd_ctx = CmdContext {
         player,
         metadata,
+        youtube_metadata,
         session,
         state: state.clone(),
         client: client.clone(),
@@ -325,6 +327,7 @@ pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String 
 struct CmdContext {
     player: SpotifyPlayer,
     metadata: SpotifyMetadata,
+    youtube_metadata: crate::youtube::metadata::YouTubeMetadata,
     session: librespot_core::session::Session,
     state: SharedState,
     client: Arc<::teamtalk::Client>,
@@ -370,7 +373,7 @@ async fn command_processor(
 ) {
     // Destructure context for ergonomic access
     let CmdContext {
-        player, metadata, session, state, client,
+        player, metadata, youtube_metadata, session, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_path, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx,
@@ -491,14 +494,24 @@ async fn command_processor(
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BotCommand::SearchAndPlay { query, user_id, user_name } => {
-                match with_reconnect!(metadata.resolve(&query, search_limit)) {
+                let active = state.lock().active_service;
+                let result: Result<Vec<crate::track::Track>, BotError> = match active {
+                    crate::services::Service::Spotify => {
+                        with_reconnect!(metadata.resolve(&query, search_limit))
+                            .map(|v| v.into_iter().map(Into::into).collect())
+                    }
+                    crate::services::Service::YouTube => {
+                        youtube_metadata.search_tracks(&query, search_limit).await
+                            .map(|v| v.into_iter().map(Into::into).collect())
+                    }
+                };
+                match result {
                     Ok(tracks) => {
                         if tracks.is_empty() {
                             reply(user_id, "No results found");
                             continue;
                         }
 
-                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                         let is_multi = query.contains("playlist") || query.contains("album");
                         let tracks_to_add = if is_multi {
                             tracks
@@ -754,9 +767,19 @@ async fn command_processor(
             }
 
             BotCommand::SearchOnly { query, user_id } => {
-                match with_reconnect!(metadata.search_tracks(&query, search_limit)) {
+                let active = state.lock().active_service;
+                let result: Result<Vec<crate::track::Track>, BotError> = match active {
+                    crate::services::Service::Spotify => {
+                        with_reconnect!(metadata.search_tracks(&query, search_limit))
+                            .map(|v| v.into_iter().map(Into::into).collect())
+                    }
+                    crate::services::Service::YouTube => {
+                        youtube_metadata.search_tracks(&query, search_limit).await
+                            .map(|v| v.into_iter().map(Into::into).collect())
+                    }
+                };
+                match result {
                     Ok(tracks) => {
-                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                         let mut msg = String::from("Search results:\n");
                         for (i, track) in tracks.iter().enumerate() {
                             let _ = write!(msg, "  {}: {} [{}]\n",
