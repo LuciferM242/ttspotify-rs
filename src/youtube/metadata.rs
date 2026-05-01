@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rustypipe::client::RustyPipe;
+use rustypipe::param::StreamFilter;
 
 use crate::error::BotError;
 use crate::youtube::types::YouTubeTrack;
@@ -42,6 +43,23 @@ impl YouTubeMetadata {
         } else {
             Ok(tracks)
         }
+    }
+
+    /// Resolve a YouTube video ID to a direct AAC/M4A audio stream URL.
+    /// Filters to AAC codec only — that's what symphonia decodes today.
+    pub async fn get_audio_url(&self, video_id: &str) -> Result<String, BotError> {
+        let player = self.client.query()
+            .player(video_id)
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube player fetch failed: {e}")))?;
+
+        let filter = StreamFilter::default()
+            .audio_codecs(vec![rustypipe::model::AudioCodec::Mp4a]);
+
+        let stream = player.select_audio_stream(&filter)
+            .ok_or_else(|| BotError::Playback("No AAC audio stream available".to_string()))?;
+
+        Ok(stream.url.clone())
     }
 }
 

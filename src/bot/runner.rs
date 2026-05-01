@@ -115,9 +115,14 @@ pub async fn run_bot(
     let mut auth = crate::spotify::auth::SpotifyAuth::new();
     let session = auth.connect().await?;
 
-    let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx);
+    let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx.clone());
     let metadata = SpotifyMetadata::new(session.clone());
-    let youtube_metadata = crate::youtube::metadata::YouTubeMetadata::new()?;
+    let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new()?);
+    let youtube_player = crate::youtube::player::YouTubePlayer::new(
+        audio_tx,
+        youtube_metadata.clone(),
+        cmd_tx.clone(),
+    );
 
     // Exit signal: command_processor sets this instead of process::exit
     let exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>> =
@@ -129,6 +134,7 @@ pub async fn run_bot(
         player,
         metadata,
         youtube_metadata,
+        youtube_player,
         session,
         state: state.clone(),
         client: client.clone(),
@@ -327,7 +333,8 @@ pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String 
 struct CmdContext {
     player: SpotifyPlayer,
     metadata: SpotifyMetadata,
-    youtube_metadata: crate::youtube::metadata::YouTubeMetadata,
+    youtube_metadata: Arc<crate::youtube::metadata::YouTubeMetadata>,
+    youtube_player: crate::youtube::player::YouTubePlayer,
     session: librespot_core::session::Session,
     state: SharedState,
     client: Arc<::teamtalk::Client>,
@@ -373,7 +380,7 @@ async fn command_processor(
 ) {
     // Destructure context for ergonomic access
     let CmdContext {
-        player, metadata, youtube_metadata, session, state, client,
+        player, metadata, youtube_metadata, youtube_player, session, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_path, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx,
@@ -429,9 +436,11 @@ async fn command_processor(
         }
     };
 
-    let stop_playback = |player: &SpotifyPlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| {
+    let stop_playback = |player: &SpotifyPlayer, youtube_player: &crate::youtube::player::YouTubePlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| {
+        use crate::player::MediaPlayer as _;
         pause_flag.store(false, Ordering::Relaxed);
         player.stop();
+        youtube_player.stop();
         crate::tt::audio_inject::flush_audio(client);
         client.enable_voice_transmission(false);
         audio_reset.store(true, Ordering::Relaxed);
@@ -439,12 +448,14 @@ async fn command_processor(
         s.status = PlaybackStatus::Idle;
     };
 
-    let start_track = |service: crate::services::Service, uri_str: &str, player: &SpotifyPlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
+    let start_track = |service: crate::services::Service, uri_str: &str, player: &SpotifyPlayer, youtube_player: &crate::youtube::player::YouTubePlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
+        use crate::player::MediaPlayer;
         match service {
             crate::services::Service::Spotify => {
                 if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
                     pause_flag.store(false, Ordering::Relaxed);
                     player.stop();
+                    youtube_player.stop();
                     crate::tt::audio_inject::flush_audio(client);
                     client.enable_voice_transmission(false);
                     audio_reset.store(true, Ordering::Relaxed);
@@ -460,14 +471,27 @@ async fn command_processor(
                 }
             }
             crate::services::Service::YouTube => {
-                tracing::warn!("YouTube playback not implemented yet (uri={uri_str})");
-                false
+                pause_flag.store(false, Ordering::Relaxed);
+                player.stop();
+                youtube_player.stop();
+                crate::tt::audio_inject::flush_audio(client);
+                client.enable_voice_transmission(false);
+                audio_reset.store(true, Ordering::Relaxed);
+                youtube_player.load(uri_str);
+                {
+                    let mut s = state.lock();
+                    s.status = PlaybackStatus::Loading;
+                    s.tracks_played += 1;
+                }
+                true
             }
         }
     };
 
     let do_exit = |reason: BotExit| {
+        use crate::player::MediaPlayer as _;
         player.stop();
+        youtube_player.stop();
         set_status("Idle");
         send_event(RunnerEvent::Idle);
         {
@@ -536,7 +560,7 @@ async fn command_processor(
                         };
 
                         if is_idle {
-                            start_track(first_service, &first_uri, &player, &client, &state, &audio_reset, &pause_flag);
+                            start_track(first_service, &first_uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
                             if count > 1 {
                                 reply(user_id, &format!("Now playing: {first_name} (+{} queued)", count - 1));
                             } else {
@@ -572,9 +596,11 @@ async fn command_processor(
             }
 
             BotCommand::Play { user_id: _ } => {
+                use crate::player::MediaPlayer as _;
                 pause_flag.store(false, Ordering::Relaxed);
                 timing_reset.store(true, Ordering::Relaxed);
                 player.play();
+                youtube_player.play();
                 let mut s = state.lock();
                 s.status = PlaybackStatus::Playing;
                 if let Some(entry) = s.current() {
@@ -583,8 +609,10 @@ async fn command_processor(
             }
 
             BotCommand::Pause { user_id: _ } => {
+                use crate::player::MediaPlayer as _;
                 pause_flag.store(true, Ordering::Relaxed);
                 player.pause();
+                youtube_player.pause();
                 crate::tt::audio_inject::flush_audio(&client);
                 let mut s = state.lock();
                 s.status = PlaybackStatus::Paused;
@@ -592,7 +620,7 @@ async fn command_processor(
             }
 
             BotCommand::Stop { user_id: _ } => {
-                stop_playback(&player, &client, &state, &audio_reset, &pause_flag);
+                stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
                 {
                     let mut s = state.lock();
                     s.clear();
@@ -616,7 +644,7 @@ async fn command_processor(
                     s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((service, uri_str, name)) = next {
-                    if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                    if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
@@ -648,7 +676,7 @@ async fn command_processor(
                                             let mut s = state.lock();
                                             s.enqueue_all(tracks, "Radio".to_string(), true);
                                         }
-                                        if start_track(crate::services::Service::Spotify, &first_uri, &player, &client, &state, &audio_reset, &pause_flag) {
+                                        if start_track(crate::services::Service::Spotify, &first_uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
                                             reply(user_id, &format!("Radio: {first_name}"));
                                             let status_text = now_playing_status(&first_name, &state);
                                             set_status(&status_text);
@@ -680,7 +708,7 @@ async fn command_processor(
                     s.go_prev().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((service, uri_str, name)) = prev {
-                    if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                    if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
@@ -690,13 +718,19 @@ async fn command_processor(
             }
 
             BotCommand::Seek { offset_ms, user_id: _ } => {
-                let new_pos = {
+                use crate::player::MediaPlayer as _;
+                let (new_pos, service) = {
                     let s = state.lock();
                     let current = s.position_ms as i32;
-                    (current + offset_ms).max(0) as u32
+                    let pos = (current + offset_ms).max(0) as u32;
+                    let svc = s.current().map(|e| e.track.service()).unwrap_or(s.active_service);
+                    (pos, svc)
                 };
                 audio_reset.store(true, Ordering::Relaxed);
-                player.seek(new_pos);
+                match service {
+                    crate::services::Service::Spotify => player.seek(new_pos),
+                    crate::services::Service::YouTube => youtube_player.seek(new_pos),
+                }
             }
 
             BotCommand::SetVolume { .. } => {
@@ -814,7 +848,7 @@ async fn command_processor(
                 };
                 if let Some((service, uri_str, track_name, is_idle)) = picked {
                     if is_idle {
-                        if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                        if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
                             reply(user_id, &format!("Now playing: {track_name}"));
                             let status_text = now_playing_status(&track_name, &state);
                             set_status(&status_text);

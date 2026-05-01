@@ -18,6 +18,13 @@ librespot-oauth = "0.8"
 # YouTube (rustypipe - GPL-3)
 rustypipe = "0.11"
 
+# YouTube audio: HTTP fetch + decode + resample.
+# symphonia handles Opus and AAC/M4A (the two codecs YouTube serves).
+# rubato resamples 48k Opus down to the 44.1k pipeline rate.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+symphonia = { version = "0.5", features = ["isomp4", "aac"] }
+rubato = "0.16"
+
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
