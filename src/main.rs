@@ -34,6 +34,16 @@ struct Args {
     /// Check if Spotify credentials are cached and exit
     #[arg(long)]
     auth_status: bool,
+
+    /// Download YouTube support binaries (yt-dlp, bgutil-pot, plugin) into
+    /// the bot's lib/ folder. Skips if already installed.
+    #[arg(long)]
+    setup_yt: bool,
+
+    /// Update YouTube tools: runs `yt-dlp --update` for the binary's self-
+    /// update, then checks GitHub for a newer bgutil-pot release.
+    #[arg(long)]
+    update_tools: bool,
 }
 
 #[tokio::main]
@@ -64,6 +74,26 @@ async fn main() -> Result<(), BotError> {
             println!("Spotify: No cached credentials.");
             println!("  Run with --auth to authenticate.");
             std::process::exit(1);
+        }
+    }
+
+    if args.setup_yt {
+        match tt_spotify_bot::wizard::run_youtube_setup() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("YouTube setup failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.update_tools {
+        match tt_spotify_bot::wizard::run_update_tools() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Tool update failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
 

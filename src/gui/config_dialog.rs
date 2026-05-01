@@ -60,6 +60,13 @@ pub fn open_config_dialog(
         &["neutral", "male", "female"],
         &config.bot_gender,
     );
+    let default_service_input = add_combo_field(
+        &server_panel,
+        &server_sizer,
+        "Default Service:",
+        &["Spotify", "YouTube"],
+        config.default_service.name(),
+    );
     let license_name_input = add_text_field(
         &server_panel,
         &server_sizer,
@@ -71,6 +78,13 @@ pub fn open_config_dialog(
         &server_sizer,
         "License Key:",
         config.license_key.as_deref().unwrap_or(""),
+    );
+    let cookies_input = add_text_with_browse(
+        &server_panel,
+        &server_sizer,
+        frame,
+        "YT Cookies File:",
+        &config.youtube_cookies_file,
     );
 
     server_sizer.add_growable_col(1, 1);
@@ -181,6 +195,8 @@ pub fn open_config_dialog(
         }
         cfg.channel_password = chanpass_input.get_value();
         cfg.bot_gender = gender_input.get_value();
+        cfg.default_service = crate::services::Service::parse_or_default(&default_service_input.get_value());
+        cfg.youtube_cookies_file = cookies_input.get_value();
         let ln = license_name_input.get_value();
         cfg.license_name = if ln.is_empty() { None } else { Some(ln) };
         let lk = license_key_input.get_value();
@@ -274,6 +290,9 @@ pub fn open_config_dialog(
             return;
         }
 
+        // ---- YouTube setup prompt (post-save) ----
+        prompt_youtube_setup(&frame, &save_path, cfg.default_service);
+
         on_save(save_path);
         frame.close(true);
     });
@@ -348,5 +367,90 @@ fn add_combo_field(
     input.set_value(selected);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
+    input
+}
+
+// ---- YouTube setup post-save flow ----
+
+fn prompt_youtube_setup(parent: &Frame, _config_path: &std::path::Path, default_service: crate::services::Service) {
+    use crate::services::Service;
+    use crate::youtube::setup;
+    use MessageDialogStyle as MDS;
+
+    let paths = match setup::resolve_paths() {
+        Ok(p) => p,
+        Err(_) => return, // can't resolve — silently skip; not user-actionable
+    };
+
+    // Skip the entire prompt if binaries are already on disk.
+    if setup::is_installed(&paths) {
+        return;
+    }
+
+    let prompt = if default_service == Service::YouTube {
+        "YouTube support requires extra binaries (~50 MB: yt-dlp, bgutil-pot, plugin). Download now?"
+    } else {
+        "You can also enable YouTube support. This downloads ~50 MB of binaries (yt-dlp, bgutil-pot, plugin). Skip if you only need Spotify. Install YouTube support?"
+    };
+    let res = MessageDialog::builder(parent, prompt, "YouTube Support")
+        .with_style(MDS::YesNo | MDS::IconQuestion)
+        .build()
+        .show_modal();
+    if res != ID_YES {
+        return;
+    }
+
+    // Run install on a worker thread. UI freezes for ~5-10s during the download.
+    let install_result = std::thread::spawn(|| -> Result<(), String> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("tokio runtime: {e}"))?;
+        let paths = setup::resolve_paths().map_err(|e| e.to_string())?;
+        rt.block_on(setup::install(&paths, |line| {
+            tracing::info!("YT setup: {line}");
+        })).map_err(|e| e.to_string())
+    }).join().unwrap_or_else(|_| Err("install thread panicked".to_string()));
+
+    let msg = match install_result {
+        Ok(()) => "YouTube setup complete.".to_string(),
+        Err(e) => format!("Install failed: {e}"),
+    };
+    let icon = if msg.starts_with("Install failed") { MDS::IconError } else { MDS::IconInformation };
+    MessageDialog::builder(parent, &msg, "YouTube Support")
+        .with_style(MDS::OK | icon)
+        .build()
+        .show_modal();
+}
+
+/// Text field with a Browse... button next to it, suitable for picking a file path.
+fn add_text_with_browse(
+    parent: &Panel,
+    sizer: &FlexGridSizer,
+    frame: Frame,
+    label: &str,
+    value: &str,
+) -> TextCtrl {
+    let lbl = StaticText::builder(parent).with_label(label).build();
+    let input = TextCtrl::builder(parent).build();
+    input.set_value(value);
+    let browse = Button::builder(parent).with_label("Browse...").build();
+
+    let row = BoxSizer::builder(Orientation::Horizontal).build();
+    row.add(&input, 1, SizerFlag::Expand | SizerFlag::AlignCenterVertical, 0);
+    row.add(&browse, 0, SizerFlag::AlignCenterVertical | SizerFlag::Left, 4);
+
+    sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
+    sizer.add_sizer(&row, 1, SizerFlag::Expand, 0);
+
+    let input_for_handler = input.clone();
+    browse.on_click(move |_| {
+        let dlg = FileDialog::builder(&frame)
+            .with_message("Select cookies file")
+            .build();
+        if dlg.show_modal() == ID_OK {
+            if let Some(path) = dlg.get_path() {
+                input_for_handler.set_value(&path);
+            }
+        }
+    });
     input
 }
