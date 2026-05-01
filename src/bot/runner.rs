@@ -71,6 +71,7 @@ pub async fn run_bot(
     initial_state.repeat_track = config.repeat_track;
     initial_state.repeat_queue = config.repeat_queue;
     initial_state.shuffle = config.shuffle;
+    initial_state.active_service = config.default_service;
     let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
     let volume = Arc::new(AtomicU8::new(config.volume));
 
@@ -117,7 +118,7 @@ pub async fn run_bot(
 
     let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx.clone());
     let metadata = SpotifyMetadata::new(session.clone());
-    let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new()?);
+    let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new(&config)?);
     let youtube_player = crate::youtube::player::YouTubePlayer::new(
         audio_tx,
         youtube_metadata.clone(),

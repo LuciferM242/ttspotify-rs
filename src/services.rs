@@ -25,6 +25,16 @@ impl Service {
             Self::YouTube => "YouTube",
         }
     }
+
+    /// Parse common spellings ("spotify", "Spotify", "yt", "youtube", etc.).
+    /// Unrecognized input falls through to `default()`.
+    pub fn parse_or_default(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "spotify" | "sp" | "s" => Self::Spotify,
+            "youtube" | "yt" | "y" => Self::YouTube,
+            _ => Self::default(),
+        }
+    }
 }
 
 impl Default for Service {
