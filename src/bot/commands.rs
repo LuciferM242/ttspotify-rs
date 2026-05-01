@@ -391,6 +391,9 @@ impl CommandDispatcher {
                         crate::track::Track::Spotify(t) => t.uri
                             .replace("spotify:track:", "https://open.spotify.com/track/")
                             .replace("spotify:episode:", "https://open.spotify.com/episode/"),
+                        crate::track::Track::YouTube(t) => {
+                            format!("https://music.youtube.com/watch?v={}", t.id)
+                        }
                     };
                     drop(state);
                     self.reply(client, sender_id, &url);

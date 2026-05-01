@@ -13,4 +13,5 @@ pub mod spotify;
 pub mod track;
 pub mod tt;
 pub mod wizard;
+pub mod youtube;
 
