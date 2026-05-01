@@ -6,6 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use teamtalk::Client;
 
 use crate::bot::state::{PlaybackStatus, SharedState};
+use crate::services::Service;
 
 /// Commands sent from the bot thread to the async command processor.
 #[derive(Debug)]
@@ -30,6 +31,7 @@ pub enum BotCommand {
     SetGender { gender: String, user_id: i32 },
     Quit { user_id: i32 },
     Restart { user_id: i32 },
+    SetService { service: Service, user_id: i32 },
     /// Internal: pre-fetch radio recommendations for the given seed track
     RadioPreFetch { seed_uri: String },
     /// Internal: preload next track for gapless playback
@@ -392,6 +394,16 @@ impl CommandDispatcher {
                 }
             }
 
+            // -- Service switching --
+            "sp" | "spotify" => {
+                self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
+                self.reply(client, sender_id, "Switched to Spotify");
+            }
+            "yt" | "youtube" => {
+                self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
+                self.reply(client, sender_id, "Switched to YouTube");
+            }
+
             // -- Bot management --
             "jc" => {
                 if !args.is_empty() {
@@ -448,11 +460,13 @@ impl CommandDispatcher {
                 return false;
             }
             "h" | "help" => {
+                let active = self.state.lock().active_service;
                 if args.is_empty() {
-                    self.reply(client, sender_id, HELP_TEXT);
+                    let text = help_text(active);
+                    self.reply(client, sender_id, &text);
                 } else {
                     let topic = args.trim().to_lowercase();
-                    let detail = match topic.as_str() {
+                    let detail: &str = match topic.as_str() {
                         "p" | "play" => HELP_PLAY,
                         "s" | "stop" => "s / stop\nStop playback and clear the queue.",
                         "n" | "next" => "n / next\nSkip to the next track in the queue.\nIf radio is on and queue is empty, fetches recommendations.",
@@ -463,12 +477,14 @@ impl CommandDispatcher {
                         "v" | "volume" => HELP_VOLUME,
                         "sf" | "sb" | "seek" => HELP_SEEK,
                         "search" => HELP_SEARCH,
-                        "radio" => HELP_RADIO,
-                        "link" | "url" => "link / url\nGet the Spotify URL for the currently playing track.\nOpen it in the Spotify app or share it with others.",
+                        "radio" if active == Service::Spotify => HELP_RADIO,
+                        "radio" => "radio is only available on Spotify. Switch with /sp.",
+                        "link" | "url" => "link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.",
                         "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
                         "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
                         "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
+                        "sp" | "spotify" | "yt" | "youtube" => HELP_SERVICE,
                         "rs" | "restart" => "rs / restart\nRestart the bot. Saves config before exit.",
                         "q" | "quit" => "q / quit\nShut down the bot. Saves config before exit.",
                         _ => "Unknown command. Type h for the command list.",
@@ -484,44 +500,67 @@ impl CommandDispatcher {
     }
 }
 
-const HELP_TEXT: &str = "\
-Playback:
-  p <query>      Search and play a track, playlist, or album
-  p               Toggle play/pause
-  s               Stop playback and clear queue
-  n               Next track
-  o               Previous track
-  c               Show current track info
+/// Build help text for the currently active service.
+/// Spotify-only sections (radio) are omitted on YouTube.
+fn help_text(active: Service) -> String {
+    let mut out = String::from(
+        "Playback:\n\
+         \x20 p <query>      Search and play a track, playlist, or album\n\
+         \x20 p               Toggle play/pause\n\
+         \x20 s               Stop playback and clear queue\n\
+         \x20 n               Next track\n\
+         \x20 o               Previous track\n\
+         \x20 c               Show current track info\n\
+         \n\
+         Queue:\n\
+         \x20 queue           Show the queue\n\
+         \x20 queue clear     Clear upcoming tracks\n\
+         \x20 queue rm <N>    Remove Nth upcoming track\n\
+         \n\
+         Modes:\n\
+         \x20 mode [r|rq|s|off]   Set repeat/shuffle mode\n",
+    );
+    if active == Service::Spotify {
+        out.push_str("  radio [on|off]      Toggle radio (auto-recommendations)\n");
+    }
+    out.push_str(
+        "\n\
+         Audio:\n\
+         \x20 v [0-100]       Get or set volume\n\
+         \x20 sf/sb [N]       Seek forward/backward N seconds\n\
+         \n\
+         Search:\n\
+         \x20 search <query>  Search and pick from results\n\
+         \x20 <number>        Pick a search result\n\
+         \x20 a / cancel      Cancel search\n\
+         \n\
+         Service:\n\
+         \x20 /sp             Switch to Spotify\n\
+         \x20 /yt             Switch to YouTube\n\
+         \n\
+         Bot:\n\
+         \x20 link         Get URL for current track\n\
+         \x20 stats        Show bot uptime and session stats\n\
+         \x20 jc <path>    Join channel\n\
+         \x20 cn <name>    Change nickname\n\
+         \x20 gender       Set bot gender\n\
+         \x20 info         Bot info\n\
+         \x20 rs           Restart\n\
+         \x20 q            Quit\n\
+         \n\
+         Active service: ",
+    );
+    out.push_str(active.name());
+    out.push_str("\nType h <command> for detailed help (e.g. h queue)");
+    out
+}
 
-Queue:
-  queue           Show the queue
-  queue clear     Clear upcoming tracks
-  queue rm <N>    Remove Nth upcoming track
-
-Modes:
-  mode [r|rq|s|off]   Set repeat/shuffle mode
-  radio [on|off]      Toggle radio (auto-recommendations)
-
-Audio:
-  v [0-100]       Get or set volume
-  sf/sb [N]       Seek forward/backward N seconds
-
-Search:
-  search <query>  Search and pick from results
-  <number>        Pick a search result
-  a / cancel      Cancel search
-
-Bot:
-  link         Get Spotify URL for current track
-  stats        Show bot uptime and session stats
-  jc <path>    Join channel
-  cn <name>    Change nickname
-  gender       Set bot gender
-  info         Bot info
-  rs           Restart
-  q            Quit
-
-Type h <command> for detailed help (e.g. h queue)";
+const HELP_SERVICE: &str = "\
+/sp / /yt
+  /sp     Switch active service to Spotify.
+  /yt     Switch active service to YouTube.
+Commands like p, search, n, o target the active service.
+Switching does not interrupt playback. Use s to stop.";
 
 const HELP_PLAY: &str = "\
 p / play

@@ -923,6 +923,11 @@ async fn command_processor(
                 do_exit(BotExit::Restart);
                 return;
             }
+
+            BotCommand::SetService { service, user_id: _ } => {
+                state.lock().active_service = service;
+                tracing::info!("Active service switched to {}", service.name());
+            }
         }
     }
 }
