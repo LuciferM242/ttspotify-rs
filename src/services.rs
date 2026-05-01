@@ -1,0 +1,56 @@
+//! Music service identity and per-service capabilities.
+//!
+//! `Service` tags every queue entry with which provider it came from
+//! (Spotify or YouTube), and is also stored on `PlayerState` as the
+//! "active service" — the one new commands like `p <query>` target.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Service {
+    Spotify,
+    YouTube,
+}
+
+impl Service {
+    /// Short tag rendered in `queue` listings, e.g. `[SP]` / `[YT]`.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Spotify => "SP",
+            Self::YouTube => "YT",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Spotify => "Spotify",
+            Self::YouTube => "YouTube",
+        }
+    }
+}
+
+impl Default for Service {
+    fn default() -> Self {
+        Self::Spotify
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_returns_two_letter_code() {
+        assert_eq!(Service::Spotify.marker(), "SP");
+        assert_eq!(Service::YouTube.marker(), "YT");
+    }
+
+    #[test]
+    fn name_is_human_readable() {
+        assert_eq!(Service::Spotify.name(), "Spotify");
+        assert_eq!(Service::YouTube.name(), "YouTube");
+    }
+
+    #[test]
+    fn default_is_spotify() {
+        assert_eq!(Service::default(), Service::Spotify);
+    }
+}

@@ -8,6 +8,7 @@ use librespot_playback::mixer::{NoOpVolume, VolumeGetter};
 use librespot_playback::player::{Player, PlayerEventChannel};
 
 use crate::config::BotConfig;
+use crate::player::MediaPlayer;
 use crate::spotify::sink::TeamTalkSink;
 
 pub struct SpotifyPlayer {
@@ -69,6 +70,38 @@ impl SpotifyPlayer {
 
     pub fn preload(&self, uri: &SpotifyUri) {
         self.player.preload(uri.clone());
+    }
+}
+
+impl MediaPlayer for SpotifyPlayer {
+    fn load(&self, uri: &str) {
+        match SpotifyUri::from_uri(uri) {
+            Ok(parsed) => self.player.load(parsed, true, 0),
+            Err(e) => tracing::error!("SpotifyPlayer::load: invalid URI {uri}: {e}"),
+        }
+    }
+
+    fn play(&self) {
+        self.player.play();
+    }
+
+    fn pause(&self) {
+        self.player.pause();
+    }
+
+    fn stop(&self) {
+        self.player.stop();
+    }
+
+    fn seek(&self, position_ms: u32) {
+        self.player.seek(position_ms);
+    }
+
+    fn preload(&self, uri: &str) {
+        match SpotifyUri::from_uri(uri) {
+            Ok(parsed) => self.player.preload(parsed),
+            Err(e) => tracing::warn!("SpotifyPlayer::preload: invalid URI {uri}: {e}"),
+        }
     }
 }
 
