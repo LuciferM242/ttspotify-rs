@@ -207,8 +207,9 @@ impl PlayerState {
         for (i, entry) in self.queue.iter().enumerate() {
             let marker = if self.current_index == Some(i) { "> " } else { "  " };
             if i > 0 { out.push('\n'); }
-            let _ = write!(out, "{}{}: {} [{}]",
-                marker, i + 1, entry.track.display_name(), entry.track.duration_display());
+            let _ = write!(out, "{}{} [{}]: {} [{}]",
+                marker, i + 1, entry.track.service().marker(),
+                entry.track.display_name(), entry.track.duration_display());
         }
         out
     }
@@ -545,6 +546,24 @@ mod tests {
         assert!(lines[0].starts_with("  "));
         assert!(lines[1].starts_with("> "));
         assert!(lines[2].starts_with("  "));
+    }
+
+    #[test]
+    fn queue_display_includes_service_marker() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 1);
+        let display = state.queue_display();
+        // Spotify-only queue should mark every entry [SP].
+        assert!(display.contains("[SP]"), "expected [SP] marker, got: {display}");
+        assert!(!display.contains("[YT]"));
+    }
+
+    // -- active_service --
+
+    #[test]
+    fn active_service_defaults_to_spotify() {
+        let state = PlayerState::new();
+        assert_eq!(state.active_service, Service::Spotify);
     }
 
     // -- mode_display --

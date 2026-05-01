@@ -357,8 +357,11 @@ impl CommandDispatcher {
                 }
             }
 
-            // -- Radio --
+            // -- Radio (Spotify-only; silently ignored on other services) --
             "radio" => {
+                if self.state.lock().active_service != Service::Spotify {
+                    return true;
+                }
                 let arg = args.trim().to_lowercase();
                 if arg.starts_with("on") {
                     if self.state.lock().radio_enabled {
@@ -384,9 +387,11 @@ impl CommandDispatcher {
             "link" | "url" => {
                 let state = self.state.lock();
                 if let Some(entry) = state.current() {
-                    let url = entry.track.uri()
-                        .replace("spotify:track:", "https://open.spotify.com/track/")
-                        .replace("spotify:episode:", "https://open.spotify.com/episode/");
+                    let url = match &entry.track {
+                        crate::track::Track::Spotify(t) => t.uri
+                            .replace("spotify:track:", "https://open.spotify.com/track/")
+                            .replace("spotify:episode:", "https://open.spotify.com/episode/"),
+                    };
                     drop(state);
                     self.reply(client, sender_id, &url);
                 } else {
@@ -478,7 +483,7 @@ impl CommandDispatcher {
                         "sf" | "sb" | "seek" => HELP_SEEK,
                         "search" => HELP_SEARCH,
                         "radio" if active == Service::Spotify => HELP_RADIO,
-                        "radio" => "radio is only available on Spotify. Switch with /sp.",
+                        "radio" => return true, // silent on non-Spotify
                         "link" | "url" => "link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.",
                         "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
