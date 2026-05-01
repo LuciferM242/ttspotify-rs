@@ -3,6 +3,7 @@ name = "tt-spotify-bot"
 version = "0.1.0"
 edition = "2021"
 default-run = "tt-spotify-bot"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 # TeamTalk SDK (local)
@@ -13,6 +14,9 @@ librespot-core = "0.8"
 librespot-playback = "0.8"
 librespot-metadata = "0.8"
 librespot-oauth = "0.8"
+
+# YouTube (rustypipe - GPL-3)
+rustypipe = "0.11"
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
