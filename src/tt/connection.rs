@@ -2,13 +2,13 @@ use std::time::Duration;
 use teamtalk::Client;
 use teamtalk::client::connection::{ConnectParamsOwned, ReconnectConfig, ReconnectWorkflowConfig};
 use teamtalk::client::users::LoginParams;
-use teamtalk::types::{ChannelId, UserStatus};
+use teamtalk::types::{ChannelId, SoundDeviceId, UserStatus};
 
 use crate::config::BotConfig;
 use crate::error::BotError;
 
 /// Virtual sound device ID (TT_SOUNDDEVICE_ID_TEAMTALK_VIRTUAL = 1978)
-const VIRTUAL_DEVICE_ID: i32 = 1978;
+const VIRTUAL_DEVICE_ID: SoundDeviceId = SoundDeviceId(1978);
 
 /// Set up the TeamTalk client: connect, login, init virtual devices, join channel.
 pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
@@ -57,10 +57,8 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
 
     // Set bot gender
     let gender = crate::config::parse_gender(&config.bot_gender);
-    let status = UserStatus {
-        gender,
-        ..Default::default()
-    };
+    let mut status = UserStatus::default();
+    status.gender = gender;
     client.set_status(status, "");
     tracing::info!("Bot gender set to {:?}", gender);
 
@@ -69,19 +67,15 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
 
     // Enable SDK auto-reconnect for connection + login only.
     // Channel rejoin is handled by the event loop so admin moves are respected.
-    let reconnect_config = ReconnectConfig {
-        max_attempts: 10,
-        min_delay: Duration::from_secs(2),
-        max_delay: Duration::from_secs(30),
-        ..Default::default()
-    };
-    let workflow = ReconnectWorkflowConfig {
-        join: ReconnectConfig {
-            max_attempts: 0,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let mut reconnect_config = ReconnectConfig::default();
+    reconnect_config.max_attempts = 10;
+    reconnect_config.min_delay = Duration::from_secs(2);
+    reconnect_config.max_delay = Duration::from_secs(30);
+
+    let mut join_cfg = ReconnectConfig::default();
+    join_cfg.max_attempts = 0;
+    let mut workflow = ReconnectWorkflowConfig::default();
+    workflow.join = join_cfg;
     client.enable_full_auto_reconnect(
         reconnect_config,
         workflow,

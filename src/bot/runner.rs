@@ -166,10 +166,8 @@ pub async fn run_bot(
     tracing::info!("Bot is ready! Listening for commands...");
 
     {
-        let status = ::teamtalk::types::UserStatus {
-            gender: bot_gender,
-            ..Default::default()
-        };
+        let mut status = ::teamtalk::types::UserStatus::default();
+        status.gender = bot_gender;
         client.set_status(status, "Idle");
     }
     send_event(RunnerEvent::Idle);
@@ -412,10 +410,8 @@ async fn command_processor(
     };
 
     let set_status = |text: &str| {
-        let status = ::teamtalk::types::UserStatus {
-            gender: bot_gender,
-            ..Default::default()
-        };
+        let mut status = ::teamtalk::types::UserStatus::default();
+        status.gender = bot_gender;
         client.set_status(status, text);
     };
 
@@ -833,10 +829,8 @@ async fn command_processor(
                         None => "Idle".to_string(),
                     }
                 };
-                let status = ::teamtalk::types::UserStatus {
-                    gender: new_gender,
-                    ..Default::default()
-                };
+                let mut status = ::teamtalk::types::UserStatus::default();
+                status.gender = new_gender;
                 client.set_status(status, &status_text);
                 crate::config::BotConfig::update(&config_path, |cfg| {
                     cfg.bot_gender = gender;
