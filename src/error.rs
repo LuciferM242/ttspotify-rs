@@ -12,6 +12,8 @@ pub enum BotError {
     NoResults,
     #[error("TeamTalk: {0}")]
     TeamTalk(String),
+    #[error("Not implemented: {0}")]
+    NotImplemented(&'static str),
     #[error("IO: {0}")]
     Io(#[from] std::io::Error),
 }

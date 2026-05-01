@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use crate::services::Service;
 use crate::track::Track;
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,10 @@ pub struct PlayerState {
 
     // Stats
     pub tracks_played: u32,
+
+    // The service that bare commands target (e.g. `p <query>`).
+    // Switched via `/sp` or `/yt`. In-memory only — resets on restart.
+    pub active_service: Service,
 }
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
@@ -62,6 +67,7 @@ impl PlayerState {
             search_results: HashMap::new(),
             position_ms: 0,
             tracks_played: 0,
+            active_service: Service::default(),
         }
     }
 

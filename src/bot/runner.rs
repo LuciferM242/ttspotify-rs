@@ -436,22 +436,30 @@ async fn command_processor(
         s.status = PlaybackStatus::Idle;
     };
 
-    let start_track = |uri_str: &str, player: &SpotifyPlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
-        if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
-            pause_flag.store(false, Ordering::Relaxed);
-            player.stop();
-            crate::tt::audio_inject::flush_audio(client);
-            client.enable_voice_transmission(false);
-            audio_reset.store(true, Ordering::Relaxed);
-            player.load_track(&uri);
-            {
-                let mut s = state.lock();
-                s.status = PlaybackStatus::Loading;
-                s.tracks_played += 1;
+    let start_track = |service: crate::services::Service, uri_str: &str, player: &SpotifyPlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
+        match service {
+            crate::services::Service::Spotify => {
+                if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
+                    pause_flag.store(false, Ordering::Relaxed);
+                    player.stop();
+                    crate::tt::audio_inject::flush_audio(client);
+                    client.enable_voice_transmission(false);
+                    audio_reset.store(true, Ordering::Relaxed);
+                    player.load_track(&uri);
+                    {
+                        let mut s = state.lock();
+                        s.status = PlaybackStatus::Loading;
+                        s.tracks_played += 1;
+                    }
+                    true
+                } else {
+                    false
+                }
             }
-            true
-        } else {
-            false
+            crate::services::Service::YouTube => {
+                tracing::warn!("YouTube playback not implemented yet (uri={uri_str})");
+                false
+            }
         }
     };
 
@@ -500,6 +508,7 @@ async fn command_processor(
 
                         let first_name = tracks_to_add[0].display_name();
                         let first_uri = tracks_to_add[0].uri().to_string();
+                        let first_service = tracks_to_add[0].service();
                         let count = tracks_to_add.len();
 
                         // Hold lock across idle check + enqueue to prevent race
@@ -514,7 +523,7 @@ async fn command_processor(
                         };
 
                         if is_idle {
-                            start_track(&first_uri, &player, &client, &state, &audio_reset, &pause_flag);
+                            start_track(first_service, &first_uri, &player, &client, &state, &audio_reset, &pause_flag);
                             if count > 1 {
                                 reply(user_id, &format!("Now playing: {first_name} (+{} queued)", count - 1));
                             } else {
@@ -591,10 +600,10 @@ async fn command_processor(
 
                 let next = {
                     let mut s = state.lock();
-                    s.advance().map(|e| (e.track.uri().to_string(), e.track.display_name()))
+                    s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
-                if let Some((uri_str, name)) = next {
-                    if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                if let Some((service, uri_str, name)) = next {
+                    if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
@@ -626,7 +635,7 @@ async fn command_processor(
                                             let mut s = state.lock();
                                             s.enqueue_all(tracks, "Radio".to_string(), true);
                                         }
-                                        if start_track(&first_uri, &player, &client, &state, &audio_reset, &pause_flag) {
+                                        if start_track(crate::services::Service::Spotify, &first_uri, &player, &client, &state, &audio_reset, &pause_flag) {
                                             reply(user_id, &format!("Radio: {first_name}"));
                                             let status_text = now_playing_status(&first_name, &state);
                                             set_status(&status_text);
@@ -655,10 +664,10 @@ async fn command_processor(
             BotCommand::Prev { user_id } => {
                 let prev = {
                     let mut s = state.lock();
-                    s.go_prev().map(|e| (e.track.uri().to_string(), e.track.display_name()))
+                    s.go_prev().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
-                if let Some((uri_str, name)) = prev {
-                    if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                if let Some((service, uri_str, name)) = prev {
+                    if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
@@ -773,15 +782,16 @@ async fn command_processor(
                         s.search_results.remove(&user_id);
                         let idle = s.status == PlaybackStatus::Idle;
                         if idle { s.clear(); }
+                        let service = track.service();
                         let uri_str = track.uri().to_string();
                         let track_name = track.display_name();
                         s.enqueue(track, user_name, true);
-                        (uri_str, track_name, idle)
+                        (service, uri_str, track_name, idle)
                     })
                 };
-                if let Some((uri_str, track_name, is_idle)) = picked {
+                if let Some((service, uri_str, track_name, is_idle)) = picked {
                     if is_idle {
-                        if start_track(&uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
+                        if start_track(service, &uri_str, &player, &client, &state, &audio_reset, &pause_flag) {
                             reply(user_id, &format!("Now playing: {track_name}"));
                             let status_text = now_playing_status(&track_name, &state);
                             set_status(&status_text);
