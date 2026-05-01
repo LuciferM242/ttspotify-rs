@@ -289,7 +289,7 @@ fn schedule_radio_prefetch(
 
 /// Format queue position and estimated wait time for a newly queued track.
 /// Returns a string like " (3rd up, ~8 min)" or empty if not applicable.
-fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
+pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
     let current_idx = match state.current_index {
         Some(i) => i,
         None => return String::new(),
@@ -949,5 +949,109 @@ async fn player_event_loop(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot::state::PlayerState;
+    use crate::spotify::types::SpotifyTrack;
+
+    fn track(id: &str, duration_ms: u32) -> SpotifyTrack {
+        SpotifyTrack {
+            id: id.to_string(),
+            name: format!("T{id}"),
+            artists: vec!["A".to_string()],
+            album: "Album".to_string(),
+            duration_ms,
+            uri: format!("spotify:track:{id}"),
+        }
+    }
+
+    fn enqueue(state: &mut PlayerState, durations_ms: &[u32]) {
+        for (i, d) in durations_ms.iter().enumerate() {
+            state.enqueue(track(&i.to_string(), *d), "u".into(), true);
+        }
+    }
+
+    // -- empty / not-applicable cases --
+
+    #[test]
+    fn queue_wait_info_empty_when_no_current() {
+        let state = PlayerState::new();
+        assert_eq!(queue_wait_info(&state), "");
+    }
+
+    #[test]
+    fn queue_wait_info_empty_when_only_current_track() {
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[180_000]);
+        assert_eq!(queue_wait_info(&state), "");
+    }
+
+    // -- "next" position (1 upcoming) --
+
+    #[test]
+    fn queue_wait_info_one_upcoming_zero_position_says_next() {
+        let mut state = PlayerState::new();
+        // Two tracks: current full duration unplayed, one upcoming.
+        // Wait = 60s remaining on current → rounds to 1 min.
+        enqueue(&mut state, &[60_000, 120_000]);
+        // position_ms=0 (default) → wait = 60_000 - 0 = 60_000ms → 1 min.
+        assert_eq!(queue_wait_info(&state), " (next, ~1 min)");
+    }
+
+    #[test]
+    fn queue_wait_info_subtracts_position_from_current_track_wait() {
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[180_000, 60_000]);
+        state.position_ms = 150_000; // 30s left on current
+        // Wait = 30s → (30000+30000)/60000 = 1 min.
+        assert_eq!(queue_wait_info(&state), " (next, ~1 min)");
+    }
+
+    #[test]
+    fn queue_wait_info_under_thirty_seconds_drops_minute_suffix() {
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[20_000, 60_000]);
+        // Wait = 20s → (20000+30000)/60000 = 0 min → no "~N min".
+        assert_eq!(queue_wait_info(&state), " (next)");
+    }
+
+    // -- multi-upcoming --
+
+    #[test]
+    fn queue_wait_info_multi_upcoming_uses_ahead_form() {
+        let mut state = PlayerState::new();
+        // queue [A=120s, B=60s, C=60s, D=60s], current=A, asking about D's wait.
+        // upcoming_pos = total(4) - current_idx(0) - 1 = 3.
+        // Wait = remaining(A=120s) + B(60s) + C(60s) = 240s = 4 min.
+        // (D itself is not summed — wait is "until D starts".)
+        enqueue(&mut state, &[120_000, 60_000, 60_000, 60_000]);
+        assert_eq!(queue_wait_info(&state), " (3 ahead, ~4 min)");
+    }
+
+    #[test]
+    fn queue_wait_info_does_not_count_last_upcoming_track_duration() {
+        // Defensive test for the "wait until the newly-queued (last) track starts"
+        // semantic: skip(current+1).take(upcoming_pos - 1) excludes the final entry.
+        let mut state = PlayerState::new();
+        // queue [A=60s, B=60s, C=999_999_000ms (huge)], current=A.
+        // wait = 60s (remaining A) + 60s (B). C is excluded.
+        enqueue(&mut state, &[60_000, 60_000, 999_999_000]);
+        // Wait = 120s → (120000+30000)/60000 = 2 min.
+        assert_eq!(queue_wait_info(&state), " (2 ahead, ~2 min)");
+    }
+
+    #[test]
+    fn queue_wait_info_position_past_current_duration_saturates_to_zero() {
+        // Edge: position_ms > current.duration_ms (shouldn't happen but
+        // saturating_sub guards it). With upcoming_pos=1, only the (saturated)
+        // remainder of the current track is summed → wait_ms=0 → "(next)".
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[10_000, 60_000]);
+        state.position_ms = 99_999_999;
+        assert_eq!(queue_wait_info(&state), " (next)");
     }
 }
