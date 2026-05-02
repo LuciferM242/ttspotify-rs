@@ -280,12 +280,10 @@ pub fn run_youtube_setup() -> Result<(), BotError> {
     }
 
     println!("  Installing into {}", paths.lib_dir.display());
-    std::thread::spawn(move || -> Result<(), BotError> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| BotError::Config(format!("tokio runtime: {e}")))?;
+    run_blocking_async(|| async {
         let paths = setup::resolve_paths()?;
-        rt.block_on(setup::install(&paths, |line| println!("  {line}")))
-    }).join().map_err(|_| BotError::Config("setup thread panicked".to_string()))??;
+        setup::install(&paths, |line| println!("  {line}")).await
+    })?;
 
     println!();
     println!("  YouTube support installed.");
@@ -328,25 +326,38 @@ pub fn run_update_tools() -> Result<(), BotError> {
     println!();
     println!("Checking bgutil-pot for updates...");
     let installed = setup::installed_bgutil_version(&paths);
-    let latest = std::thread::spawn(|| -> Result<String, BotError> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| BotError::Config(format!("tokio runtime: {e}")))?;
-        rt.block_on(setup::latest_bgutil_version())
-    }).join().map_err(|_| BotError::Config("update thread panicked".to_string()))??;
+    let latest = run_blocking_async(|| async { setup::latest_bgutil_version().await })?;
 
     if installed == latest {
         println!("  bgutil-pot already on {installed} (latest).");
     } else {
         println!("  Installed: {installed}, latest: {latest}. Updating...");
-        std::thread::spawn(move || -> Result<(), BotError> {
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| BotError::Config(format!("tokio runtime: {e}")))?;
+        let target = latest.clone();
+        run_blocking_async(move || async move {
             let paths = setup::resolve_paths()?;
-            rt.block_on(setup::install_bgutil_version(&paths, &latest, |line| println!("  {line}")))
-        }).join().map_err(|_| BotError::Config("update thread panicked".to_string()))??;
+            setup::install_bgutil_version(&paths, &target, |line| println!("  {line}")).await
+        })?;
     }
 
     println!();
     println!("  Done.");
     Ok(())
+}
+
+/// Run an async closure on a fresh tokio runtime in a worker thread.
+/// The wizard is sync but may be invoked from an async context (e.g. `main`),
+/// so spinning up our own runtime avoids the nested-runtime panic.
+fn run_blocking_async<T, F, Fut>(f: F) -> Result<T, BotError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, BotError>>,
+{
+    std::thread::spawn(move || -> Result<T, BotError> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| BotError::Config(format!("tokio runtime: {e}")))?;
+        rt.block_on(f())
+    })
+    .join()
+    .map_err(|_| BotError::Config("async worker thread panicked".to_string()))?
 }

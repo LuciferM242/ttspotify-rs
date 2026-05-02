@@ -60,6 +60,16 @@ impl Track {
             Self::YouTube(t) => t.duration_display(),
         }
     }
+
+    /// Shareable web URL for the track.
+    pub fn web_url(&self) -> String {
+        match self {
+            Self::Spotify(t) => t.uri
+                .replace("spotify:track:", "https://open.spotify.com/track/")
+                .replace("spotify:episode:", "https://open.spotify.com/episode/"),
+            Self::YouTube(t) => format!("https://music.youtube.com/watch?v={}", t.id),
+        }
+    }
 }
 
 impl From<SpotifyTrack> for Track {

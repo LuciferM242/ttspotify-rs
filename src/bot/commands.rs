@@ -86,6 +86,17 @@ pub fn send_reply(client: &Client, user_id: i32, text: &str) {
     }
 }
 
+/// Render a search-results numbered listing with the standard footer.
+pub fn format_search_results(tracks: &[crate::track::Track]) -> String {
+    let mut msg = String::from("Search results:\n");
+    for (i, track) in tracks.iter().enumerate() {
+        let _ = write!(msg, "  {}: {} [{}]\n",
+            i + 1, track.display_name(), track.duration_display());
+    }
+    msg.push_str("Type a number to play, or a to cancel");
+    msg
+}
+
 /// Shared resources for command dispatch.
 pub struct CommandDispatcher {
     pub state: SharedState,
@@ -322,19 +333,12 @@ impl CommandDispatcher {
                     self.reply(client, sender_id, "Searching...");
                 } else {
                     // Re-display active search results if available
-                    let state = self.state.lock();
-                    if let Some(results) = state.search_results.get(&sender_id) {
-                        let mut msg = String::from("Search results:\n");
-                        for (i, track) in results.iter().enumerate() {
-                            let _ = write!(msg, "  {}: {} [{}]\n",
-                                i + 1, track.display_name(), track.duration_display());
-                        }
-                        msg.push_str("Type a number to play, or a to cancel");
-                        drop(state);
-                        self.reply(client, sender_id, &msg);
-                    } else {
-                        drop(state);
-                        self.reply(client, sender_id, "Usage: search <query>");
+                    let msg = self.state.lock()
+                        .search_results.get(&sender_id)
+                        .map(|results| format_search_results(results));
+                    match msg {
+                        Some(m) => self.reply(client, sender_id, &m),
+                        None => self.reply(client, sender_id, "Usage: search <query>"),
                     }
                 }
             }
@@ -385,20 +389,10 @@ impl CommandDispatcher {
 
             // -- Link --
             "link" | "url" => {
-                let state = self.state.lock();
-                if let Some(entry) = state.current() {
-                    let url = match &entry.track {
-                        crate::track::Track::Spotify(t) => t.uri
-                            .replace("spotify:track:", "https://open.spotify.com/track/")
-                            .replace("spotify:episode:", "https://open.spotify.com/episode/"),
-                        crate::track::Track::YouTube(t) => {
-                            format!("https://music.youtube.com/watch?v={}", t.id)
-                        }
-                    };
-                    drop(state);
-                    self.reply(client, sender_id, &url);
-                } else {
-                    self.reply(client, sender_id, "Nothing playing");
+                let url = self.state.lock().current().map(|e| e.track.web_url());
+                match url {
+                    Some(u) => self.reply(client, sender_id, &u),
+                    None => self.reply(client, sender_id, "Nothing playing"),
                 }
             }
 

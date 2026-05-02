@@ -813,15 +813,8 @@ async fn command_processor(
                 };
                 match result {
                     Ok(tracks) => {
-                        let mut msg = String::from("Search results:\n");
-                        for (i, track) in tracks.iter().enumerate() {
-                            let _ = write!(msg, "  {}: {} [{}]\n",
-                                i + 1, track.display_name(), track.duration_display());
-                        }
-                        msg.push_str("Type a number to play, or a to cancel");
-                        reply(user_id, &msg);
-                        let mut s = state.lock();
-                        s.search_results.insert(user_id, tracks);
+                        reply(user_id, &crate::bot::commands::format_search_results(&tracks));
+                        state.lock().search_results.insert(user_id, tracks);
                     }
                     Err(e) => {
                         reply(user_id, &format!("Search failed: {e}"));

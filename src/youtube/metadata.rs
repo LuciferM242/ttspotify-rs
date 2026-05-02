@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use rustypipe::client::RustyPipe;
 
+use std::path::PathBuf;
+
 use crate::config::BotConfig;
 use crate::error::BotError;
 use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
@@ -22,6 +24,9 @@ pub struct YouTubeMetadata {
     /// Resolved paths for the bundled binaries + plugin dir.
     /// `Some` if the bot can find them; `None` falls back to PATH.
     bundle: Option<YoutubeSetupPaths>,
+    /// Resolved yt-dlp executable path. PATH lookup happens once at
+    /// construction; falls back to the bundled binary or the bare name.
+    yt_dlp_exe: PathBuf,
 }
 
 impl YouTubeMetadata {
@@ -47,10 +52,17 @@ impl YouTubeMetadata {
             }
         };
 
+        // Resolve yt-dlp once: PATH first, then the bundled copy under
+        // <exe-dir>/lib, then a bare `yt-dlp` (NotFound at spawn time).
+        let yt_dlp_exe = which("yt-dlp")
+            .or_else(|| bundle.as_ref().map(|b| b.yt_dlp.clone()))
+            .unwrap_or_else(|| PathBuf::from("yt-dlp"));
+
         Ok(Self {
             client: Arc::new(client),
             cookies_file,
             bundle,
+            yt_dlp_exe,
         })
     }
 
@@ -83,15 +95,7 @@ impl YouTubeMetadata {
         use std::process::{Command, Stdio};
         let url = format!("https://www.youtube.com/watch?v={video_id}");
 
-        // Lookup order: yt-dlp on PATH first (lets users keep a system-wide
-        // up-to-date install), then <exe-dir>/lib/yt-dlp as bundled fallback.
-        let mut cmd = if which("yt-dlp").is_some() {
-            Command::new("yt-dlp")
-        } else if let Some(b) = &self.bundle {
-            Command::new(&b.yt_dlp)
-        } else {
-            Command::new("yt-dlp") // last resort; will fail with NotFound
-        };
+        let mut cmd = Command::new(&self.yt_dlp_exe);
         cmd.args([
             "--no-warnings",
             "--no-playlist",
