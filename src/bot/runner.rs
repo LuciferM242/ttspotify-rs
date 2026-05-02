@@ -537,12 +537,10 @@ async fn command_processor(
                             continue;
                         }
 
-                        let is_multi = query.contains("playlist") || query.contains("album");
-                        let tracks_to_add = if is_multi {
-                            tracks
-                        } else {
-                            vec![tracks.into_iter().next().expect("empty check above")]
-                        };
+                        // A search returns the top single match; a URL/URI for
+                        // a playlist or album resolves into multiple entries.
+                        let is_multi = tracks.len() > 1;
+                        let tracks_to_add = tracks;
 
                         let first_name = tracks_to_add[0].display_name();
                         let first_uri = tracks_to_add[0].uri().to_string();

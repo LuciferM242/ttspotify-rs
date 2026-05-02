@@ -111,10 +111,8 @@ impl PlayerState {
             use rand::Rng;
             let mut rng = rand::thread_rng();
             let current = self.current_index.unwrap_or(0);
-            // Only shuffle among upcoming tracks (after current), excluding current
-            let remaining: Vec<usize> = ((current + 1)..self.queue.len())
-                .filter(|&i| i != current)
-                .collect();
+            // Only shuffle among upcoming tracks (after current).
+            let remaining: Vec<usize> = ((current + 1)..self.queue.len()).collect();
             if !remaining.is_empty() {
                 let idx = remaining[rng.gen_range(0..remaining.len())];
                 self.current_index = Some(idx);

@@ -348,13 +348,22 @@ fn decode_and_stream(
                 interleave_to_i16(&in_l, &in_r)
             };
 
-            if ctrl.stopped.load(Ordering::Relaxed) {
-                return Ok(());
-            }
-            // bounded(256) — block briefly if pipeline is full. If the
-            // receiver dropped, the track is gone; just exit.
-            if audio_tx.send(frame).is_err() {
-                return Ok(());
+            // Send through the bounded channel without ever blocking, so a
+            // paused or stopped track exits within ~50ms instead of stalling
+            // until the audio pipeline drains.
+            let mut frame = Some(frame);
+            loop {
+                if ctrl.stopped.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                match audio_tx.try_send(frame.take().expect("set in this loop")) {
+                    Ok(()) => break,
+                    Err(crossbeam_channel::TrySendError::Full(returned)) => {
+                        frame = Some(returned);
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
+                }
             }
         }
     }
