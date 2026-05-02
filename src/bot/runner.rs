@@ -875,22 +875,10 @@ async fn command_processor(
 
             BotCommand::SetGender { gender, user_id: _ } => {
                 let new_gender = crate::config::parse_gender(&gender);
-                let status_text = {
-                    let s = state.lock();
-                    match s.current() {
-                        Some(entry) => {
-                            let name = entry.track.display_name();
-                            let total = s.queue.len();
-                            if total > 1 {
-                                let pos = s.current_index.map(|i| i + 1).unwrap_or(1);
-                                format!("{name} [{pos}/{total}]")
-                            } else {
-                                name
-                            }
-                        }
-                        None => "Idle".to_string(),
-                    }
-                };
+                let current_name = state.lock().current().map(|e| e.track.display_name());
+                let status_text = current_name
+                    .map(|name| now_playing_status(&name, &state))
+                    .unwrap_or_else(|| "Idle".to_string());
                 let mut status = ::teamtalk::types::UserStatus::default();
                 status.gender = new_gender;
                 client.set_status(status, &status_text);
