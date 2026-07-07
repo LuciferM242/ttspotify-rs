@@ -400,25 +400,10 @@ fn prompt_youtube_setup(parent: &Frame, _config_path: &std::path::Path, default_
         return;
     }
 
-    // Run install on a worker thread. UI freezes for ~5-10s during the download.
-    let install_result = std::thread::spawn(|| -> Result<(), String> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| format!("tokio runtime: {e}"))?;
-        let paths = setup::resolve_paths().map_err(|e| e.to_string())?;
-        rt.block_on(setup::install(&paths, |line| {
-            tracing::info!("YT setup: {line}");
-        })).map_err(|e| e.to_string())
-    }).join().unwrap_or_else(|_| Err("install thread panicked".to_string()));
-
-    let msg = match install_result {
-        Ok(()) => "YouTube setup complete.".to_string(),
-        Err(e) => format!("Install failed: {e}"),
-    };
-    let icon = if msg.starts_with("Install failed") { MDS::IconError } else { MDS::IconInformation };
-    MessageDialog::builder(parent, &msg, "YouTube Support")
-        .with_style(MDS::OK | icon)
-        .build()
-        .show_modal();
+    crate::gui::progress::run_progress_dialog(
+        "Install YouTube tools",
+        |p| crate::gui::progress::youtube_install(p),
+    );
 }
 
 /// Text field with a Browse... button next to it, suitable for picking a file path.
@@ -435,7 +420,7 @@ fn add_text_with_browse(
     let browse = Button::builder(parent).with_label("Browse...").build();
 
     let row = BoxSizer::builder(Orientation::Horizontal).build();
-    row.add(&input, 1, SizerFlag::Expand | SizerFlag::AlignCenterVertical, 0);
+    row.add(&input, 1, SizerFlag::Expand, 0);
     row.add(&browse, 0, SizerFlag::AlignCenterVertical | SizerFlag::Left, 4);
 
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);

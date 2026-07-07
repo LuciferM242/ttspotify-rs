@@ -112,6 +112,17 @@ impl SpotifyAuth {
         }
     }
 
+    /// Force a fresh OAuth login, ignoring any cached credentials, and store
+    /// the new credentials in the cache. Opens the browser for authorization.
+    pub async fn reauthenticate(&mut self) -> Result<Session, BotError> {
+        let session = Session::new(self.config.clone(), self.cache.clone());
+        let credentials = self.oauth_login()?;
+        session.connect(credentials, true).await
+            .map_err(|e| BotError::SpotifyAuth(format!("OAuth login failed: {e}")))?;
+        self.session = Some(session.clone());
+        Ok(session)
+    }
+
     /// Run the OAuth PKCE flow to get credentials.
     /// Opens a browser URL for the user to authorize, then catches the callback.
     /// In headless mode, skips browser launch and prints instructions.

@@ -3,6 +3,7 @@
 pub mod manager;
 pub mod config_dialog;
 pub mod icon;
+pub mod progress;
 pub mod tray;
 
 pub use tray::run;

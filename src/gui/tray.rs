@@ -18,6 +18,9 @@ use crate::gui::manager::{BotManager, BotStatus};
 // Fixed menu IDs
 const ID_EXIT: i32 = 1;
 const ID_ADD_SERVER: i32 = 2;
+const ID_SPOTIFY_AUTH: i32 = 3;
+const ID_YT_INSTALL: i32 = 4;
+const ID_YT_UPDATE: i32 = 5;
 
 // Per-bot menu IDs: base + (bot_index * 10) + action
 const ID_BOT_BASE: i32 = 1000;
@@ -186,6 +189,36 @@ fn handle_menu_action(
                 },
             );
         }
+        ID_SPOTIFY_AUTH => {
+            // The browser drives the login UI, so run silently on a worker
+            // thread and let the result land in the log.
+            std::thread::spawn(|| {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::error!("Spotify auth: tokio runtime failed: {e}");
+                        return;
+                    }
+                };
+                let mut auth = crate::spotify::auth::SpotifyAuth::new();
+                match rt.block_on(auth.reauthenticate()) {
+                    Ok(_) => tracing::info!("Spotify re-authentication successful"),
+                    Err(e) => tracing::error!("Spotify re-authentication failed: {e}"),
+                }
+            });
+        }
+        ID_YT_INSTALL => {
+            crate::gui::progress::run_progress_dialog(
+                "Install YouTube tools",
+                |p| crate::gui::progress::youtube_install(p),
+            );
+        }
+        ID_YT_UPDATE => {
+            crate::gui::progress::run_progress_dialog(
+                "Update YouTube tools",
+                |p| crate::gui::progress::youtube_update(p),
+            );
+        }
         _ if id >= ID_BOT_BASE => {
             let bot_idx = ((id - ID_BOT_BASE) / 10) as usize;
             let action = (id - ID_BOT_BASE) % 10;
@@ -318,6 +351,34 @@ fn build_menu(manager: &BotManager) -> Menu {
         menu.append_separator();
     }
 
+    let spotify_signed_in = crate::spotify::auth::SpotifyAuth::new().has_cached_credentials();
+    let spotify_label = if spotify_signed_in {
+        "Spotify: signed in"
+    } else {
+        "Spotify: not signed in"
+    };
+    let spotify_menu = Menu::builder()
+        .append_item(ID_SPOTIFY_AUTH, "Sign in / re-authenticate", "Open the browser to log in to Spotify")
+        .build();
+    menu.append_submenu(spotify_menu, spotify_label, "");
+
+    let yt_installed = crate::youtube::setup::resolve_paths()
+        .map(|p| crate::youtube::setup::is_installed(&p))
+        .unwrap_or(false);
+    let yt_label = if yt_installed {
+        "YouTube tools: installed"
+    } else {
+        "YouTube tools: not installed"
+    };
+    let yt_menu = Menu::builder()
+        .append_item(ID_YT_INSTALL, "Install tools", "Download yt-dlp and bgutil-pot")
+        .append_item(ID_YT_UPDATE, "Update tools", "Update yt-dlp and bgutil-pot")
+        .build();
+    yt_menu.enable_item(ID_YT_INSTALL, !yt_installed);
+    yt_menu.enable_item(ID_YT_UPDATE, yt_installed);
+    menu.append_submenu(yt_menu, yt_label, "");
+
+    menu.append_separator();
     menu.append(ID_ADD_SERVER, "Add Server", "", ItemKind::Normal);
     menu.append_separator();
     menu.append(ID_EXIT, "Exit", "", ItemKind::Normal);
