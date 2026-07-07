@@ -526,7 +526,7 @@ async fn command_processor(
                             .map(|v| v.into_iter().map(Into::into).collect())
                     }
                     crate::services::Service::YouTube => {
-                        youtube_metadata.search_tracks(&query, search_limit).await
+                        youtube_metadata.resolve(&query, search_limit).await
                             .map(|v| v.into_iter().map(Into::into).collect())
                     }
                 };

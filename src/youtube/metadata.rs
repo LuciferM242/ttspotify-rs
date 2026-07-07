@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::config::BotConfig;
 use crate::error::BotError;
 use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
-use crate::youtube::types::YouTubeTrack;
+use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 
 /// YouTube Music metadata service.
 ///
@@ -64,6 +64,56 @@ impl YouTubeMetadata {
             bundle,
             yt_dlp_exe,
         })
+    }
+
+    /// Resolve a YouTube URL/ID/playlist/album/search query into a list of
+    /// tracks. URLs and bare IDs become single-track or playlist/album
+    /// fetches; anything else falls back to the top match for the search.
+    pub async fn resolve(&self, query: &str, _search_limit: u8) -> Result<Vec<YouTubeTrack>, BotError> {
+        match parse_youtube_ref(query) {
+            Some(YouTubeRef::Video(id)) => self.fetch_video(&id).await.map(|t| vec![t]),
+            Some(YouTubeRef::Playlist(id)) => self.fetch_playlist(&id).await,
+            Some(YouTubeRef::Album(id)) => self.fetch_album(&id).await,
+            // A free-form search returns just the top hit so play_and_queue
+            // doesn't accidentally enqueue 5 tracks for a single song name.
+            None => self.search_tracks(query, 1).await,
+        }
+    }
+
+    async fn fetch_video(&self, video_id: &str) -> Result<YouTubeTrack, BotError> {
+        let details = self.client.query()
+            .music_details(video_id)
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube video fetch failed: {e}")))?;
+        Ok(track_item_to_track(details.track))
+    }
+
+    async fn fetch_playlist(&self, playlist_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
+        let mut playlist = self.client.query()
+            .music_playlist(playlist_id)
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
+        // Pull all pages, not just the first.
+        let _ = playlist.tracks.extend_all(&self.client.query()).await;
+        let tracks: Vec<YouTubeTrack> = playlist.tracks.items.into_iter().map(track_item_to_track).collect();
+        if tracks.is_empty() {
+            Err(BotError::NoResults)
+        } else {
+            Ok(tracks)
+        }
+    }
+
+    async fn fetch_album(&self, album_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
+        let album = self.client.query()
+            .music_album(album_id)
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube album fetch failed: {e}")))?;
+        let tracks: Vec<YouTubeTrack> = album.tracks.into_iter().map(track_item_to_track).collect();
+        if tracks.is_empty() {
+            Err(BotError::NoResults)
+        } else {
+            Ok(tracks)
+        }
     }
 
     /// Search YouTube Music for tracks matching the query.
