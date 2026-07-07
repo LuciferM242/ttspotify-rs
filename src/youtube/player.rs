@@ -8,7 +8,7 @@
 //! producers.
 
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::process::{Child, ChildStdout};
+use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

@@ -426,7 +426,7 @@ fn add_text_with_browse(
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add_sizer(&row, 1, SizerFlag::Expand, 0);
 
-    let input_for_handler = input.clone();
+    let input_for_handler = input;
     browse.on_click(move |_| {
         let dlg = FileDialog::builder(&frame)
             .with_message("Select cookies file")

@@ -4,7 +4,6 @@
 //! audio pipeline, command processor, and event loop.
 //! Used by both the standalone binary and the Windows tray manager.
 
-use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 

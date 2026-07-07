@@ -47,8 +47,8 @@ where
     });
 
     let timer = Timer::new(&frame);
-    let log_tick = log.clone();
-    let btn_tick = close_btn.clone();
+    let log_tick = log;
+    let btn_tick = close_btn;
     timer.on_tick(move |_| {
         while let Ok(msg) = rx.try_recv() {
             match msg {
@@ -66,9 +66,8 @@ where
     });
     timer.start(150, false);
 
-    let frame_close = frame.clone();
     close_btn.on_click(move |_| {
-        frame_close.close(true);
+        frame.close(true);
     });
 
     frame.on_destroy(move |evt| {

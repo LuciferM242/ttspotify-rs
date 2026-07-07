@@ -4,7 +4,6 @@
 //! Validates each field and writes valid JSON.
 
 use std::io::{self, Write};
-use std::path::Path;
 
 use crate::config::{config_dir, BotConfig};
 use crate::error::BotError;
