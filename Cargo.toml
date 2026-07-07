@@ -69,7 +69,3 @@ embed-manifest = "1.5"
 name = "tt-spotify-bot"
 path = "src/main.rs"
 
-[[bin]]
-name = "tt-spotify-win"
-path = "src/bin/tray.rs"
-
