@@ -398,12 +398,20 @@ impl CommandDispatcher {
 
             // -- Service switching --
             "sp" | "spotify" => {
-                self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
-                self.reply(client, sender_id, "Switched to Spotify");
+                if self.state.lock().active_service == Service::Spotify {
+                    self.reply(client, sender_id, "Already on Spotify");
+                } else {
+                    self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
+                    self.reply(client, sender_id, "Switched to Spotify");
+                }
             }
             "yt" | "youtube" => {
-                self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
-                self.reply(client, sender_id, "Switched to YouTube");
+                if self.state.lock().active_service == Service::YouTube {
+                    self.reply(client, sender_id, "Already on YouTube");
+                } else {
+                    self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
+                    self.reply(client, sender_id, "Switched to YouTube");
+                }
             }
 
             // -- Bot management --
