@@ -111,9 +111,23 @@ pub async fn run_bot(
         pipeline.run();
     });
 
-    send_event(RunnerEvent::Authenticating);
-    let mut auth = crate::spotify::auth::SpotifyAuth::new();
-    let session = auth.connect().await?;
+    let auth = crate::spotify::auth::SpotifyAuth::new();
+    let session = auth.new_session();
+
+    // Connect Spotify eagerly only if credentials are already cached or Spotify
+    // is the default service. A YouTube-only user with no cached credentials is
+    // never sent to the browser at startup; the connection happens lazily on
+    // their first Spotify command instead (see `ensure_spotify!`).
+    let spotify_connected = if auth.has_cached_credentials()
+        || config.default_service == crate::services::Service::Spotify
+    {
+        send_event(RunnerEvent::Authenticating);
+        auth.connect_existing(&session).await?;
+        true
+    } else {
+        tracing::info!("Skipping Spotify auth at startup; no cached credentials and default service is YouTube");
+        false
+    };
 
     let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx.clone());
     let metadata = SpotifyMetadata::new(session.clone());
@@ -136,6 +150,8 @@ pub async fn run_bot(
         youtube_metadata,
         youtube_player,
         session,
+        auth,
+        spotify_connected,
         state: state.clone(),
         client: client.clone(),
         search_limit: config.search_limit,
@@ -336,6 +352,8 @@ struct CmdContext {
     youtube_metadata: Arc<crate::youtube::metadata::YouTubeMetadata>,
     youtube_player: crate::youtube::player::YouTubePlayer,
     session: librespot_core::session::Session,
+    auth: crate::spotify::auth::SpotifyAuth,
+    spotify_connected: bool,
     state: SharedState,
     client: Arc<::teamtalk::Client>,
     search_limit: u8,
@@ -380,11 +398,16 @@ async fn command_processor(
 ) {
     // Destructure context for ergonomic access
     let CmdContext {
-        player, metadata, youtube_metadata, youtube_player, session, state, client,
+        player, metadata, youtube_metadata, youtube_player, session, auth,
+        spotify_connected, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_path, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx,
     } = ctx;
+
+    // Tracks whether the Spotify session has been connected yet. Starts false
+    // for YouTube-only users; flipped true on first successful `ensure_spotify!`.
+    let mut spotify_connected = spotify_connected;
 
     // Macro to retry a metadata operation once after reconnecting on failure.
     macro_rules! with_reconnect {
@@ -412,6 +435,24 @@ async fn command_processor(
             }
         }
     };
+
+    // Connect the Spotify session on first use. No-op once connected. For a
+    // YouTube-only user this is where the OAuth browser finally opens — on their
+    // first Spotify command, not at startup.
+    macro_rules! ensure_spotify {
+        () => {{
+            if spotify_connected {
+                Ok(())
+            } else {
+                send_event(RunnerEvent::Authenticating);
+                let r = auth.connect_existing(&session).await;
+                if r.is_ok() {
+                    spotify_connected = true;
+                }
+                r
+            }
+        }};
+    }
 
     let reply = |user_id: i32, text: &str| {
         if user_id > 0 {
@@ -521,6 +562,10 @@ async fn command_processor(
                 let active = state.lock().active_service;
                 let result: Result<Vec<crate::track::Track>, BotError> = match active {
                     crate::services::Service::Spotify => {
+                        if let Err(e) = ensure_spotify!() {
+                            reply(user_id, &format!("Spotify unavailable: {e}"));
+                            continue;
+                        }
                         with_reconnect!(metadata.resolve(&query, search_limit))
                             .map(|v| v.into_iter().map(Into::into).collect())
                     }
@@ -802,6 +847,10 @@ async fn command_processor(
                 let active = state.lock().active_service;
                 let result: Result<Vec<crate::track::Track>, BotError> = match active {
                     crate::services::Service::Spotify => {
+                        if let Err(e) = ensure_spotify!() {
+                            reply(user_id, &format!("Spotify unavailable: {e}"));
+                            continue;
+                        }
                         with_reconnect!(metadata.search_tracks(&query, search_limit))
                             .map(|v| v.into_iter().map(Into::into).collect())
                     }
