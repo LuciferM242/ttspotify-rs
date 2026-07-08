@@ -176,6 +176,9 @@ pub fn open_config_dialog(
     panel.set_sizer(main_sizer, true);
 
     // ---- Save handler ----
+    // Rc so the post-install continuation can own a clone while the click
+    // handler keeps its own for any later save.
+    let on_save = std::rc::Rc::new(on_save);
     save_btn.on_click(move |_| {
         // Read all values into a new config, starting from the original
         // to preserve advanced normalisation fields not shown in the GUI.
@@ -291,9 +294,11 @@ pub fn open_config_dialog(
         }
 
         // ---- YouTube setup prompt (post-save) ----
-        prompt_youtube_setup(&frame, &save_path, cfg.default_service);
-
-        on_save(save_path);
+        // Run the post-save action (start/restart the bot) only after any
+        // YouTube install finishes; otherwise the bot launches before the
+        // binaries exist and won't see them until a manual restart.
+        let on_save = on_save.clone();
+        prompt_youtube_setup(&frame, cfg.default_service, move || on_save(save_path));
         frame.close(true);
     });
 
@@ -372,18 +377,31 @@ fn add_combo_field(
 
 // ---- YouTube setup post-save flow ----
 
-fn prompt_youtube_setup(parent: &Frame, _config_path: &std::path::Path, default_service: crate::services::Service) {
+/// Offer to install the YouTube tools after a save, then run `on_complete`.
+///
+/// `on_complete` fires exactly once: immediately when no install is needed (or
+/// declined), or when the install finishes. Callers use it to start/restart the
+/// bot only after the binaries exist, so the running bot can see them.
+fn prompt_youtube_setup(
+    parent: &Frame,
+    default_service: crate::services::Service,
+    on_complete: impl FnOnce() + 'static,
+) {
     use crate::services::Service;
     use crate::youtube::setup;
     use MessageDialogStyle as MDS;
 
     let paths = match setup::resolve_paths() {
         Ok(p) => p,
-        Err(_) => return, // can't resolve — silently skip; not user-actionable
+        Err(_) => {
+            on_complete(); // can't resolve — skip install; not user-actionable
+            return;
+        }
     };
 
     // Skip the entire prompt if binaries are already on disk.
     if setup::is_installed(&paths) {
+        on_complete();
         return;
     }
 
@@ -397,12 +415,14 @@ fn prompt_youtube_setup(parent: &Frame, _config_path: &std::path::Path, default_
         .build()
         .show_modal();
     if res != ID_YES {
+        on_complete();
         return;
     }
 
     crate::gui::progress::run_progress_dialog(
         "Install YouTube tools",
         |p| crate::gui::progress::youtube_install(p),
+        move |_success| on_complete(),
     );
 }
 

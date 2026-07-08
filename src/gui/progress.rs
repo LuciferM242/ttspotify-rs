@@ -15,10 +15,13 @@ enum Msg {
 
 /// Open a modeless progress window that runs `worker` on a background thread.
 /// The worker reports progress through the passed callback; each line is
-/// appended to the log as it arrives.
-pub fn run_progress_dialog<F>(title: &str, worker: F)
+/// appended to the log as it arrives. `on_done` runs on the GUI thread once the
+/// worker finishes, with `true` on success — use it to defer follow-up work
+/// (e.g. starting a bot) until the task actually completes.
+pub fn run_progress_dialog<F, D>(title: &str, worker: F, on_done: D)
 where
     F: FnOnce(&dyn Fn(&str)) -> Result<(), String> + Send + 'static,
+    D: FnOnce(bool) + 'static,
 {
     let frame = Frame::builder()
         .with_title(title)
@@ -49,17 +52,20 @@ where
     let timer = Timer::new(&frame);
     let log_tick = log;
     let btn_tick = close_btn;
+    let on_done = std::cell::RefCell::new(Some(on_done));
     timer.on_tick(move |_| {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 Msg::Line(line) => log_tick.append_text(&format!("{line}\n")),
-                Msg::Done(Ok(())) => {
-                    log_tick.append_text("\nDone.\n");
+                Msg::Done(result) => {
+                    match &result {
+                        Ok(()) => log_tick.append_text("\nDone.\n"),
+                        Err(e) => log_tick.append_text(&format!("\nFailed: {e}\n")),
+                    }
                     btn_tick.enable(true);
-                }
-                Msg::Done(Err(e)) => {
-                    log_tick.append_text(&format!("\nFailed: {e}\n"));
-                    btn_tick.enable(true);
+                    if let Some(cb) = on_done.borrow_mut().take() {
+                        cb(result.is_ok());
+                    }
                 }
             }
         }

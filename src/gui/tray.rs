@@ -211,12 +211,14 @@ fn handle_menu_action(
             crate::gui::progress::run_progress_dialog(
                 "Install YouTube tools",
                 |p| crate::gui::progress::youtube_install(p),
+                |_| {},
             );
         }
         ID_YT_UPDATE => {
             crate::gui::progress::run_progress_dialog(
                 "Update YouTube tools",
                 |p| crate::gui::progress::youtube_update(p),
+                |_| {},
             );
         }
         _ if id >= ID_BOT_BASE => {
@@ -246,10 +248,19 @@ fn handle_menu_action(
                             let mgr_save = mgr.clone();
                             let tb = taskbar.clone();
                             let ic = icon.clone();
+                            let name_cb = name.clone();
                             config_dialog::open_config_dialog(
                                 cfg,
                                 Some(path),
                                 move |_| {
+                                    // Apply the edit (and any freshly installed
+                                    // tools) by restarting a running bot.
+                                    {
+                                        let mut m = mgr_save.borrow_mut();
+                                        if m.is_running(&name_cb) {
+                                            m.restart_nonblocking(&name_cb);
+                                        }
+                                    }
                                     let tooltip =
                                         build_tooltip(&mgr_save.borrow().statuses());
                                     tb.set_icon(&ic, &tooltip);
