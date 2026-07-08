@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::spotify::types::SpotifyTrack;
+use crate::services::Service;
+use crate::track::Track;
 
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
-    pub track: SpotifyTrack,
+    pub track: Track,
     #[allow(dead_code)] // stored for future "who queued this" display
     pub requester: String,
     /// Only allow radio recommendations for single-track plays (not playlists/albums)
@@ -38,13 +39,17 @@ pub struct PlayerState {
     pub radio_enabled: bool,
 
     // Search session (user_id → results)
-    pub search_results: HashMap<i32, Vec<SpotifyTrack>>,
+    pub search_results: HashMap<i32, Vec<Track>>,
 
     // Track position tracking
     pub position_ms: u32,
 
     // Stats
     pub tracks_played: u32,
+
+    // The service that bare commands target (e.g. `p <query>`).
+    // Switched via `/sp` or `/yt`. In-memory only — resets on restart.
+    pub active_service: Service,
 }
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
@@ -62,6 +67,7 @@ impl PlayerState {
             search_results: HashMap::new(),
             position_ms: 0,
             tracks_played: 0,
+            active_service: Service::default(),
         }
     }
 
@@ -69,14 +75,14 @@ impl PlayerState {
         self.current_index.and_then(|i| self.queue.get(i))
     }
 
-    pub fn enqueue(&mut self, track: SpotifyTrack, requester: String, allow_recommend: bool) {
+    pub fn enqueue(&mut self, track: Track, requester: String, allow_recommend: bool) {
         self.queue.push(QueueEntry { track, requester, allow_recommend });
         if self.current_index.is_none() {
             self.current_index = Some(0);
         }
     }
 
-    pub fn enqueue_all(&mut self, tracks: Vec<SpotifyTrack>, requester: String, allow_recommend: bool) {
+    pub fn enqueue_all(&mut self, tracks: Vec<Track>, requester: String, allow_recommend: bool) {
         let was_empty = self.queue.is_empty();
         for track in tracks {
             self.queue.push(QueueEntry {
@@ -105,10 +111,8 @@ impl PlayerState {
             use rand::Rng;
             let mut rng = rand::thread_rng();
             let current = self.current_index.unwrap_or(0);
-            // Only shuffle among upcoming tracks (after current), excluding current
-            let remaining: Vec<usize> = ((current + 1)..self.queue.len())
-                .filter(|&i| i != current)
-                .collect();
+            // Only shuffle among upcoming tracks (after current).
+            let remaining: Vec<usize> = ((current + 1)..self.queue.len()).collect();
             if !remaining.is_empty() {
                 let idx = remaining[rng.gen_range(0..remaining.len())];
                 self.current_index = Some(idx);
@@ -201,8 +205,9 @@ impl PlayerState {
         for (i, entry) in self.queue.iter().enumerate() {
             let marker = if self.current_index == Some(i) { "> " } else { "  " };
             if i > 0 { out.push('\n'); }
-            let _ = write!(out, "{}{}: {} [{}]",
-                marker, i + 1, entry.track.display_name(), entry.track.duration_display());
+            let _ = write!(out, "{}{} [{}]: {} [{}]",
+                marker, i + 1, entry.track.service().marker(),
+                entry.track.display_name(), entry.track.duration_display());
         }
         out
     }
@@ -231,15 +236,15 @@ mod tests {
     use super::*;
     use crate::spotify::types::SpotifyTrack;
 
-    fn track(id: &str) -> SpotifyTrack {
-        SpotifyTrack {
+    fn track(id: &str) -> Track {
+        Track::Spotify(SpotifyTrack {
             id: id.to_string(),
             name: format!("Track {id}"),
             artists: vec!["Artist".to_string()],
             album: "Album".to_string(),
             duration_ms: 180_000,
             uri: format!("spotify:track:{id}"),
-        }
+        })
     }
 
     fn fill(state: &mut PlayerState, n: usize) {
@@ -299,8 +304,8 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.advance().map(|e| e.track.id.clone()), Some("1".to_string()));
-        assert_eq!(state.advance().map(|e| e.track.id.clone()), Some("2".to_string()));
+        assert_eq!(state.advance().map(|e| e.track.id().to_string()), Some("1".to_string()));
+        assert_eq!(state.advance().map(|e| e.track.id().to_string()), Some("2".to_string()));
         assert!(state.advance().is_none());
         assert_eq!(state.current_index, None);
     }
@@ -319,9 +324,9 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         state.repeat_track = true;
-        let id_before = state.current().unwrap().track.id.clone();
+        let id_before = state.current().unwrap().track.id().to_string();
         for _ in 0..5 {
-            assert_eq!(state.advance().unwrap().track.id, id_before);
+            assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
     }
 
@@ -332,9 +337,9 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 2);
         state.repeat_queue = true;
-        assert_eq!(state.advance().unwrap().track.id, "1");
-        assert_eq!(state.advance().unwrap().track.id, "0"); // wrap
-        assert_eq!(state.advance().unwrap().track.id, "1");
+        assert_eq!(state.advance().unwrap().track.id(), "1");
+        assert_eq!(state.advance().unwrap().track.id(), "0"); // wrap
+        assert_eq!(state.advance().unwrap().track.id(), "1");
     }
 
     // -- advance: shuffle --
@@ -346,7 +351,7 @@ mod tests {
             let mut s = PlayerState::new();
             fill(&mut s, 4);
             s.shuffle = true;
-            let next = s.advance().unwrap().track.id.clone();
+            let next = s.advance().unwrap().track.id().to_string();
             let n: usize = next.parse().unwrap();
             assert!((1..=3).contains(&n), "shuffle picked {n}, expected upcoming index");
         }
@@ -369,9 +374,9 @@ mod tests {
         fill(&mut state, 5);
         state.repeat_track = true;
         state.shuffle = true;
-        let id_before = state.current().unwrap().track.id.clone();
+        let id_before = state.current().unwrap().track.id().to_string();
         for _ in 0..10 {
-            assert_eq!(state.advance().unwrap().track.id, id_before);
+            assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
     }
 
@@ -385,7 +390,7 @@ mod tests {
         state.current_index = Some(2); // at end
         // Without repeat_track, repeat_queue would wrap to 0. With repeat_track,
         // we stay on index 2.
-        assert_eq!(state.advance().unwrap().track.id, "2");
+        assert_eq!(state.advance().unwrap().track.id(), "2");
         assert_eq!(state.current_index, Some(2));
     }
 
@@ -397,7 +402,7 @@ mod tests {
             s.shuffle = true;
             s.repeat_queue = true;
             s.current_index = Some(2); // at end
-            let next = s.advance().unwrap().track.id.clone();
+            let next = s.advance().unwrap().track.id().to_string();
             assert_ne!(next, "2", "shuffle+repeat_queue should not repeat current");
         }
     }
@@ -409,8 +414,8 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         state.current_index = Some(2);
-        assert_eq!(state.go_prev().unwrap().track.id, "1");
-        assert_eq!(state.go_prev().unwrap().track.id, "0");
+        assert_eq!(state.go_prev().unwrap().track.id(), "1");
+        assert_eq!(state.go_prev().unwrap().track.id(), "0");
     }
 
     #[test]
@@ -418,7 +423,7 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         // current_index already 0 from enqueue
-        assert_eq!(state.go_prev().unwrap().track.id, "0");
+        assert_eq!(state.go_prev().unwrap().track.id(), "0");
         assert_eq!(state.current_index, Some(0));
     }
 
@@ -427,7 +432,7 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         state.repeat_queue = true;
-        assert_eq!(state.go_prev().unwrap().track.id, "2");
+        assert_eq!(state.go_prev().unwrap().track.id(), "2");
         assert_eq!(state.current_index, Some(2));
     }
 
@@ -436,7 +441,7 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         state.current_index = None;
-        assert_eq!(state.go_prev().unwrap().track.id, "2");
+        assert_eq!(state.go_prev().unwrap().track.id(), "2");
     }
 
     #[test]
@@ -476,7 +481,7 @@ mod tests {
         state.current_index = Some(1);
         state.remove(1);
         assert_eq!(state.current_index, Some(1));
-        assert_eq!(state.current().unwrap().track.id, "2");
+        assert_eq!(state.current().unwrap().track.id(), "2");
     }
 
     #[test]
@@ -541,6 +546,24 @@ mod tests {
         assert!(lines[2].starts_with("  "));
     }
 
+    #[test]
+    fn queue_display_includes_service_marker() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 1);
+        let display = state.queue_display();
+        // Spotify-only queue should mark every entry [SP].
+        assert!(display.contains("[SP]"), "expected [SP] marker, got: {display}");
+        assert!(!display.contains("[YT]"));
+    }
+
+    // -- active_service --
+
+    #[test]
+    fn active_service_defaults_to_spotify() {
+        let state = PlayerState::new();
+        assert_eq!(state.active_service, Service::Spotify);
+    }
+
     // -- mode_display --
 
     #[test]
@@ -577,6 +600,6 @@ mod tests {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
         state.current_index = Some(2);
-        assert_eq!(state.current().unwrap().track.id, "2");
+        assert_eq!(state.current().unwrap().track.id(), "2");
     }
 }

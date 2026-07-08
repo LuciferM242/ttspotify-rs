@@ -1,11 +1,21 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+//! Entry point. On Windows this is the system-tray GUI; on every other
+//! platform it is the CLI bot. Only one `main` compiles per target.
+
+#[cfg(not(windows))]
 use std::sync::Arc;
 
+#[cfg(not(windows))]
 use clap::Parser;
 
+#[cfg(not(windows))]
 use tt_spotify_bot::bot::runner::BotExit;
+#[cfg(not(windows))]
 use tt_spotify_bot::config::BotConfig;
+#[cfg(not(windows))]
 use tt_spotify_bot::error::BotError;
 
+#[cfg(not(windows))]
 #[derive(Parser)]
 #[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot")]
 struct Args {
@@ -34,8 +44,19 @@ struct Args {
     /// Check if Spotify credentials are cached and exit
     #[arg(long)]
     auth_status: bool,
+
+    /// Download YouTube support binaries (yt-dlp, bgutil-pot, plugin) into
+    /// the bot's lib/ folder. Skips if already installed.
+    #[arg(long)]
+    setup_yt: bool,
+
+    /// Update YouTube tools: runs `yt-dlp --update` for the binary's self-
+    /// update, then checks GitHub for a newer bgutil-pot release.
+    #[arg(long)]
+    update_tools: bool,
 }
 
+#[cfg(not(windows))]
 #[tokio::main]
 async fn main() -> Result<(), BotError> {
     let args = Args::parse();
@@ -64,6 +85,26 @@ async fn main() -> Result<(), BotError> {
             println!("Spotify: No cached credentials.");
             println!("  Run with --auth to authenticate.");
             std::process::exit(1);
+        }
+    }
+
+    if args.setup_yt {
+        match tt_spotify_bot::wizard::run_youtube_setup() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("YouTube setup failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.update_tools {
+        match tt_spotify_bot::wizard::run_update_tools() {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("Tool update failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
 
@@ -113,4 +154,40 @@ async fn main() -> Result<(), BotError> {
             _ => std::process::exit(0),
         }
     }
+}
+
+/// Windows system-tray app. Manages multiple bot instances via a wxDragon
+/// tray icon. `--setup` opens the GUI config dialog directly.
+#[cfg(windows)]
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--setup") {
+        let name_arg = args
+            .iter()
+            .position(|a| a == "--setup")
+            .and_then(|i| args.get(i + 1))
+            .filter(|s| !s.starts_with('-'));
+
+        let (config, path) = if let Some(name) = name_arg {
+            let p = tt_spotify_bot::config::config_dir().join(format!("{name}.json"));
+            if p.exists() {
+                let cfg = tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or(""))
+                    .unwrap_or_default();
+                (cfg, Some(p))
+            } else {
+                (tt_spotify_bot::config::BotConfig::default(), None)
+            }
+        } else {
+            (tt_spotify_bot::config::BotConfig::default(), None)
+        };
+
+        let _ = wxdragon::main(|_| {
+            tt_spotify_bot::gui::config_dialog::open_config_dialog(config, path, |saved_path| {
+                tracing::info!("Config saved to: {}", saved_path.display());
+            });
+        });
+        return;
+    }
+
+    tt_spotify_bot::gui::run();
 }

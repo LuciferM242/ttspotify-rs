@@ -60,6 +60,13 @@ pub fn open_config_dialog(
         &["neutral", "male", "female"],
         &config.bot_gender,
     );
+    let default_service_input = add_combo_field(
+        &server_panel,
+        &server_sizer,
+        "Default Service:",
+        &["Spotify", "YouTube"],
+        config.default_service.name(),
+    );
     let license_name_input = add_text_field(
         &server_panel,
         &server_sizer,
@@ -71,6 +78,13 @@ pub fn open_config_dialog(
         &server_sizer,
         "License Key:",
         config.license_key.as_deref().unwrap_or(""),
+    );
+    let cookies_input = add_text_with_browse(
+        &server_panel,
+        &server_sizer,
+        frame,
+        "YT Cookies File:",
+        &config.youtube_cookies_file,
     );
 
     server_sizer.add_growable_col(1, 1);
@@ -162,6 +176,9 @@ pub fn open_config_dialog(
     panel.set_sizer(main_sizer, true);
 
     // ---- Save handler ----
+    // Rc so the post-install continuation can own a clone while the click
+    // handler keeps its own for any later save.
+    let on_save = std::rc::Rc::new(on_save);
     save_btn.on_click(move |_| {
         // Read all values into a new config, starting from the original
         // to preserve advanced normalisation fields not shown in the GUI.
@@ -181,6 +198,8 @@ pub fn open_config_dialog(
         }
         cfg.channel_password = chanpass_input.get_value();
         cfg.bot_gender = gender_input.get_value();
+        cfg.default_service = crate::services::Service::parse_or_default(&default_service_input.get_value());
+        cfg.youtube_cookies_file = cookies_input.get_value();
         let ln = license_name_input.get_value();
         cfg.license_name = if ln.is_empty() { None } else { Some(ln) };
         let lk = license_key_input.get_value();
@@ -274,7 +293,12 @@ pub fn open_config_dialog(
             return;
         }
 
-        on_save(save_path);
+        // ---- YouTube setup prompt (post-save) ----
+        // Run the post-save action (start/restart the bot) only after any
+        // YouTube install finishes; otherwise the bot launches before the
+        // binaries exist and won't see them until a manual restart.
+        let on_save = on_save.clone();
+        prompt_youtube_setup(&frame, cfg.default_service, move || on_save(save_path));
         frame.close(true);
     });
 
@@ -348,5 +372,90 @@ fn add_combo_field(
     input.set_value(selected);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
+    input
+}
+
+// ---- YouTube setup post-save flow ----
+
+/// Offer to install the YouTube tools after a save, then run `on_complete`.
+///
+/// `on_complete` fires exactly once: immediately when no install is needed (or
+/// declined), or when the install finishes. Callers use it to start/restart the
+/// bot only after the binaries exist, so the running bot can see them.
+fn prompt_youtube_setup(
+    parent: &Frame,
+    default_service: crate::services::Service,
+    on_complete: impl FnOnce() + 'static,
+) {
+    use crate::services::Service;
+    use crate::youtube::setup;
+    use MessageDialogStyle as MDS;
+
+    let paths = match setup::resolve_paths() {
+        Ok(p) => p,
+        Err(_) => {
+            on_complete(); // can't resolve — skip install; not user-actionable
+            return;
+        }
+    };
+
+    // Skip the entire prompt if binaries are already on disk.
+    if setup::is_installed(&paths) {
+        on_complete();
+        return;
+    }
+
+    let prompt = if default_service == Service::YouTube {
+        "YouTube support requires extra binaries (~50 MB: yt-dlp, bgutil-pot, plugin). Download now?"
+    } else {
+        "You can also enable YouTube support. This downloads ~50 MB of binaries (yt-dlp, bgutil-pot, plugin). Skip if you only need Spotify. Install YouTube support?"
+    };
+    let res = MessageDialog::builder(parent, prompt, "YouTube Support")
+        .with_style(MDS::YesNo | MDS::IconQuestion)
+        .build()
+        .show_modal();
+    if res != ID_YES {
+        on_complete();
+        return;
+    }
+
+    crate::gui::progress::run_progress_dialog(
+        "Install YouTube tools",
+        |p| crate::gui::progress::youtube_install(p),
+        move |_success| on_complete(),
+    );
+}
+
+/// Text field with a Browse... button next to it, suitable for picking a file path.
+fn add_text_with_browse(
+    parent: &Panel,
+    sizer: &FlexGridSizer,
+    frame: Frame,
+    label: &str,
+    value: &str,
+) -> TextCtrl {
+    let lbl = StaticText::builder(parent).with_label(label).build();
+    let input = TextCtrl::builder(parent).build();
+    input.set_value(value);
+    let browse = Button::builder(parent).with_label("Browse...").build();
+
+    let row = BoxSizer::builder(Orientation::Horizontal).build();
+    row.add(&input, 1, SizerFlag::Expand, 0);
+    row.add(&browse, 0, SizerFlag::AlignCenterVertical | SizerFlag::Left, 4);
+
+    sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
+    sizer.add_sizer(&row, 1, SizerFlag::Expand, 0);
+
+    let input_for_handler = input;
+    browse.on_click(move |_| {
+        let dlg = FileDialog::builder(&frame)
+            .with_message("Select cookies file")
+            .build();
+        if dlg.show_modal() == ID_OK {
+            if let Some(path) = dlg.get_path() {
+                input_for_handler.set_value(&path);
+            }
+        }
+    });
     input
 }

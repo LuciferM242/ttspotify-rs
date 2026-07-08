@@ -3,6 +3,7 @@ name = "tt-spotify-bot"
 version = "0.1.0"
 edition = "2021"
 default-run = "tt-spotify-bot"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 # TeamTalk SDK (local)
@@ -13,6 +14,19 @@ librespot-core = "0.8"
 librespot-playback = "0.8"
 librespot-metadata = "0.8"
 librespot-oauth = "0.8"
+
+# YouTube (rustypipe - GPL-3)
+rustypipe = "0.11"
+
+# YouTube audio: HTTP fetch + decode + resample.
+# symphonia handles Opus and AAC/M4A (the two codecs YouTube serves).
+# rubato resamples 48k Opus down to the 44.1k pipeline rate.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+symphonia = { version = "0.5", features = ["isomp4", "aac"] }
+rubato = "0.16"
+
+# Plugin zip extraction for the YouTube binaries auto-installer.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
@@ -54,8 +68,4 @@ embed-manifest = "1.5"
 [[bin]]
 name = "tt-spotify-bot"
 path = "src/main.rs"
-
-[[bin]]
-name = "tt-spotify-win"
-path = "src/bin/tray.rs"
 

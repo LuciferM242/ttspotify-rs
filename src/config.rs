@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::error::BotError;
+use crate::services::Service;
 
 /// Check whether a string is a recognised gender alias.
 pub fn is_valid_gender(s: &str) -> bool {
@@ -138,6 +139,17 @@ pub struct BotConfig {
     pub repeat_queue: bool,
     #[serde(default)]
     pub shuffle: bool,
+
+    // Service that the bot starts on and that bare commands (p, search) target.
+    #[serde(default, rename = "defaultService")]
+    pub default_service: Service,
+
+    // YouTube: path to a Netscape-format cookies file (optional).
+    // Empty = check for `<config_dir>/cookies.txt`; if neither set nor
+    // present, yt-dlp runs cookie-less and relies on bgutil-pot only.
+    // Helps avoid 403s on rate-limited or age-restricted videos.
+    #[serde(default, rename = "youtubeCookiesFile")]
+    pub youtube_cookies_file: String,
 }
 
 impl Default for BotConfig {
@@ -178,6 +190,8 @@ impl Default for BotConfig {
             repeat_track: false,
             repeat_queue: false,
             shuffle: false,
+            default_service: Service::default(),
+            youtube_cookies_file: String::new(),
         }
     }
 }

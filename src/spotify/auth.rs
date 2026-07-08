@@ -76,10 +76,17 @@ impl SpotifyAuth {
         self.cache.as_ref().is_some_and(|c| c.credentials().is_some())
     }
 
-    pub async fn connect(&mut self) -> Result<Session, BotError> {
-        let session = Session::new(self.config.clone(), self.cache.clone());
+    /// Build a fresh, unconnected session. No network, no browser — just the
+    /// session object. Connect it later with `connect_existing`.
+    pub fn new_session(&self) -> Session {
+        Session::new(self.config.clone(), self.cache.clone())
+    }
 
-        // Try cached credentials first
+    /// Connect an existing session in place: try cached credentials first, fall
+    /// back to OAuth (opens a browser) if none exist or they're rejected. The
+    /// session is an Arc, so any player built from it becomes usable once this
+    /// succeeds.
+    pub async fn connect_existing(&self, session: &Session) -> Result<(), BotError> {
         let credentials = if let Some(cache) = &self.cache {
             if let Some(cached_creds) = cache.credentials() {
                 tracing::info!("Found cached Spotify credentials, attempting connection...");
@@ -96,8 +103,7 @@ impl SpotifyAuth {
         match session.connect(credentials, true).await {
             Ok(()) => {
                 tracing::info!("Spotify session established");
-                self.session = Some(session.clone());
-                Ok(session)
+                Ok(())
             }
             Err(e) => {
                 // If cached credentials failed, try OAuth
@@ -106,10 +112,27 @@ impl SpotifyAuth {
                 session.connect(credentials, true).await
                     .map_err(|e| BotError::SpotifyAuth(format!("OAuth login also failed: {e}")))?;
                 tracing::info!("Spotify session established via OAuth re-authentication");
-                self.session = Some(session.clone());
-                Ok(session)
+                Ok(())
             }
         }
+    }
+
+    pub async fn connect(&mut self) -> Result<Session, BotError> {
+        let session = self.new_session();
+        self.connect_existing(&session).await?;
+        self.session = Some(session.clone());
+        Ok(session)
+    }
+
+    /// Force a fresh OAuth login, ignoring any cached credentials, and store
+    /// the new credentials in the cache. Opens the browser for authorization.
+    pub async fn reauthenticate(&mut self) -> Result<Session, BotError> {
+        let session = Session::new(self.config.clone(), self.cache.clone());
+        let credentials = self.oauth_login()?;
+        session.connect(credentials, true).await
+            .map_err(|e| BotError::SpotifyAuth(format!("OAuth login failed: {e}")))?;
+        self.session = Some(session.clone());
+        Ok(session)
     }
 
     /// Run the OAuth PKCE flow to get credentials.
