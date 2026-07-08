@@ -52,10 +52,13 @@ impl YouTubeMetadata {
             }
         };
 
-        // Resolve yt-dlp once: PATH first, then the bundled copy under
-        // <exe-dir>/lib, then a bare `yt-dlp` (NotFound at spawn time).
-        let yt_dlp_exe = which("yt-dlp")
-            .or_else(|| bundle.as_ref().map(|b| b.yt_dlp.clone()))
+        // Resolve yt-dlp once: prefer the bundled copy under <exe-dir>/lib since
+        // its version is paired with the bundled bgutil plugin and kept current
+        // by --update-tools. Fall back to a PATH install, then a bare `yt-dlp`
+        // (NotFound at spawn time). A stale PATH yt-dlp otherwise wins and 403s
+        // on YouTube's current PO-token requirements.
+        let yt_dlp_exe = bundle.as_ref().map(|b| b.yt_dlp.clone())
+            .or_else(|| which("yt-dlp"))
             .unwrap_or_else(|| PathBuf::from("yt-dlp"));
 
         Ok(Self {
@@ -156,8 +159,11 @@ impl YouTubeMetadata {
         // Wire the bgutil-pot plugin and binary if bundled.
         if let Some(b) = &self.bundle {
             if b.plugin_dir.is_dir() {
+                // yt-dlp searches <plugin-dir>/*/yt_dlp_plugins, one level down,
+                // so point it at lib_dir (which contains the yt-dlp-plugins
+                // package), not at the package dir itself.
                 cmd.arg("--plugin-dirs");
-                cmd.arg(&b.plugin_dir);
+                cmd.arg(&b.lib_dir);
             }
             if b.bgutil_pot.is_file() {
                 cmd.arg("--extractor-args");
@@ -172,6 +178,16 @@ impl YouTubeMetadata {
         if !self.cookies_file.is_empty() {
             cmd.arg("--cookies");
             cmd.arg(&self.cookies_file);
+        }
+
+        // The tray is a GUI process with no console, so a child console app
+        // flashes a command window on each spawn. CREATE_NO_WINDOW suppresses it
+        // for yt-dlp and the bgutil-pot child it launches.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
         cmd.arg("--").arg(&url)
