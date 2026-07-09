@@ -195,6 +195,25 @@ fn parse_seek(cmd: &str, args: &str) -> Option<SeekParse> {
     Some(SeekParse::Seconds(direction * secs))
 }
 
+/// Sanitize an error for display to a user: collapse to a single line and cap
+/// the length, so a raw multi-line `Display` (which may embed internal detail)
+/// doesn't flood a TeamTalk PM. Logs keep the full error.
+pub fn user_error(e: impl std::fmt::Display) -> String {
+    const MAX: usize = 200;
+    let one_line: String = e
+        .to_string()
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let trimmed = one_line.trim();
+    if trimmed.chars().count() > MAX {
+        let head: String = trimmed.chars().take(MAX - 3).collect();
+        format!("{head}...")
+    } else {
+        trimmed.to_string()
+    }
+}
+
 /// Render a search-results numbered listing with the standard footer.
 pub fn format_search_results(tracks: &[crate::track::Track]) -> String {
     let mut msg = String::from("Search results:\n");
@@ -810,6 +829,16 @@ mod tests {
         assert_eq!(parse_seek("sblah", ""), None);
         assert_eq!(parse_seek("sfx", ""), None);
         assert_eq!(parse_seek("stop", ""), None);
+    }
+
+    #[test]
+    fn user_error_collapses_and_caps() {
+        assert_eq!(user_error("simple error"), "simple error");
+        assert_eq!(user_error("line one\nline two\r\nthree"), "line one line two  three");
+        let long = "x".repeat(500);
+        let out = user_error(long);
+        assert_eq!(out.chars().count(), 200);
+        assert!(out.ends_with("..."));
     }
 
     #[test]

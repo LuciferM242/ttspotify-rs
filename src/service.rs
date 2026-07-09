@@ -39,8 +39,9 @@ pub fn install_service() -> Result<(), BotError> {
     std::fs::create_dir_all(&config_base)?;
 
     let service_path = systemd.join(SERVICE_NAME);
+    // Quote the binary and config paths so spaces in either don't break the unit.
     let exec_start = format!(
-        "{} --config {}/{}.json",
+        "\"{}\" --config \"{}/{}.json\"",
         exe_path.display(),
         config_base.display(),
         "%i"

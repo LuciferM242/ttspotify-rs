@@ -24,14 +24,38 @@ pub fn parse_gender(s: &str) -> ::teamtalk::types::UserGender {
 
 /// Platform-aware config directory.
 /// Linux/macOS: ~/.config/ttspotify/
-/// Windows: data/ (next to the executable)
+/// Windows: `data/` next to the executable (not the current working directory),
+/// so launching from a shortcut/autostart with a different working dir still
+/// finds the right config. Falls back to `<cwd>/data` only if that's where an
+/// existing install already lives, keeping older setups working.
 pub fn config_dir() -> PathBuf {
     if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("ttspotify")
     } else {
-        PathBuf::from("data")
+        let exe_data = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("data")));
+        match exe_data {
+            Some(exe_data) => {
+                if exe_data.exists() {
+                    exe_data
+                } else {
+                    let cwd_data = PathBuf::from("data");
+                    if cwd_data.exists() {
+                        tracing::warn!(
+                            "Using config dir {} (cwd) — consider moving it next to the executable",
+                            cwd_data.display()
+                        );
+                        cwd_data
+                    } else {
+                        exe_data
+                    }
+                }
+            }
+            None => PathBuf::from("data"),
+        }
     }
 }
 

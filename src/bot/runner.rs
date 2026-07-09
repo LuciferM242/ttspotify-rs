@@ -646,7 +646,7 @@ async fn command_processor(
                 let result: Result<Vec<crate::track::Track>, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
-                            reply(user_id, &format!("Spotify unavailable: {e}"));
+                            reply(user_id, &format!("Spotify unavailable: {}", crate::bot::commands::user_error(&e)));
                             continue;
                         }
                         with_reconnect!(metadata.resolve(&query, search_limit))
@@ -717,7 +717,7 @@ async fn command_processor(
                         }
                     }
                     Err(e) => {
-                        reply(user_id, &format!("Search failed: {e}"));
+                        reply(user_id, &format!("Search failed: {}", crate::bot::commands::user_error(&e)));
                     }
                 }
             }
@@ -818,7 +818,7 @@ async fn command_processor(
                                         reply(user_id, "Radio: no recommendations found");
                                     }
                                     Err(e) => {
-                                        reply(user_id, &format!("Radio failed: {e}"));
+                                        reply(user_id, &format!("Radio failed: {}", crate::bot::commands::user_error(&e)));
                                     }
                                 }
                             }
@@ -947,7 +947,7 @@ async fn command_processor(
                 let result: Result<Vec<crate::track::Track>, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
-                            reply(user_id, &format!("Spotify unavailable: {e}"));
+                            reply(user_id, &format!("Spotify unavailable: {}", crate::bot::commands::user_error(&e)));
                             continue;
                         }
                         with_reconnect!(metadata.search_tracks(&query, search_limit))
@@ -964,7 +964,7 @@ async fn command_processor(
                         state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
-                        reply(user_id, &format!("Search failed: {e}"));
+                        reply(user_id, &format!("Search failed: {}", crate::bot::commands::user_error(&e)));
                     }
                 }
             }
