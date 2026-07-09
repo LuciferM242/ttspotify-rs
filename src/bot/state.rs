@@ -1,11 +1,16 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
 use crate::services::Service;
 use crate::track::Track;
+
+/// How long a user's search results stay pickable before being swept.
+/// Prevents `search_results` growing unbounded when users search and walk away.
+const SEARCH_RESULT_TTL: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
@@ -38,8 +43,9 @@ pub struct PlayerState {
     // Radio
     pub radio_enabled: bool,
 
-    // Search session (user_id → results)
-    pub search_results: HashMap<i32, Vec<Track>>,
+    // Search session (user_id → (inserted_at, results)). Access via the
+    // search-result helper methods so stale entries get swept.
+    pub search_results: HashMap<i32, (Instant, Vec<Track>)>,
 
     // Track position tracking
     pub position_ms: u32,
@@ -73,6 +79,36 @@ impl PlayerState {
 
     pub fn current(&self) -> Option<&QueueEntry> {
         self.current_index.and_then(|i| self.queue.get(i))
+    }
+
+    /// Store a user's search results, timestamped, sweeping any entries older
+    /// than `SEARCH_RESULT_TTL` first.
+    pub fn insert_search_results(&mut self, user_id: i32, tracks: Vec<Track>) {
+        self.insert_search_results_at(user_id, tracks, Instant::now());
+    }
+
+    /// Timestamp-injectable variant for tests.
+    pub fn insert_search_results_at(&mut self, user_id: i32, tracks: Vec<Track>, now: Instant) {
+        self.search_results
+            .retain(|_, (t, _)| now.duration_since(*t) < SEARCH_RESULT_TTL);
+        self.search_results.insert(user_id, (now, tracks));
+    }
+
+    /// Borrow a user's current search results, if any.
+    pub fn get_search_results(&self, user_id: i32) -> Option<&Vec<Track>> {
+        self.search_results.get(&user_id).map(|(_, v)| v)
+    }
+
+    /// Remove a user's search results; returns whether an entry existed.
+    pub fn remove_search_results(&mut self, user_id: i32) -> bool {
+        self.search_results.remove(&user_id).is_some()
+    }
+
+    /// Clone the `pick`-th result of a user's search, if present.
+    pub fn pick_search_result(&self, user_id: i32, pick: usize) -> Option<Track> {
+        self.search_results
+            .get(&user_id)
+            .and_then(|(_, v)| v.get(pick).cloned())
     }
 
     pub fn enqueue(&mut self, track: Track, requester: String, allow_recommend: bool) {
@@ -251,6 +287,31 @@ mod tests {
         for i in 0..n {
             state.enqueue(track(&i.to_string()), "tester".to_string(), true);
         }
+    }
+
+    // -- search results --
+
+    #[test]
+    fn insert_and_pick_search_results() {
+        let mut state = PlayerState::new();
+        state.insert_search_results(7, vec![track("a"), track("b")]);
+        assert_eq!(state.pick_search_result(7, 1).unwrap().id(), "b");
+        assert!(state.get_search_results(7).is_some());
+        assert!(state.remove_search_results(7));
+        assert!(state.get_search_results(7).is_none());
+    }
+
+    #[test]
+    fn stale_search_results_are_swept_on_insert() {
+        let mut state = PlayerState::new();
+        let t0 = Instant::now();
+        // Old entry for user 1.
+        state.insert_search_results_at(1, vec![track("a")], t0);
+        // Fresh insert for user 2 well past the TTL sweeps user 1.
+        let later = t0 + SEARCH_RESULT_TTL + Duration::from_secs(1);
+        state.insert_search_results_at(2, vec![track("b")], later);
+        assert!(state.get_search_results(1).is_none(), "stale entry should be evicted");
+        assert!(state.get_search_results(2).is_some());
     }
 
     // -- enqueue / enqueue_all --

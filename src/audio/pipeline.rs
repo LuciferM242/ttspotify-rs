@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,11 +19,19 @@ const FRAME_SIZE: usize = FRAME_SAMPLES * CHANNELS as usize; // 1764
 /// Block duration in microseconds (~20ms)
 const BLOCK_DURATION_US: u64 = (FRAME_SAMPLES as u64 * 1_000_000) / SAMPLE_RATE as u64;
 
+/// Monotonic, always-positive stream IDs. The previous millisecond-based scheme
+/// could collide when two tracks started within the same millisecond and could
+/// produce negative IDs once the value overflowed i32.
 fn new_stream_id() -> i32 {
-    (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() & 0xFFFFFFFF) as i32
+    static NEXT_STREAM_ID: AtomicI32 = AtomicI32::new(1);
+    let id = NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed);
+    if id > 0 {
+        id
+    } else {
+        // Wrapped past i32::MAX: restart the sequence at 1.
+        NEXT_STREAM_ID.store(2, Ordering::Relaxed);
+        1
+    }
 }
 
 pub struct AudioPipeline {

@@ -135,7 +135,7 @@ impl CommandDispatcher {
         match stripped.to_lowercase().as_str() {
             "a" | "cancel" | "abort" | "exit" => {
                 let mut state = self.state.lock();
-                if state.search_results.remove(&sender_id).is_some() {
+                if state.remove_search_results(sender_id) {
                     self.reply(client, sender_id, "Search cancelled");
                 }
                 return true;
@@ -229,8 +229,9 @@ impl CommandDispatcher {
                 if args.starts_with("clear") {
                     self.send(BotCommand::QueueClear { user_id: sender_id });
                     self.reply(client, sender_id, "Queue cleared");
-                } else if let Some(rest) = args.strip_prefix("rm ") {
-                    if let Ok(n) = rest.trim().parse::<usize>() {
+                } else if let Some(rest) = args.strip_prefix("rm") {
+                    let rest = rest.trim();
+                    if let Ok(n) = rest.parse::<usize>() {
                         if n == 0 {
                             self.reply(client, sender_id, "Index starts at 1");
                         } else {
@@ -247,6 +248,8 @@ impl CommandDispatcher {
                                 self.reply(client, sender_id, &format!("Removed: {name}"));
                             }
                         }
+                    } else {
+                        self.reply(client, sender_id, "Usage: queue rm <number>");
                     }
                 } else {
                     let state = self.state.lock();
@@ -313,11 +316,27 @@ impl CommandDispatcher {
             }
 
             // -- Seek (also handles sf10, sb5) --
-            cmd_str if cmd_str.starts_with("sf") || cmd_str.starts_with("sb") => {
+            // Only match bare "sf"/"sb" or "sf"/"sb" immediately followed by
+            // digits (sf10). This keeps "sblah" from silently seeking 10s.
+            cmd_str if (cmd_str == "sf" || cmd_str == "sb")
+                || ((cmd_str.starts_with("sf") || cmd_str.starts_with("sb"))
+                    && cmd_str.len() > 2
+                    && cmd_str[2..].chars().all(|c| c.is_ascii_digit())) =>
+            {
                 let direction: i32 = if cmd_str.starts_with("sf") { 1 } else { -1 };
-                // Try number attached to command (sf10) or in args (sf 10)
+                // Number attached to command (sf10) or in args (sf 10); bare sf/sb = 10s.
                 let num_str = if cmd_str.len() > 2 { &cmd_str[2..] } else { args };
-                let secs: i32 = num_str.parse().unwrap_or(10);
+                let secs: i32 = if num_str.is_empty() {
+                    10
+                } else {
+                    match num_str.parse() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            self.reply(client, sender_id, "Usage: sf [seconds] / sb [seconds]");
+                            return true;
+                        }
+                    }
+                };
                 self.send(BotCommand::Seek { offset_ms: direction * secs * 1000, user_id: sender_id });
                 let dir_word = if direction > 0 { "forward" } else { "backward" };
                 self.reply(client, sender_id, &format!("Seeking {dir_word} {secs}s"));
@@ -334,7 +353,7 @@ impl CommandDispatcher {
                 } else {
                     // Re-display active search results if available
                     let msg = self.state.lock()
-                        .search_results.get(&sender_id)
+                        .get_search_results(sender_id)
                         .map(|results| format_search_results(results));
                     match msg {
                         Some(m) => self.reply(client, sender_id, &m),

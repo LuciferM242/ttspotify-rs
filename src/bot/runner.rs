@@ -72,7 +72,7 @@ pub async fn run_bot(
     initial_state.shuffle = config.shuffle;
     initial_state.active_service = config.default_service;
     let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
-    let volume = Arc::new(AtomicU8::new(config.volume));
+    let volume = Arc::new(AtomicU8::new(config.volume.min(config.max_volume)));
 
     let (audio_tx, audio_rx) = crossbeam_channel::bounded::<Vec<i16>>(256);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<BotCommand>();
@@ -556,6 +556,41 @@ async fn command_processor(
         shutdown.store(true, Ordering::Relaxed);
     };
 
+    // Count consecutive track-start failures so a queue full of dead entries
+    // (e.g. unresolvable URIs) doesn't loop forever auto-skipping.
+    const MAX_CONSECUTIVE_START_FAILURES: u32 = 3;
+    let mut consec_start_failures: u32 = 0;
+
+    // Start a track; on failure report to the requester and auto-skip to the
+    // next entry, unless too many have failed in a row (then stop and go idle).
+    // Expands to a bool: true = now playing, false = failed (caller skips its
+    // "Now playing" replies).
+    macro_rules! start_or_skip {
+        ($service:expr, $uri:expr, $user_id:expr, $name:expr) => {{
+            if start_track($service, $uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+                consec_start_failures = 0;
+                true
+            } else {
+                consec_start_failures += 1;
+                reply($user_id, &format!("Failed to start track: {}", $name));
+                if consec_start_failures >= MAX_CONSECUTIVE_START_FAILURES {
+                    consec_start_failures = 0;
+                    stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
+                    {
+                        let mut s = state.lock();
+                        s.clear();
+                        s.position_ms = 0;
+                    }
+                    set_status("Idle");
+                    send_event(RunnerEvent::Idle);
+                } else {
+                    let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
+                }
+                false
+            }
+        }};
+    }
+
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BotCommand::SearchAndPlay { query, user_id, user_name } => {
@@ -603,20 +638,21 @@ async fn command_processor(
                         };
 
                         if is_idle {
-                            start_track(first_service, &first_uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
-                            if count > 1 {
-                                reply(user_id, &format!("Now playing: {first_name} (+{} queued)", count - 1));
-                            } else {
-                                reply(user_id, &format!("Now playing: {first_name}"));
-                            }
-                            let status_text = now_playing_status(&first_name, &state);
-                            set_status(&status_text);
-                            send_event(RunnerEvent::Playing(first_name.clone()));
+                            if start_or_skip!(first_service, &first_uri, user_id, &first_name) {
+                                if count > 1 {
+                                    reply(user_id, &format!("Now playing: {first_name} (+{} queued)", count - 1));
+                                } else {
+                                    reply(user_id, &format!("Now playing: {first_name}"));
+                                }
+                                let status_text = now_playing_status(&first_name, &state);
+                                set_status(&status_text);
+                                send_event(RunnerEvent::Playing(first_name.clone()));
 
-                            if !is_multi {
-                                let radio_on = state.lock().radio_enabled;
-                                if radio_on {
-                                    schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
+                                if !is_multi {
+                                    let radio_on = state.lock().radio_enabled;
+                                    if radio_on {
+                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
+                                    }
                                 }
                             }
                         } else {
@@ -687,25 +723,28 @@ async fn command_processor(
                     s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((service, uri_str, name)) = next {
-                    if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+                    if start_or_skip!(service, &uri_str, user_id, &name) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
                         send_event(RunnerEvent::Playing(name.clone()));
-                    }
 
-                    let (radio_on, at_end, allow_rec) = {
-                        let s = state.lock();
-                        let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
-                        let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                        (s.radio_enabled, at_end, allow)
-                    };
-                    if radio_on && at_end && allow_rec {
-                        schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
+                        let (radio_on, at_end, allow_rec) = {
+                            let s = state.lock();
+                            let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                            let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
+                            (s.radio_enabled, at_end, allow)
+                        };
+                        if radio_on && at_end && allow_rec {
+                            schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
+                        }
                     }
                 } else {
                     let radio_on = state.lock().radio_enabled;
 
+                    // Track whether a radio track was successfully started; if not,
+                    // fall through to a clean idle state below.
+                    let mut resumed = false;
                     if radio_on && pre_allow_rec {
                         if let Some(seed) = pre_seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
@@ -719,7 +758,8 @@ async fn command_processor(
                                             let mut s = state.lock();
                                             s.enqueue_all(tracks, "Radio".to_string(), true);
                                         }
-                                        if start_track(crate::services::Service::Spotify, &first_uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+                                        if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
+                                            resumed = true;
                                             reply(user_id, &format!("Radio: {first_name}"));
                                             let status_text = now_playing_status(&first_name, &state);
                                             set_status(&status_text);
@@ -727,20 +767,28 @@ async fn command_processor(
                                         }
                                     }
                                     Ok(_) => {
-                                        player.stop();
                                         reply(user_id, "Radio: no recommendations found");
-                                        send_event(RunnerEvent::Idle);
                                     }
                                     Err(e) => {
-                                        player.stop();
                                         reply(user_id, &format!("Radio failed: {e}"));
-                                        send_event(RunnerEvent::Idle);
                                     }
                                 }
                             }
                         }
                     } else if user_id > 0 {
                         reply(user_id, "End of queue");
+                    }
+
+                    // Nothing left playing: reset to a clean idle state so the
+                    // status line and PlaybackStatus don't stay stuck on "Playing".
+                    if !resumed {
+                        stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
+                        {
+                            let mut s = state.lock();
+                            s.position_ms = 0;
+                        }
+                        set_status("Idle");
+                        send_event(RunnerEvent::Idle);
                     }
                 }
             }
@@ -751,7 +799,7 @@ async fn command_processor(
                     s.go_prev().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
                 };
                 if let Some((service, uri_str, name)) = prev {
-                    if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+                    if start_or_skip!(service, &uri_str, user_id, &name) {
                         reply(user_id, &format!("Now playing: {name}"));
                         let status_text = now_playing_status(&name, &state);
                         set_status(&status_text);
@@ -862,7 +910,7 @@ async fn command_processor(
                 match result {
                     Ok(tracks) => {
                         reply(user_id, &crate::bot::commands::format_search_results(&tracks));
-                        state.lock().search_results.insert(user_id, tracks);
+                        state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
                         reply(user_id, &format!("Search failed: {e}"));
@@ -873,10 +921,9 @@ async fn command_processor(
             BotCommand::SearchPick { user_id, pick, user_name } => {
                 let picked = {
                     let mut s = state.lock();
-                    let track = s.search_results.get(&user_id)
-                        .and_then(|results| results.get(pick).cloned());
+                    let track = s.pick_search_result(user_id, pick);
                     track.map(|track| {
-                        s.search_results.remove(&user_id);
+                        s.remove_search_results(user_id);
                         let idle = s.status == PlaybackStatus::Idle;
                         if idle { s.clear(); }
                         let service = track.service();
@@ -888,7 +935,7 @@ async fn command_processor(
                 };
                 if let Some((service, uri_str, track_name, is_idle)) = picked {
                     if is_idle {
-                        if start_track(service, &uri_str, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+                        if start_or_skip!(service, &uri_str, user_id, &track_name) {
                             reply(user_id, &format!("Now playing: {track_name}"));
                             let status_text = now_playing_status(&track_name, &state);
                             set_status(&status_text);

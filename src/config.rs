@@ -197,10 +197,32 @@ impl Default for BotConfig {
 }
 
 impl BotConfig {
+    /// Read and parse a config file. No wizard prompt, no validation — pure I/O
+    /// plus deserialization. Safe to call from async/background contexts (never
+    /// blocks on stdin).
+    fn parse_file(path: &Path) -> Result<Self, BotError> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
+        serde_json::from_str(&contents)
+            .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))
+    }
+
+    /// Load and validate a config without any interactive prompt. Fails if the
+    /// file is missing. Use this from any runtime/background path.
+    pub fn load_noninteractive(path: &str) -> Result<Self, BotError> {
+        let mut config = Self::parse_file(Path::new(path))?;
+        for warning in config.validate() {
+            tracing::warn!("Config {path}: {warning}");
+        }
+        Ok(config)
+    }
+
+    /// Load config for startup. If the file is missing, offer the interactive
+    /// setup wizard (blocks on stdin — startup only, never from a worker task).
     pub fn load(path: &str) -> Result<Self, BotError> {
-        let path = Path::new(path);
-        if !path.exists() {
-            eprintln!("Config file not found: {}", path.display());
+        let path_ref = Path::new(path);
+        if !path_ref.exists() {
+            eprintln!("Config file not found: {}", path_ref.display());
             eprint!("Would you like to run the setup wizard? [y/N] ");
             use std::io::Write;
             std::io::stderr().flush().ok();
@@ -212,28 +234,74 @@ impl BotConfig {
                 // Re-check if a config was created in the default config dir
                 let configs = list_configs();
                 if let Some((_, created_path)) = configs.first() {
-                    let contents = std::fs::read_to_string(created_path)
-                        .map_err(|e| BotError::Config(format!("Failed to read config: {e}")))?;
-                    let config: Self = serde_json::from_str(&contents)
-                        .map_err(|e| BotError::Config(format!("Failed to parse config: {e}")))?;
+                    let mut config = Self::parse_file(created_path)
+                        .map_err(|e| BotError::Config(format!("Failed to load created config: {e}")))?;
+                    for warning in config.validate() {
+                        tracing::warn!("Config: {warning}");
+                    }
                     return Ok(config);
                 }
             }
             return Err(BotError::Config(format!(
                 "Config not found: {}\nRun: tt-spotify-bot --setup",
-                path.display()
+                path_ref.display()
             )));
         }
-        let contents = std::fs::read_to_string(path)
-            .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
-        let config: Self = serde_json::from_str(&contents)
-            .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))?;
-        Ok(config)
+        Self::load_noninteractive(path)
     }
 
-    /// Load config, apply a mutation, and save it back.
+    /// Clamp out-of-range fields to sane values, returning a list of the
+    /// corrections made (for logging). Keeps a hand-edited config from putting
+    /// the bot into an unusable state (e.g. volume above the cap, port 0).
+    pub fn validate(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if self.max_volume > 100 {
+            warnings.push(format!("max_volume {} > 100, clamped to 100", self.max_volume));
+            self.max_volume = 100;
+        }
+        if self.volume > self.max_volume {
+            warnings.push(format!(
+                "volume {} > max_volume {}, clamped",
+                self.volume, self.max_volume
+            ));
+            self.volume = self.max_volume;
+        }
+        if self.radio_batch_size < 1 {
+            warnings.push("radio_batch_size < 1, set to 1".to_string());
+            self.radio_batch_size = 1;
+        }
+        if self.search_limit < 1 || self.search_limit > 20 {
+            let clamped = self.search_limit.clamp(1, 20);
+            warnings.push(format!("search_limit {} out of 1..=20, set to {clamped}", self.search_limit));
+            self.search_limit = clamped;
+        }
+        if self.volume_ramp_step <= 0.0 || !self.volume_ramp_step.is_finite() {
+            warnings.push(format!("volume_ramp_step {} invalid, reset to 0.03", self.volume_ramp_step));
+            self.volume_ramp_step = 0.03;
+        }
+        if !(1..=65535).contains(&self.tcp_port) {
+            warnings.push(format!("tcp_port {} out of range, reset to 10333", self.tcp_port));
+            self.tcp_port = 10333;
+        }
+        if !(1..=65535).contains(&self.udp_port) {
+            warnings.push(format!("udp_port {} out of range, reset to 10333", self.udp_port));
+            self.udp_port = 10333;
+        }
+        if self.host.trim().is_empty() {
+            warnings.push("host is empty, reset to localhost".to_string());
+            self.host = "localhost".to_string();
+        }
+        if self.bot_name.trim().is_empty() {
+            warnings.push("bot_name is empty, reset to Spotify".to_string());
+            self.bot_name = "Spotify".to_string();
+        }
+        warnings
+    }
+
+    /// Load config, apply a mutation, and save it back. Non-interactive: a
+    /// missing config file logs an error rather than blocking on the wizard.
     pub fn update(path: &str, f: impl FnOnce(&mut BotConfig)) {
-        match Self::load(path) {
+        match Self::load_noninteractive(path) {
             Ok(mut cfg) => {
                 f(&mut cfg);
                 if let Err(e) = cfg.save(Path::new(path)) {
@@ -321,5 +389,84 @@ mod tests {
         for s in ["", "xyz", "other"] {
             assert_eq!(parse_gender(s), UserGender::Neutral, "{s}");
         }
+    }
+
+    // -- validate --
+
+    #[test]
+    fn validate_default_config_is_clean() {
+        let mut cfg = BotConfig::default();
+        assert!(cfg.validate().is_empty(), "default config should need no corrections");
+    }
+
+    #[test]
+    fn validate_clamps_volume_to_max() {
+        let mut cfg = BotConfig::default();
+        cfg.max_volume = 60;
+        cfg.volume = 90;
+        let warnings = cfg.validate();
+        assert_eq!(cfg.volume, 60);
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_clamps_max_volume_over_100() {
+        let mut cfg = BotConfig::default();
+        cfg.max_volume = 200;
+        cfg.volume = 150;
+        cfg.validate();
+        assert_eq!(cfg.max_volume, 100);
+        assert_eq!(cfg.volume, 100);
+    }
+
+    #[test]
+    fn validate_fixes_zero_ports() {
+        let mut cfg = BotConfig::default();
+        cfg.tcp_port = 0;
+        cfg.udp_port = 99999;
+        cfg.validate();
+        assert_eq!(cfg.tcp_port, 10333);
+        assert_eq!(cfg.udp_port, 10333);
+    }
+
+    #[test]
+    fn validate_fixes_empty_host_and_name() {
+        let mut cfg = BotConfig::default();
+        cfg.host = "  ".to_string();
+        cfg.bot_name = String::new();
+        cfg.validate();
+        assert_eq!(cfg.host, "localhost");
+        assert_eq!(cfg.bot_name, "Spotify");
+    }
+
+    #[test]
+    fn validate_fixes_bad_ramp_and_batch() {
+        let mut cfg = BotConfig::default();
+        cfg.volume_ramp_step = 0.0;
+        cfg.radio_batch_size = 0;
+        cfg.search_limit = 50;
+        cfg.validate();
+        assert_eq!(cfg.volume_ramp_step, 0.03);
+        assert_eq!(cfg.radio_batch_size, 1);
+        assert_eq!(cfg.search_limit, 20);
+    }
+
+    #[test]
+    fn config_round_trip_preserves_fields() {
+        let mut cfg = BotConfig::default();
+        cfg.host = "tt.example.com".to_string();
+        cfg.tcp_port = 12345;
+        cfg.volume = 42;
+        cfg.max_volume = 88;
+        cfg.radio_enabled = true;
+        cfg.default_service = Service::YouTube;
+        let json = serde_json::to_string_pretty(&cfg).unwrap();
+        let parsed: BotConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.host, "tt.example.com");
+        assert_eq!(parsed.tcp_port, 12345);
+        assert_eq!(parsed.volume, 42);
+        assert_eq!(parsed.max_volume, 88);
+        assert!(parsed.radio_enabled);
+        assert_eq!(parsed.default_service, Service::YouTube);
     }
 }

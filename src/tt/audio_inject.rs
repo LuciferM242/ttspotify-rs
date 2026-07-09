@@ -27,7 +27,7 @@ pub fn inject_audio_block(
 pub fn flush_audio(client: &Client) {
     let mut block: ffi::AudioBlock = unsafe { std::mem::zeroed() };
     block.nStreamID = 0;
-    block.nSampleRate = 48000;
+    block.nSampleRate = 44100;
     block.nChannels = 2;
     block.lpRawAudio = std::ptr::null_mut();
     block.nSamples = 0;
