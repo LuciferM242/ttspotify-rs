@@ -332,9 +332,19 @@ fn decode_and_stream(
         ).map_err(|e| format!("resampler new: {e}"))?)
     };
 
-    // Per-channel scratch buffers we feed the resampler.
+    // Per-channel accumulators feeding the resampler.
     let mut buf_l: Vec<f32> = Vec::with_capacity(chunk_in * 4);
     let mut buf_r: Vec<f32> = Vec::with_capacity(chunk_in * 4);
+
+    // Reusable scratch to avoid per-chunk heap allocations on the decode hot
+    // path: fixed-size resampler input, and preallocated output buffers fed to
+    // `process_into_buffer` (plain `process` allocates fresh output Vecs each
+    // call). Output is sized to the resampler's max so validation always passes.
+    let mut in_l: Vec<f32> = Vec::with_capacity(chunk_in);
+    let mut in_r: Vec<f32> = Vec::with_capacity(chunk_in);
+    let out_cap = resampler.as_ref().map(|rs| rs.output_frames_max()).unwrap_or(0);
+    let mut out_l: Vec<f32> = vec![0.0; out_cap];
+    let mut out_r: Vec<f32> = vec![0.0; out_cap];
 
     // Seek support: decode-and-discard source frames until `start_ms` is
     // reached, then begin sending. Decoding is far faster than realtime, so a
@@ -414,13 +424,22 @@ fn decode_and_stream(
 
         // Drain in chunk_in-sized slices through the resampler.
         while buf_l.len() >= chunk_in {
-            let in_l: Vec<f32> = buf_l.drain(..chunk_in).collect();
-            let in_r: Vec<f32> = buf_r.drain(..chunk_in).collect();
+            in_l.clear();
+            in_r.clear();
+            in_l.extend_from_slice(&buf_l[..chunk_in]);
+            in_r.extend_from_slice(&buf_r[..chunk_in]);
+            buf_l.drain(..chunk_in);
+            buf_r.drain(..chunk_in);
 
             let frame = if let Some(ref mut rs) = resampler {
-                let out = rs.process(&[in_l, in_r], None)
+                let (_, written) = rs
+                    .process_into_buffer(
+                        &[&in_l, &in_r],
+                        &mut [out_l.as_mut_slice(), out_r.as_mut_slice()],
+                        None,
+                    )
                     .map_err(|e| format!("resample: {e}"))?;
-                interleave_to_i16(&out[0], &out[1])
+                interleave_to_i16(&out_l[..written], &out_r[..written])
             } else {
                 interleave_to_i16(&in_l, &in_r)
             };

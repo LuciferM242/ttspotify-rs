@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,6 +19,44 @@ const FRAME_SIZE: usize = FRAME_SAMPLES * CHANNELS as usize; // 1764
 
 /// Block duration in microseconds (~20ms)
 const BLOCK_DURATION_US: u64 = (FRAME_SAMPLES as u64 * 1_000_000) / SAMPLE_RATE as u64;
+
+/// Accumulates incoming PCM and hands out fixed-size frames. Backed by a
+/// `VecDeque` so consuming a frame is O(frame) with no O(remaining) memmove —
+/// the previous `Vec::drain(..FRAME_SIZE)` shifted every leftover sample to the
+/// front on every 20ms frame.
+struct Framer {
+    buf: VecDeque<i16>,
+}
+
+impl Framer {
+    fn new(capacity: usize) -> Self {
+        Self { buf: VecDeque::with_capacity(capacity) }
+    }
+
+    fn push(&mut self, samples: &[i16]) {
+        self.buf.extend(samples.iter().copied());
+    }
+
+    fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// Pop exactly `out.len()` samples into `out`. Returns false (leaving `out`
+    /// untouched) if fewer than that are buffered.
+    fn pop_frame(&mut self, out: &mut [i16]) -> bool {
+        if self.buf.len() < out.len() {
+            return false;
+        }
+        for slot in out.iter_mut() {
+            *slot = self.buf.pop_front().unwrap();
+        }
+        true
+    }
+}
 
 /// Monotonic, always-positive stream IDs. The previous millisecond-based scheme
 /// could collide when two tracks started within the same millisecond and could
@@ -44,7 +83,7 @@ pub struct AudioPipeline {
     pause_flag: Arc<AtomicBool>,
     shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
-    accumulator: Vec<i16>,
+    framer: Framer,
     frame_buf: Vec<i16>,
     stream_id: i32,
     sample_index: u32,
@@ -75,8 +114,8 @@ impl AudioPipeline {
             pause_flag,
             shutdown_flag,
             volume_controller,
-            accumulator: Vec::with_capacity(FRAME_SIZE * 4),
-            frame_buf: Vec::with_capacity(FRAME_SIZE),
+            framer: Framer::new(FRAME_SIZE * 4),
+            frame_buf: vec![0i16; FRAME_SIZE],
             stream_id: new_stream_id(),
             sample_index: 0,
             next_block_time: None,
@@ -103,7 +142,7 @@ impl AudioPipeline {
                 self.client.enable_voice_transmission(false);
                 // New stream ID for new track (like Python bot: time-based)
                 self.stream_id = new_stream_id();
-                self.accumulator.clear();
+                self.framer.clear();
                 self.next_block_time = None;
                 self.sample_index = 0;
                 tracing::info!("Audio pipeline reset for new track (stream_id={})", self.stream_id);
@@ -119,7 +158,7 @@ impl AudioPipeline {
             if self.pause_flag.load(Ordering::Relaxed) {
                 // Drain channel to prevent backpressure on the sink
                 while self.audio_rx.try_recv().is_ok() {}
-                self.accumulator.clear();
+                self.framer.clear();
                 self.next_block_time = None;
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -128,7 +167,7 @@ impl AudioPipeline {
             // Receive PCM data from the sink (with timeout so reset flag is checked)
             match self.audio_rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(pcm_data) => {
-                    self.accumulator.extend_from_slice(&pcm_data);
+                    self.framer.push(&pcm_data);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     continue; // Loop back to check reset flag
@@ -141,17 +180,15 @@ impl AudioPipeline {
 
             // Drain any additional buffered data without blocking
             while let Ok(pcm_data) = self.audio_rx.try_recv() {
-                self.accumulator.extend_from_slice(&pcm_data);
+                self.framer.push(&pcm_data);
             }
 
-            while self.accumulator.len() >= FRAME_SIZE {
+            while self.framer.len() >= FRAME_SIZE {
                 // Check reset or pause mid-injection (for instant stop/pause)
                 if self.reset_flag.load(Ordering::Relaxed) || self.pause_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                self.frame_buf.clear();
-                self.frame_buf.extend(self.accumulator.drain(..FRAME_SIZE));
-                if self.frame_buf.len() < FRAME_SIZE {
+                if !self.framer.pop_frame(&mut self.frame_buf) {
                     break;
                 }
 
@@ -167,7 +204,11 @@ impl AudioPipeline {
                 // Timing: wait until it's time to inject this block
                 self.wait_for_next_block();
 
-                // Inject (retry until success, like Python bot)
+                // Inject, retrying briefly on transient failure. Cap the total
+                // stall at ~200ms (20 x 10ms) then drop the frame: a wedged TT
+                // client must not block the audio thread for ~1s per frame,
+                // which back-pressures the whole producer chain.
+                const MAX_INJECT_RETRIES: u32 = 20;
                 let mut retries = 0u32;
                 while !audio_inject::inject_audio_block(
                     &self.client,
@@ -184,8 +225,8 @@ impl AudioPipeline {
                     if retries == 1 {
                         tracing::warn!("insert_audio_block failed, retrying...");
                     }
-                    if retries > 100 {
-                        tracing::error!("insert_audio_block failed 100 times, skipping frame");
+                    if retries > MAX_INJECT_RETRIES {
+                        tracing::error!("insert_audio_block failed {MAX_INJECT_RETRIES} times, skipping frame");
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -217,5 +258,56 @@ impl AudioPipeline {
 
         // Advance for next block
         self.next_block_time = Some(self.next_block_time.unwrap() + block_duration);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framer_yields_full_frames_in_order() {
+        let mut framer = Framer::new(16);
+        framer.push(&[1, 2, 3, 4, 5]);
+        framer.push(&[6, 7, 8]);
+        assert_eq!(framer.len(), 8);
+
+        let mut frame = [0i16; 4];
+        assert!(framer.pop_frame(&mut frame));
+        assert_eq!(frame, [1, 2, 3, 4]);
+        assert_eq!(framer.len(), 4);
+
+        assert!(framer.pop_frame(&mut frame));
+        assert_eq!(frame, [5, 6, 7, 8]);
+        assert_eq!(framer.len(), 0);
+    }
+
+    #[test]
+    fn framer_pop_fails_when_underfull_and_leaves_data() {
+        let mut framer = Framer::new(16);
+        framer.push(&[1, 2, 3]);
+        let mut frame = [9i16; 4];
+        assert!(!framer.pop_frame(&mut frame));
+        // Output untouched, samples still buffered.
+        assert_eq!(frame, [9, 9, 9, 9]);
+        assert_eq!(framer.len(), 3);
+    }
+
+    #[test]
+    fn framer_clear_empties() {
+        let mut framer = Framer::new(16);
+        framer.push(&[1, 2, 3, 4, 5]);
+        framer.clear();
+        assert_eq!(framer.len(), 0);
+        let mut frame = [0i16; 2];
+        assert!(!framer.pop_frame(&mut frame));
+    }
+
+    #[test]
+    fn stream_ids_are_positive_and_distinct() {
+        let a = new_stream_id();
+        let b = new_stream_id();
+        assert!(a > 0 && b > 0);
+        assert_ne!(a, b);
     }
 }

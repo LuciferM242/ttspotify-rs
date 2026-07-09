@@ -57,6 +57,10 @@ parking_lot = "0.12"
 strip = true
 lto = true
 panic = "abort"
+# Single codegen unit: with fat LTO already on, this lets the optimizer see the
+# whole crate graph as one unit for slightly smaller/faster output. Costs some
+# link time (release builds only; debug/check unaffected).
+codegen-units = 1
 
 # GUI (Windows tray + config editor)
 [target.'cfg(windows)'.dependencies]
