@@ -150,7 +150,12 @@ pub fn run() {
         let taskbar_destroy = taskbar.clone();
         hidden_frame.on_destroy(move |evt| {
             timer.stop();
-            manager.borrow_mut().stop_all_nonblocking();
+            // Wait (bounded) for bots to disconnect cleanly from the server and
+            // persist config before the process exits, instead of dropping them
+            // mid-shutdown. Capped so the GUI can never hang on exit.
+            manager
+                .borrow_mut()
+                .stop_all_with_timeout(std::time::Duration::from_secs(3));
             taskbar_destroy.destroy();
             evt.skip(true);
         });

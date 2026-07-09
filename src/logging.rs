@@ -25,18 +25,55 @@ fn log_path_from_config(config_path: &str) -> (PathBuf, String) {
     (log_dir, format!("{stem}.log"))
 }
 
-/// Create a daily-rotating file appender and non-blocking writer.
+/// Create a daily-rotating file appender and non-blocking writer. If the file
+/// appender can't be created (e.g. an unwritable log directory), fall back to
+/// stderr instead of panicking at startup — a logging problem should never
+/// prevent the bot from running.
 fn create_file_writer(log_dir: &Path, log_filename: &str) -> (tracing_appender::non_blocking::NonBlocking, WorkerGuard) {
     if let Err(e) = std::fs::create_dir_all(log_dir) {
         eprintln!("Warning: failed to create log directory {}: {e}", log_dir.display());
     }
-    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+    match tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_suffix(log_filename)
         .max_log_files(7)
         .build(log_dir)
-        .expect("failed to create log file appender");
-    tracing_appender::non_blocking(file_appender)
+    {
+        Ok(appender) => tracing_appender::non_blocking(appender),
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to create log file appender in {} ({e}); logging to stderr",
+                log_dir.display()
+            );
+            tracing_appender::non_blocking(std::io::stderr())
+        }
+    }
+}
+
+/// Install a panic hook that records the panic (with a backtrace) via tracing
+/// and to stderr before the process aborts. With `panic = "abort"` set in the
+/// release profile, a panic in any thread takes down the whole process (in the
+/// tray, every bot at once) — without this hook that happens with no trace of
+/// where or why. Call once, as early as possible in each entry point.
+pub fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        tracing::error!("PANIC at {location}: {payload}\n{backtrace}");
+        eprintln!("PANIC at {location}: {payload}\n{backtrace}");
+        // Preserve any prior hook behavior (e.g. default abort message).
+        default_hook(info);
+    }));
 }
 
 fn default_env_filter() -> EnvFilter {

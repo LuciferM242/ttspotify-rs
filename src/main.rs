@@ -59,6 +59,7 @@ struct Args {
 #[cfg(not(windows))]
 #[tokio::main]
 async fn main() -> Result<(), BotError> {
+    tt_spotify_bot::logging::install_panic_hook();
     let args = Args::parse();
 
     if let Some(ref name) = args.setup {
@@ -160,6 +161,7 @@ async fn main() -> Result<(), BotError> {
 /// tray icon. `--setup` opens the GUI config dialog directly.
 #[cfg(windows)]
 fn main() {
+    tt_spotify_bot::logging::install_panic_hook();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--setup") {
         let name_arg = args

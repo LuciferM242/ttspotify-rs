@@ -340,12 +340,18 @@ fn schedule_radio_prefetch(
     tx: &tokio::sync::mpsc::UnboundedSender<BotCommand>,
     seed_uri: String,
     delay_secs: f32,
+    slot: &Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 ) {
     let tx = tx.clone();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
         let _ = tx.send(BotCommand::RadioPreFetch { seed_uri });
     });
+    // Replace (and cancel) any previously-scheduled prefetch so stale timers
+    // for tracks the user has already moved past don't pile up.
+    if let Some(old) = slot.lock().replace(handle) {
+        old.abort();
+    }
 }
 
 /// Format queue position and estimated wait time for a newly queued track.
@@ -463,6 +469,10 @@ async fn command_processor(
     }
 
     let pending_volume_save = Arc::new(AtomicBool::new(false));
+    // Holds the most-recently-scheduled radio prefetch timer so a new schedule
+    // cancels the previous one instead of leaking sleeping tasks.
+    let radio_prefetch_slot: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
 
     let send_event = {
         let tx = event_tx;
@@ -688,7 +698,7 @@ async fn command_processor(
                                 if !is_multi {
                                     let radio_on = state.lock().radio_enabled;
                                     if radio_on {
-                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay);
+                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay, &radio_prefetch_slot);
                                     }
                                 }
                             }
@@ -773,7 +783,7 @@ async fn command_processor(
                             (s.radio_enabled, at_end, allow)
                         };
                         if radio_on && at_end && allow_rec {
-                            schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
+                            schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
                         }
                     }
                 } else {
@@ -980,7 +990,7 @@ async fn command_processor(
 
                             let radio_on = state.lock().radio_enabled;
                             if radio_on {
-                                schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay);
+                                schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
                             }
                         }
                     } else {

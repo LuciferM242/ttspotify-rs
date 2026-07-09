@@ -244,6 +244,42 @@ impl BotManager {
         }
     }
 
+    /// Signal all bots to stop, then wait up to `timeout` (total, across all
+    /// instances) for their threads to finish so they can disconnect cleanly
+    /// from the TeamTalk server and persist config. Use on app exit: a bounded
+    /// wait avoids both an ungraceful drop and a frozen-forever GUI.
+    pub fn stop_all_with_timeout(&mut self, timeout: std::time::Duration) {
+        // Signal everyone first so they shut down in parallel.
+        self.stop_all_nonblocking();
+        let deadline = std::time::Instant::now() + timeout;
+        let names: Vec<String> = self.instances.keys().cloned().collect();
+        for name in names {
+            let inst = match self.instances.get_mut(&name) {
+                Some(i) => i,
+                None => continue,
+            };
+            if let Some(handle) = inst.thread.take() {
+                // Poll for completion until the shared deadline. If the thread
+                // finishes, join it; if the deadline passes first, abandon it
+                // (dropping the handle detaches it) rather than blocking on
+                // join() forever — the process is exiting anyway.
+                loop {
+                    if handle.is_finished() {
+                        let _ = handle.join();
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!("[{name}] did not shut down within timeout; abandoning thread");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+            *inst.status.lock() = BotStatus::Stopped;
+            inst.shutdown = None;
+        }
+    }
+
     pub fn config_path(&self, name: &str) -> Option<PathBuf> {
         self.instances.get(name).map(|i| i.config_path.clone())
     }
