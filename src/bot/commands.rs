@@ -91,6 +91,110 @@ pub fn send_reply(client: &Client, user_id: i32, text: &str) {
     }
 }
 
+/// Result of the first-pass classification of an incoming message, before any
+/// command-specific handling. Pure and unit-tested (see tests below).
+#[derive(Debug, PartialEq)]
+enum Input {
+    /// Empty/whitespace-only message.
+    Empty,
+    /// Search cancellation word (a / cancel / abort / exit).
+    Cancel,
+    /// Bare number (search pick). `n` is as typed (1-based; 0 is a no-op).
+    Number(usize),
+    /// A command word plus its (case-preserved) argument string.
+    Command { name: String, args: String },
+}
+
+/// Classify raw message text: strip an optional `/`/`!` prefix, detect cancel
+/// words and bare-number picks, otherwise split into a lowercased command word
+/// and its trimmed argument string.
+fn classify_input(text: &str) -> Input {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Input::Empty;
+    }
+    let stripped = trimmed
+        .strip_prefix('/')
+        .or_else(|| trimmed.strip_prefix('!'))
+        .unwrap_or(trimmed);
+
+    match stripped.to_lowercase().as_str() {
+        "a" | "cancel" | "abort" | "exit" => return Input::Cancel,
+        _ => {}
+    }
+    if let Ok(n) = stripped.parse::<usize>() {
+        return Input::Number(n);
+    }
+    let (cmd, args) = stripped
+        .split_once(|c: char| c.is_whitespace())
+        .map(|(c, a)| (c, a.trim()))
+        .unwrap_or((stripped, ""));
+    Input::Command {
+        name: cmd.to_lowercase(),
+        args: args.to_string(),
+    }
+}
+
+/// Parsed volume command. `Set` carries the raw requested percent (unbounded;
+/// the caller clamps against `max_volume`).
+#[derive(Debug, PartialEq)]
+enum VolumeParse {
+    Show,
+    Set(u16),
+}
+
+/// Parse a volume command word + args, matching `v`, `volume`, `v50`, `v 50`.
+/// Returns `None` if the command word is not a volume command at all.
+fn parse_volume(cmd: &str, args: &str) -> Option<VolumeParse> {
+    let is_vol_cmd = cmd == "v"
+        || cmd == "volume"
+        || (cmd.starts_with('v') && cmd.len() > 1 && cmd[1..].chars().all(|c| c.is_ascii_digit()));
+    if !is_vol_cmd {
+        return None;
+    }
+    let vol_str = if cmd.len() > 1 && cmd.starts_with('v') && cmd != "volume" {
+        &cmd[1..]
+    } else {
+        args
+    };
+    match vol_str.parse::<u16>() {
+        Ok(v) => Some(VolumeParse::Set(v)),
+        Err(_) => Some(VolumeParse::Show),
+    }
+}
+
+/// Parsed seek command. `Seconds` is signed (negative = backward).
+#[derive(Debug, PartialEq)]
+enum SeekParse {
+    Seconds(i32),
+    Usage,
+}
+
+/// Parse a seek command word + args. Matches bare `sf`/`sb` (default 10s) or
+/// `sf`/`sb` immediately followed by digits (`sf10`); a non-numeric explicit
+/// arg yields `Usage`. Returns `None` for anything that is not a seek command
+/// (notably "sblah", which must not silently seek).
+fn parse_seek(cmd: &str, args: &str) -> Option<SeekParse> {
+    let is_seek = (cmd == "sf" || cmd == "sb")
+        || ((cmd.starts_with("sf") || cmd.starts_with("sb"))
+            && cmd.len() > 2
+            && cmd[2..].chars().all(|c| c.is_ascii_digit()));
+    if !is_seek {
+        return None;
+    }
+    let direction: i32 = if cmd.starts_with("sf") { 1 } else { -1 };
+    let num_str = if cmd.len() > 2 { &cmd[2..] } else { args };
+    let secs: i32 = if num_str.is_empty() {
+        10
+    } else {
+        match num_str.parse() {
+            Ok(n) => n,
+            Err(_) => return Some(SeekParse::Usage),
+        }
+    };
+    Some(SeekParse::Seconds(direction * secs))
+}
+
 /// Render a search-results numbered listing with the standard footer.
 pub fn format_search_results(tracks: &[crate::track::Track]) -> String {
     let mut msg = String::from("Search results:\n");
@@ -124,47 +228,66 @@ impl CommandDispatcher {
 
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
     pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32) -> bool {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return true;
-        }
-
-        // Strip optional prefix (/ or !)
-        let stripped = trimmed.strip_prefix('/')
-            .or_else(|| trimmed.strip_prefix('!'))
-            .unwrap_or(trimmed);
-
-        tracing::info!("Command from user {sender_id}: {stripped}");
-
-        // Search cancellation
-        match stripped.to_lowercase().as_str() {
-            "a" | "cancel" | "abort" | "exit" => {
+        let (cmd, args) = match classify_input(text) {
+            Input::Empty => return true,
+            Input::Cancel => {
                 let mut state = self.state.lock();
                 if state.remove_search_results(sender_id) {
                     self.reply(client, sender_id, "Search cancelled");
                 }
                 return true;
             }
-            _ => {}
-        }
+            Input::Number(n) => {
+                if n > 0 {
+                    self.send(BotCommand::SearchPick {
+                        user_id: sender_id,
+                        pick: n - 1,
+                        user_name: format!("User#{sender_id}"),
+                    });
+                }
+                return true;
+            }
+            Input::Command { name, args } => (name, args),
+        };
+        let args = args.as_str();
 
-        // If the entire message is a number, treat as search pick
-        if let Ok(n) = stripped.parse::<usize>() {
-            if n > 0 {
-                self.send(BotCommand::SearchPick {
-                    user_id: sender_id,
-                    pick: n - 1,
-                    user_name: format!("User#{sender_id}"),
-                });
+        tracing::info!("Command from user {sender_id}: {cmd} {args}");
+
+        // Volume and seek use dedicated parsers so their fiddly forms (v50,
+        // sf10, and rejecting "sblah") stay unit-testable.
+        if let Some(vol) = parse_volume(&cmd, args) {
+            match vol {
+                VolumeParse::Set(v) => {
+                    if v > self.max_volume as u16 {
+                        self.reply(client, sender_id,
+                            &format!("Volume must be 0-{}. Got: {v}", self.max_volume));
+                    } else {
+                        let capped = (v as u8).min(self.max_volume);
+                        self.volume.store(capped, Ordering::Relaxed);
+                        self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
+                        self.reply(client, sender_id, &format!("Volume: {capped}%"));
+                    }
+                }
+                VolumeParse::Show => {
+                    let vol = self.volume.load(Ordering::Relaxed);
+                    self.reply(client, sender_id, &format!("Volume: {vol}% (max: {})", self.max_volume));
+                }
             }
             return true;
         }
-
-        // Split into command + args
-        let (cmd, args) = stripped.split_once(|c: char| c.is_whitespace())
-            .map(|(c, a)| (c, a.trim()))
-            .unwrap_or((stripped, ""));
-        let cmd = cmd.to_lowercase();
+        if let Some(seek) = parse_seek(&cmd, args) {
+            match seek {
+                SeekParse::Seconds(secs) => {
+                    self.send(BotCommand::Seek { offset_ms: secs * 1000, user_id: sender_id });
+                    let dir_word = if secs >= 0 { "forward" } else { "backward" };
+                    self.reply(client, sender_id, &format!("Seeking {dir_word} {}s", secs.abs()));
+                }
+                SeekParse::Usage => {
+                    self.reply(client, sender_id, "Usage: sf [seconds] / sb [seconds]");
+                }
+            }
+            return true;
+        }
 
         match cmd.as_str() {
             // -- Playback --
@@ -292,60 +415,8 @@ impl CommandDispatcher {
                 }
             }
 
-            // -- Volume (also handles v50, v 50, volume 50) --
-            cmd_str if cmd_str == "v" || cmd_str == "volume"
-                || (cmd_str.starts_with('v') && cmd_str.len() > 1
-                    && cmd_str[1..].chars().all(|c| c.is_ascii_digit())) =>
-            {
-                // Handle v50 (no space)
-                let vol_str = if cmd_str.len() > 1 && cmd_str.starts_with('v') && cmd_str != "volume" {
-                    &cmd_str[1..]
-                } else {
-                    args
-                };
-
-                if let Ok(vol) = vol_str.parse::<u16>() {
-                    if vol > self.max_volume as u16 {
-                        self.reply(client, sender_id,
-                            &format!("Volume must be 0-{}. Got: {vol}", self.max_volume));
-                    } else {
-                        let capped = (vol as u8).min(self.max_volume);
-                        self.volume.store(capped, Ordering::Relaxed);
-                        self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
-                        self.reply(client, sender_id, &format!("Volume: {capped}%"));
-                    }
-                } else {
-                    let vol = self.volume.load(Ordering::Relaxed);
-                    self.reply(client, sender_id, &format!("Volume: {vol}% (max: {})", self.max_volume));
-                }
-            }
-
-            // -- Seek (also handles sf10, sb5) --
-            // Only match bare "sf"/"sb" or "sf"/"sb" immediately followed by
-            // digits (sf10). This keeps "sblah" from silently seeking 10s.
-            cmd_str if (cmd_str == "sf" || cmd_str == "sb")
-                || ((cmd_str.starts_with("sf") || cmd_str.starts_with("sb"))
-                    && cmd_str.len() > 2
-                    && cmd_str[2..].chars().all(|c| c.is_ascii_digit())) =>
-            {
-                let direction: i32 = if cmd_str.starts_with("sf") { 1 } else { -1 };
-                // Number attached to command (sf10) or in args (sf 10); bare sf/sb = 10s.
-                let num_str = if cmd_str.len() > 2 { &cmd_str[2..] } else { args };
-                let secs: i32 = if num_str.is_empty() {
-                    10
-                } else {
-                    match num_str.parse() {
-                        Ok(n) => n,
-                        Err(_) => {
-                            self.reply(client, sender_id, "Usage: sf [seconds] / sb [seconds]");
-                            return true;
-                        }
-                    }
-                };
-                self.send(BotCommand::Seek { offset_ms: direction * secs * 1000, user_id: sender_id });
-                let dir_word = if direction > 0 { "forward" } else { "backward" };
-                self.reply(client, sender_id, &format!("Seeking {dir_word} {secs}s"));
-            }
+            // (volume and seek are handled before this match via parse_volume /
+            // parse_seek so their fiddly forms stay unit-testable.)
 
             // -- Search --
             "search" => {
@@ -663,6 +734,83 @@ radio [on|off]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cmd(name: &str, args: &str) -> Input {
+        Input::Command { name: name.to_string(), args: args.to_string() }
+    }
+
+    // -- classify_input --
+
+    #[test]
+    fn classify_empty_and_whitespace() {
+        assert_eq!(classify_input(""), Input::Empty);
+        assert_eq!(classify_input("   "), Input::Empty);
+    }
+
+    #[test]
+    fn classify_strips_slash_and_bang_prefix() {
+        assert_eq!(classify_input("/next"), cmd("next", ""));
+        assert_eq!(classify_input("!p photograph"), cmd("p", "photograph"));
+    }
+
+    #[test]
+    fn classify_cancel_words_case_insensitive() {
+        for w in ["a", "cancel", "abort", "exit", "CANCEL", "Exit"] {
+            assert_eq!(classify_input(w), Input::Cancel, "{w}");
+        }
+    }
+
+    #[test]
+    fn classify_bare_number_is_pick() {
+        assert_eq!(classify_input("3"), Input::Number(3));
+        assert_eq!(classify_input("0"), Input::Number(0));
+    }
+
+    #[test]
+    fn classify_lowercases_command_but_preserves_args() {
+        assert_eq!(classify_input("PLAY Hello World"), cmd("play", "Hello World"));
+        assert_eq!(classify_input("Search Photograph"), cmd("search", "Photograph"));
+    }
+
+    #[test]
+    fn classify_command_without_args() {
+        assert_eq!(classify_input("stop"), cmd("stop", ""));
+    }
+
+    // -- parse_volume --
+
+    #[test]
+    fn volume_forms() {
+        assert_eq!(parse_volume("v", ""), Some(VolumeParse::Show));
+        assert_eq!(parse_volume("volume", ""), Some(VolumeParse::Show));
+        assert_eq!(parse_volume("v", "50"), Some(VolumeParse::Set(50)));
+        assert_eq!(parse_volume("v50", ""), Some(VolumeParse::Set(50)));
+        assert_eq!(parse_volume("volume", "30"), Some(VolumeParse::Set(30)));
+        // Above-range still parses as Set; caller enforces the cap.
+        assert_eq!(parse_volume("v101", ""), Some(VolumeParse::Set(101)));
+        // Not a volume command.
+        assert_eq!(parse_volume("view", ""), None);
+        assert_eq!(parse_volume("next", ""), None);
+    }
+
+    // -- parse_seek --
+
+    #[test]
+    fn seek_forms() {
+        assert_eq!(parse_seek("sf", ""), Some(SeekParse::Seconds(10)));
+        assert_eq!(parse_seek("sb", ""), Some(SeekParse::Seconds(-10)));
+        assert_eq!(parse_seek("sf30", ""), Some(SeekParse::Seconds(30)));
+        assert_eq!(parse_seek("sb", "5"), Some(SeekParse::Seconds(-5)));
+        assert_eq!(parse_seek("sf", "abc"), Some(SeekParse::Usage));
+    }
+
+    #[test]
+    fn seek_rejects_non_seek_words() {
+        // Regression: "sblah" must NOT be treated as a seek.
+        assert_eq!(parse_seek("sblah", ""), None);
+        assert_eq!(parse_seek("sfx", ""), None);
+        assert_eq!(parse_seek("stop", ""), None);
+    }
 
     #[test]
     fn chunk_message_empty_returns_empty_vec() {
