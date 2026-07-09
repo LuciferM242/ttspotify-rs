@@ -6,17 +6,22 @@ default-run = "tt-spotify-bot"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-# TeamTalk SDK (local)
-teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", branch = "main", features = ["logging"] }
+# TeamTalk SDK. Pinned to a specific revision for reproducible builds (was a
+# floating `branch = "main"`).
+teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", rev = "c1ecfc1decde427505f4c135cd4b0e17af58c0c8", features = ["logging"] }
 
-# Spotify (librespot - native Rust)
-librespot-core = "0.8"
-librespot-playback = "0.8"
-librespot-metadata = "0.8"
-librespot-oauth = "0.8"
+# Spotify (librespot - native Rust). default-features = false drops the default
+# native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
+# already uses), and drops librespot-playback's rodio/cpal speaker backend that
+# this bot never uses (audio goes to a custom TeamTalkSink, not local output).
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-metadata = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-oauth = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 
-# YouTube (rustypipe - GPL-3)
-rustypipe = "0.11"
+# YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
+# whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.
+rustypipe = { version = "0.11", default-features = false, features = ["rustls-tls-native-roots"] }
 
 # YouTube audio: HTTP fetch + decode + resample.
 # symphonia handles Opus and AAC/M4A (the two codecs YouTube serves).
