@@ -525,6 +525,14 @@ async fn command_processor(
         }
     };
 
+    // Update the TT status line and emit a Playing event for a now-playing
+    // track. Callers send their own (varied) "Now playing"/"Radio" reply text.
+    let announce_playing_status = |name: &str| {
+        let status_text = now_playing_status(name, &state);
+        set_status(&status_text);
+        send_event(RunnerEvent::Playing(name.to_string()));
+    };
+
     let stop_playback = |player: &SpotifyPlayer, youtube_player: &crate::youtube::player::YouTubePlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| {
         use crate::player::MediaPlayer as _;
         pause_flag.store(false, Ordering::Relaxed);
@@ -692,9 +700,7 @@ async fn command_processor(
                                 } else {
                                     reply(user_id, &format!("Now playing: {first_name}"));
                                 }
-                                let status_text = now_playing_status(&first_name, &state);
-                                set_status(&status_text);
-                                send_event(RunnerEvent::Playing(first_name.clone()));
+                                announce_playing_status(&first_name);
 
                                 if !is_multi {
                                     let radio_on = state.lock().radio_enabled;
@@ -773,9 +779,7 @@ async fn command_processor(
                 if let Some((service, uri_str, name)) = next {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
                         reply(user_id, &format!("Now playing: {name}"));
-                        let status_text = now_playing_status(&name, &state);
-                        set_status(&status_text);
-                        send_event(RunnerEvent::Playing(name.clone()));
+                        announce_playing_status(&name);
 
                         let (radio_on, at_end, allow_rec) = {
                             let s = state.lock();
@@ -809,9 +813,7 @@ async fn command_processor(
                                         if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
                                             resumed = true;
                                             reply(user_id, &format!("Radio: {first_name}"));
-                                            let status_text = now_playing_status(&first_name, &state);
-                                            set_status(&status_text);
-                                            send_event(RunnerEvent::Playing(first_name.clone()));
+                                            announce_playing_status(&first_name);
                                         }
                                     }
                                     Ok(_) => {
@@ -849,9 +851,7 @@ async fn command_processor(
                 if let Some((service, uri_str, name)) = prev {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
                         reply(user_id, &format!("Now playing: {name}"));
-                        let status_text = now_playing_status(&name, &state);
-                        set_status(&status_text);
-                        send_event(RunnerEvent::Playing(name.clone()));
+                        announce_playing_status(&name);
                     }
                 }
             }
@@ -988,9 +988,7 @@ async fn command_processor(
                     if is_idle {
                         if start_or_skip!(service, &uri_str, user_id, &track_name) {
                             reply(user_id, &format!("Now playing: {track_name}"));
-                            let status_text = now_playing_status(&track_name, &state);
-                            set_status(&status_text);
-                            send_event(RunnerEvent::Playing(track_name.clone()));
+                            announce_playing_status(&track_name);
 
                             let radio_on = state.lock().radio_enabled;
                             if radio_on {
