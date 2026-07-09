@@ -28,6 +28,9 @@ rubato = "0.16"
 # Plugin zip extraction for the YouTube binaries auto-installer.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# SHA-256 verification of downloaded binaries (yt-dlp / bgutil-pot).
+sha2 = "0.10"
+
 # Async runtime
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 

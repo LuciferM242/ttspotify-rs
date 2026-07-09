@@ -73,35 +73,51 @@ pub async fn install(
         .build()
         .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
 
-    // 1. yt-dlp
+    // 1. yt-dlp — verify against the release's SHA2-256SUMS manifest.
     progress(&format!("Downloading yt-dlp {YT_DLP_VERSION}..."));
-    let yt_dlp_url = if cfg!(windows) {
-        format!("https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/yt-dlp.exe")
-    } else {
-        format!("https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/yt-dlp_linux")
+    let yt_dlp_asset = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp_linux" };
+    let yt_dlp_url = format!(
+        "https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/{yt_dlp_asset}"
+    );
+    let yt_dlp_hash = match fetch_text(
+        &client,
+        &format!("https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/SHA2-256SUMS"),
+    ).await {
+        Ok(sums) => parse_sums_file(&sums, yt_dlp_asset),
+        Err(e) => {
+            tracing::warn!("Could not fetch yt-dlp checksums: {e}");
+            None
+        }
     };
-    download_to(&client, &yt_dlp_url, &paths.yt_dlp).await?;
+    download_verified(&client, &yt_dlp_url, &paths.yt_dlp, yt_dlp_hash.as_deref(), true).await?;
     make_executable(&paths.yt_dlp)?;
     progress("  yt-dlp installed.");
 
+    // Fetch bgutil release asset digests once for the binary + zip.
+    let bgutil_digests = fetch_release_asset_digests(
+        &client,
+        "jim60105/bgutil-ytdlp-pot-provider-rs",
+        BGUTIL_VERSION,
+    ).await;
+
     // 2. bgutil-pot
     progress(&format!("Downloading bgutil-pot {BGUTIL_VERSION}..."));
-    let bgutil_url = if cfg!(windows) {
-        format!("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/bgutil-pot-windows-x86_64.exe")
-    } else {
-        format!("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/bgutil-pot-linux-x86_64")
-    };
-    download_to(&client, &bgutil_url, &paths.bgutil_pot).await?;
+    let bgutil_asset = if cfg!(windows) { "bgutil-pot-windows-x86_64.exe" } else { "bgutil-pot-linux-x86_64" };
+    let bgutil_url = format!(
+        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/{bgutil_asset}"
+    );
+    download_verified(&client, &bgutil_url, &paths.bgutil_pot, bgutil_digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
     make_executable(&paths.bgutil_pot)?;
     progress("  bgutil-pot installed.");
 
     // 3. plugin zip
     progress(&format!("Downloading bgutil yt-dlp plugin {BGUTIL_VERSION}..."));
+    let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
     let plugin_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/bgutil-ytdlp-pot-provider-rs.zip"
+        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/{zip_asset}"
     );
     let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
-    download_to(&client, &plugin_url, &zip_path).await?;
+    download_verified(&client, &plugin_url, &zip_path, bgutil_digests.get(zip_asset).map(|s| s.as_str()), false).await?;
     extract_plugin_zip(&zip_path, &paths.plugin_dir)?;
     let _ = fs::remove_file(&zip_path);
     progress("  Plugin extracted.");
@@ -145,21 +161,27 @@ pub async fn install_bgutil_version(
         .build()
         .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
 
+    let digests = fetch_release_asset_digests(
+        &client,
+        "jim60105/bgutil-ytdlp-pot-provider-rs",
+        version,
+    ).await;
+
     progress(&format!("Downloading bgutil-pot {version}..."));
-    let bgutil_url = if cfg!(windows) {
-        format!("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/bgutil-pot-windows-x86_64.exe")
-    } else {
-        format!("https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/bgutil-pot-linux-x86_64")
-    };
-    download_to(&client, &bgutil_url, &paths.bgutil_pot).await?;
+    let bgutil_asset = if cfg!(windows) { "bgutil-pot-windows-x86_64.exe" } else { "bgutil-pot-linux-x86_64" };
+    let bgutil_url = format!(
+        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/{bgutil_asset}"
+    );
+    download_verified(&client, &bgutil_url, &paths.bgutil_pot, digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
     make_executable(&paths.bgutil_pot)?;
 
     progress(&format!("Downloading bgutil yt-dlp plugin {version}..."));
+    let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
     let plugin_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/bgutil-ytdlp-pot-provider-rs.zip"
+        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/{zip_asset}"
     );
     let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
-    download_to(&client, &plugin_url, &zip_path).await?;
+    download_verified(&client, &plugin_url, &zip_path, digests.get(zip_asset).map(|s| s.as_str()), false).await?;
     // Wipe the old plugin dir to avoid stale files lingering after a version bump.
     let _ = fs::remove_dir_all(&paths.plugin_dir);
     extract_plugin_zip(&zip_path, &paths.plugin_dir)?;
@@ -192,10 +214,116 @@ pub async fn latest_bgutil_version() -> Result<String, BotError> {
     Ok(tag)
 }
 
-async fn download_to(
+/// Compute the lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Verify `bytes` hash against an expected hex digest (case-insensitive).
+fn verify_sha256(bytes: &[u8], expected_hex: &str) -> bool {
+    sha256_hex(bytes).eq_ignore_ascii_case(expected_hex.trim())
+}
+
+/// Parse a `SHA2-256SUMS`-style file (`<hex>  <filename>` per line) and return
+/// the digest for `asset_name`, if present.
+fn parse_sums_file(text: &str, asset_name: &str) -> Option<String> {
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        // The filename is the remainder (may be prefixed with '*' for binary).
+        let name = parts.next().unwrap_or("").trim_start_matches('*');
+        if name == asset_name && hash.len() == 64 {
+            return Some(hash.to_string());
+        }
+    }
+    None
+}
+
+/// Basic executable magic-byte sanity check, used as a fallback when no hash
+/// is available: PE ("MZ") on Windows, ELF ("\x7fELF") on Unix.
+fn looks_like_executable(bytes: &[u8]) -> bool {
+    if cfg!(windows) {
+        bytes.starts_with(b"MZ")
+    } else {
+        bytes.starts_with(b"\x7fELF")
+    }
+}
+
+/// Fetch a URL as text (used for the SHA2-256SUMS manifest).
+async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, BotError> {
+    let response = client.get(url).send().await
+        .map_err(|e| BotError::Config(format!("fetch {url}: {e}")))?;
+    if !response.status().is_success() {
+        return Err(BotError::Config(format!("fetch {url} returned {}", response.status())));
+    }
+    response.text().await
+        .map_err(|e| BotError::Config(format!("read {url}: {e}")))
+}
+
+/// Download `url` to `dest` atomically (temp file + rename), verifying the
+/// SHA-256 when `expected_sha256` is provided. A hash mismatch aborts the
+/// install and leaves no file behind — these bytes are executed later, so a
+/// tampered or corrupted download must never land on disk. When no hash is
+/// available, fall back to a magic-byte sanity check for executables.
+/// Fetch a GitHub release's asset SHA-256 digests, keyed by asset filename.
+/// GitHub populates `assets[].digest` as `sha256:<hex>` for most releases; any
+/// asset without a digest is simply absent from the map. Returns an empty map
+/// (not an error) if the release can't be fetched, so verification degrades to
+/// the magic-byte fallback rather than blocking installs.
+async fn fetch_release_asset_digests(
+    client: &reqwest::Client,
+    repo: &str,
+    tag: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
+    let json: serde_json::Value = match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("bgutil release JSON parse failed: {e}");
+                return map;
+            }
+        },
+        Ok(resp) => {
+            tracing::warn!("bgutil release API returned {}", resp.status());
+            return map;
+        }
+        Err(e) => {
+            tracing::warn!("bgutil release API request failed: {e}");
+            return map;
+        }
+    };
+    if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
+        for asset in assets {
+            let name = asset.get("name").and_then(|v| v.as_str());
+            let digest = asset
+                .get("digest")
+                .and_then(|v| v.as_str())
+                .and_then(|d| d.strip_prefix("sha256:"));
+            if let (Some(name), Some(digest)) = (name, digest) {
+                map.insert(name.to_string(), digest.to_string());
+            }
+        }
+    }
+    map
+}
+
+async fn download_verified(
     client: &reqwest::Client,
     url: &str,
     dest: &Path,
+    expected_sha256: Option<&str>,
+    verify_executable_magic: bool,
 ) -> Result<(), BotError> {
     let response = client.get(url).send().await
         .map_err(|e| BotError::Config(format!("download {url}: {e}")))?;
@@ -206,10 +334,37 @@ async fn download_to(
     }
     let bytes = response.bytes().await
         .map_err(|e| BotError::Config(format!("read body of {url}: {e}")))?;
-    let mut f = fs::File::create(dest)
-        .map_err(|e| BotError::Config(format!("create {}: {e}", dest.display())))?;
-    f.write_all(&bytes)
-        .map_err(|e| BotError::Config(format!("write {}: {e}", dest.display())))?;
+
+    match expected_sha256 {
+        Some(expected) => {
+            if !verify_sha256(&bytes, expected) {
+                return Err(BotError::Config(format!(
+                    "checksum mismatch for {url}: expected {expected}, got {}",
+                    sha256_hex(&bytes)
+                )));
+            }
+        }
+        None => {
+            tracing::warn!("No checksum available for {url}; skipping hash verification");
+            if verify_executable_magic && !looks_like_executable(&bytes) {
+                return Err(BotError::Config(format!(
+                    "{url} does not look like a valid executable for this platform"
+                )));
+            }
+        }
+    }
+
+    // Write to a temp file then rename, so a failed/partial download never
+    // leaves a half-written binary at the destination path.
+    let tmp = dest.with_extension("download.tmp");
+    {
+        let mut f = fs::File::create(&tmp)
+            .map_err(|e| BotError::Config(format!("create {}: {e}", tmp.display())))?;
+        f.write_all(&bytes)
+            .map_err(|e| BotError::Config(format!("write {}: {e}", tmp.display())))?;
+    }
+    fs::rename(&tmp, dest)
+        .map_err(|e| BotError::Config(format!("rename to {}: {e}", dest.display())))?;
     Ok(())
 }
 
@@ -320,5 +475,41 @@ mod tests {
     fn default_cookies_path_ends_in_cookies_txt() {
         let p = default_cookies_path();
         assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("cookies.txt"));
+    }
+
+    #[test]
+    fn sha256_of_known_input() {
+        // SHA-256 of "abc".
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn verify_sha256_matches_case_insensitively() {
+        let h = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
+        assert!(verify_sha256(b"abc", h));
+        assert!(!verify_sha256(b"abd", h));
+    }
+
+    #[test]
+    fn parse_sums_file_finds_asset() {
+        let text = "\
+aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  yt-dlp.exe
+bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222 *yt-dlp_linux
+short  ignored.bin";
+        assert_eq!(
+            parse_sums_file(text, "yt-dlp.exe").as_deref(),
+            Some("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
+        );
+        // Handles the '*' binary-mode prefix.
+        assert_eq!(
+            parse_sums_file(text, "yt-dlp_linux").as_deref(),
+            Some("bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222")
+        );
+        // Missing asset -> None; malformed short hash -> not matched.
+        assert_eq!(parse_sums_file(text, "nope.exe"), None);
+        assert_eq!(parse_sums_file(text, "ignored.bin"), None);
     }
 }

@@ -4071,6 +4071,7 @@ dependencies = [
  "rustypipe",
  "serde",
  "serde_json",
+ "sha2",
  "symphonia",
  "teamtalk",
  "thiserror 2.0.18",
