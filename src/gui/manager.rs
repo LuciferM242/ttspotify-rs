@@ -303,6 +303,10 @@ fn run_bot_instance(
     });
 
     let config_path_str = config_path.to_str().unwrap_or("").to_string();
+    // Auto-recover from run_bot errors (e.g. reconnect exhausted, server down
+    // at startup) with capped exponential backoff before giving up.
+    const MAX_ERROR_RETRIES: u32 = 5;
+    let mut error_retries: u32 = 0;
     rt.block_on(async {
         loop {
             // Reload config each iteration so edits take effect on restart
@@ -342,9 +346,37 @@ fn run_bot_instance(
                     update_status(BotStatus::Stopped);
                 }
                 Err(e) => {
-                    update_status(BotStatus::Error(e.to_string()));
+                    // Don't retry if the user asked the bot to stop.
+                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        update_status(BotStatus::Error(e.to_string()));
+                        break;
+                    }
+                    error_retries += 1;
+                    if error_retries > MAX_ERROR_RETRIES {
+                        tracing::error!("[{name}] Giving up after {MAX_ERROR_RETRIES} restart attempts: {e}");
+                        update_status(BotStatus::Error(e.to_string()));
+                        break;
+                    }
+                    let backoff = std::cmp::min(60, 5u64 * (1 << (error_retries - 1)));
+                    tracing::warn!("[{name}] Bot error: {e}; retry {error_retries}/{MAX_ERROR_RETRIES} in {backoff}s");
+                    update_status(BotStatus::Error(format!("{e} (retrying in {backoff}s)")));
+                    // Wait, but wake early if the user requests shutdown.
+                    for _ in 0..(backoff * 10) {
+                        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        update_status(BotStatus::Stopped);
+                        break;
+                    }
+                    update_status(BotStatus::Starting);
+                    continue;
                 }
             }
+            // Reset the error counter after any clean (Ok) outcome.
+            error_retries = 0;
             break;
         }
     });

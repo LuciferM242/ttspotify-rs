@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use librespot_core::spotify_uri::SpotifyUri;
 use librespot_playback::player::PlayerEvent;
@@ -213,19 +214,39 @@ pub async fn run_bot(
     let event_shutdown = shutdown.clone();
     let event_exit = exit_reason.clone();
     let event_event_tx = event_tx.clone();
-    tokio::task::spawn_blocking(move || {
+    // If the SDK's auto-reconnect can't restore the session within this window,
+    // stop spinning and return an error so the supervisor (tray restart /
+    // systemd Restart=) can recover with a fresh client instead of the bot
+    // becoming a silent zombie polling a dead connection forever.
+    const RECONNECT_DEADLINE: Duration = Duration::from_secs(360);
+    let reconnect_exhausted = tokio::task::spawn_blocking(move || -> bool {
+        // `Some(instant)` while disconnected, cleared on successful re-login.
+        let mut disconnected_since: Option<Instant> = None;
         loop {
             if event_shutdown.load(Ordering::Relaxed) {
-                break;
+                break false;
             }
             if event_exit.lock().is_some() {
-                break;
+                break false;
+            }
+            // Give up if we've been disconnected past the deadline.
+            if let Some(since) = disconnected_since {
+                if since.elapsed() > RECONNECT_DEADLINE {
+                    tracing::error!(
+                        "Auto-reconnect exhausted after {}s, giving up so the supervisor can restart",
+                        RECONNECT_DEADLINE.as_secs()
+                    );
+                    break true;
+                }
             }
 
             if let Some((event, message)) = event_client.poll(100) {
                 match event {
                     ::teamtalk::Event::ConnectionLost => {
                         tracing::warn!("Connection lost, SDK auto-reconnect will handle recovery");
+                        if disconnected_since.is_none() {
+                            disconnected_since = Some(Instant::now());
+                        }
                         if let Some(ref tx) = event_event_tx {
                             let _ = tx.send(RunnerEvent::Disconnected);
                         }
@@ -235,16 +256,19 @@ pub async fn run_bot(
                     }
                     ::teamtalk::Event::MySelfLoggedIn => {
                         tracing::info!("Re-logged in after reconnect");
-                        // Rejoin the last channel after reconnect
+                        // Session restored: reset the disconnect watchdog.
+                        disconnected_since = None;
+                        // Rejoin our last channel whenever the reconnect didn't
+                        // land us back in it (root, a different channel, or 0).
+                        // Admin moves during a live session are still respected
+                        // because UserJoined keeps last_channel_id current.
                         let ch = event_client.my_channel_id();
-                        if ch == ::teamtalk::types::ChannelId(0) {
-                            let rejoin_ch = *last_channel_id.lock();
-                            if rejoin_ch != ::teamtalk::types::ChannelId(0) {
-                                let pw = last_channel_pw.lock().clone();
-                                match event_client.join_channel_and_wait(rejoin_ch, &pw, 5_000) {
-                                    Ok(_) => tracing::info!("Rejoined channel {} after reconnect", rejoin_ch.0),
-                                    Err(e) => tracing::warn!("Failed to rejoin channel after reconnect: {e}"),
-                                }
+                        let rejoin_ch = *last_channel_id.lock();
+                        if rejoin_ch != ::teamtalk::types::ChannelId(0) && ch != rejoin_ch {
+                            let pw = last_channel_pw.lock().clone();
+                            match event_client.join_channel_and_wait(rejoin_ch, &pw, 5_000) {
+                                Ok(_) => tracing::info!("Rejoined channel {} after reconnect", rejoin_ch.0),
+                                Err(e) => tracing::warn!("Failed to rejoin channel after reconnect: {e}"),
                             }
                         }
                         if let Some(ref tx) = event_event_tx {
@@ -268,7 +292,7 @@ pub async fn run_bot(
                             let my_id = event_client.my_id().0;
                             if sender_id != my_id && !text_msg.text.is_empty() {
                                 if !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
-                                    break;
+                                    break false;
                                 }
                             }
                         }
@@ -278,6 +302,13 @@ pub async fn run_bot(
             }
         }
     }).await.map_err(|e| BotError::TeamTalk(format!("Event loop failed: {e}")))?;
+
+    if reconnect_exhausted {
+        let _ = client.disconnect();
+        return Err(BotError::TeamTalk(
+            "Lost connection to the TeamTalk server and auto-reconnect was exhausted".into(),
+        ));
+    }
 
     // Give the command processor a moment to finish do_exit() if it's
     // still running (event loop may break before the async command handler
