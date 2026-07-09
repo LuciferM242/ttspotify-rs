@@ -137,6 +137,7 @@ pub async fn run_bot(
         audio_tx,
         youtube_metadata.clone(),
         cmd_tx.clone(),
+        state.clone(),
     );
 
     // Exit signal: command_processor sets this instead of process::exit
@@ -858,10 +859,13 @@ async fn command_processor(
             BotCommand::Seek { offset_ms, user_id: _ } => {
                 use crate::player::MediaPlayer as _;
                 let (new_pos, service) = {
-                    let s = state.lock();
+                    let mut s = state.lock();
                     let current = s.position_ms as i32;
                     let pos = (current + offset_ms).max(0) as u32;
                     let svc = s.current().map(|e| e.track.service()).unwrap_or(s.active_service);
+                    // Optimistically reflect the new position immediately so a
+                    // rapid second seek computes from the intended target.
+                    s.position_ms = pos;
                     (pos, svc)
                 };
                 audio_reset.store(true, Ordering::Relaxed);

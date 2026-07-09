@@ -9,7 +9,7 @@
 
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::ChildStdout;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,6 +27,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
 use crate::bot::commands::BotCommand;
+use crate::bot::state::SharedState;
 use crate::player::MediaPlayer;
 use crate::youtube::metadata::YouTubeMetadata;
 
@@ -46,6 +47,9 @@ fn generation_is_stale(signal_gen: u64, current_gen: u64) -> bool {
 struct TrackControl {
     paused: AtomicBool,
     stopped: AtomicBool,
+    /// Current playback position in milliseconds, updated by the decode loop.
+    /// Seeded with the seek offset on a seek-triggered reload.
+    position_ms: AtomicU32,
 }
 
 pub struct YouTubePlayer {
@@ -53,8 +57,14 @@ pub struct YouTubePlayer {
     metadata: Arc<YouTubeMetadata>,
     /// Signals end-of-track (`BotCommand::TrackEnded`) when the stream finishes.
     cmd_tx: UnboundedSender<BotCommand>,
+    /// Shared player state; the decode loop writes `position_ms` here so the
+    /// `c` command and seek arithmetic see live YouTube positions.
+    state: SharedState,
     /// Active track's task + control. `None` when idle.
     current: Arc<Mutex<Option<(JoinHandle<()>, Arc<TrackControl>)>>>,
+    /// Video id of the currently-loaded track, so `seek` can re-spawn it at a
+    /// new offset (yt-dlp/symphonia can't seek a non-seekable pipe).
+    current_video_id: Arc<Mutex<Option<String>>>,
     /// Monotonic token identifying the current load. Bumped on every load and
     /// on stop/abort so a stale task's end-of-track signal can be recognized
     /// and discarded instead of double-advancing the queue.
@@ -66,12 +76,15 @@ impl YouTubePlayer {
         audio_tx: Sender<Vec<i16>>,
         metadata: Arc<YouTubeMetadata>,
         cmd_tx: UnboundedSender<BotCommand>,
+        state: SharedState,
     ) -> Self {
         Self {
             audio_tx,
             metadata,
             cmd_tx,
+            state,
             current: Arc::new(Mutex::new(None)),
+            current_video_id: Arc::new(Mutex::new(None)),
             generation: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -80,6 +93,39 @@ impl YouTubePlayer {
     /// generation differs from this is stale and must be ignored.
     pub fn current_generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Start playing `video_id` from `start_ms`. `load` is `load_at(.., 0)`;
+    /// `seek` re-invokes this to jump within the current track.
+    fn load_at(&self, video_id: &str, start_ms: u32) {
+        self.abort_current();
+        // This track's generation token (abort_current bumped past the old one).
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.current_video_id.lock() = Some(video_id.to_string());
+
+        let audio_tx = self.audio_tx.clone();
+        let metadata = self.metadata.clone();
+        let cmd_tx = self.cmd_tx.clone();
+        let state = self.state.clone();
+        let video_id = video_id.to_string();
+        let ctrl = Arc::new(TrackControl::default());
+        ctrl.position_ms.store(start_ms, Ordering::Relaxed);
+        let ctrl_for_task = ctrl.clone();
+
+        let handle = tokio::spawn(async move {
+            let error = match play_track(video_id.clone(), start_ms, metadata, audio_tx, ctrl_for_task, state).await {
+                Ok(()) => None,
+                Err(e) => {
+                    tracing::error!("YouTube playback failed (video_id={video_id}): {e}");
+                    Some(e)
+                }
+            };
+            // Signal end-of-track tagged with this generation. The processor
+            // drops it if a newer load/stop has since bumped the generation.
+            let _ = cmd_tx.send(BotCommand::TrackEnded { generation, error });
+        });
+
+        *self.current.lock() = Some((handle, ctrl));
     }
 
     /// Whether a `TrackEnded` tagged with `signal_gen` is stale (belongs to an
@@ -103,31 +149,7 @@ impl YouTubePlayer {
 
 impl MediaPlayer for YouTubePlayer {
     fn load(&self, video_id: &str) {
-        self.abort_current();
-        // This track's generation token (abort_current bumped past the old one).
-        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-
-        let audio_tx = self.audio_tx.clone();
-        let metadata = self.metadata.clone();
-        let cmd_tx = self.cmd_tx.clone();
-        let video_id = video_id.to_string();
-        let ctrl = Arc::new(TrackControl::default());
-        let ctrl_for_task = ctrl.clone();
-
-        let handle = tokio::spawn(async move {
-            let error = match play_track(video_id.clone(), metadata, audio_tx, ctrl_for_task).await {
-                Ok(()) => None,
-                Err(e) => {
-                    tracing::error!("YouTube playback failed (video_id={video_id}): {e}");
-                    Some(e.to_string())
-                }
-            };
-            // Signal end-of-track tagged with this generation. The processor
-            // drops it if a newer load/stop has since bumped the generation.
-            let _ = cmd_tx.send(BotCommand::TrackEnded { generation, error });
-        });
-
-        *self.current.lock() = Some((handle, ctrl));
+        self.load_at(video_id, 0);
     }
 
     fn play(&self) {
@@ -144,12 +166,17 @@ impl MediaPlayer for YouTubePlayer {
 
     fn stop(&self) {
         self.abort_current();
+        *self.current_video_id.lock() = None;
     }
 
-    fn seek(&self, _position_ms: u32) {
-        // YouTube seeking requires re-issuing the HTTP range request.
-        // Wired up in the decode pipeline commit.
-        tracing::warn!("YouTubePlayer::seek not yet implemented");
+    fn seek(&self, position_ms: u32) {
+        // A pipe can't be seeked, so re-spawn yt-dlp and decode-skip to the
+        // target offset. Generation bump makes the old track's TrackEnded stale.
+        let video_id = self.current_video_id.lock().clone();
+        match video_id {
+            Some(id) => self.load_at(&id, position_ms),
+            None => tracing::debug!("YouTube seek ignored: no track loaded"),
+        }
     }
 
     fn preload(&self, _video_id: &str) {
@@ -165,9 +192,11 @@ impl MediaPlayer for YouTubePlayer {
 /// `ctrl.stopped` set during playback kills the yt-dlp subprocess.
 async fn play_track(
     video_id: String,
+    start_ms: u32,
     metadata: Arc<YouTubeMetadata>,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
+    state: SharedState,
 ) -> Result<(), String> {
     let mut child = metadata.spawn_ytdlp(&video_id)
         .map_err(|e| format!("yt-dlp spawn: {e}"))?;
@@ -200,7 +229,7 @@ async fn play_track(
         }
     });
 
-    let decode_result = tokio::task::spawn_blocking(move || decode_and_stream(stdout, audio_tx, ctrl))
+    let decode_result = tokio::task::spawn_blocking(move || decode_and_stream(stdout, audio_tx, ctrl, start_ms, state))
         .await
         .map_err(|e| format!("decode worker join: {e}"))?;
 
@@ -253,6 +282,8 @@ fn decode_and_stream(
     stdout: ChildStdout,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
+    start_ms: u32,
+    state: SharedState,
 ) -> Result<(), String> {
     let source = PipeSource { inner: BufReader::with_capacity(64 * 1024, stdout) };
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
@@ -305,6 +336,13 @@ fn decode_and_stream(
     let mut buf_l: Vec<f32> = Vec::with_capacity(chunk_in * 4);
     let mut buf_r: Vec<f32> = Vec::with_capacity(chunk_in * 4);
 
+    // Seek support: decode-and-discard source frames until `start_ms` is
+    // reached, then begin sending. Decoding is far faster than realtime, so a
+    // skip costs a brief download, not playback lag.
+    let skip_src_frames: u64 = start_ms as u64 * src_rate as u64 / 1000;
+    let mut decoded_src_frames: u64 = 0;
+    let mut sent_output_frames: u64 = 0;
+
     loop {
         if ctrl.stopped.load(Ordering::Relaxed) {
             return Ok(());
@@ -339,27 +377,34 @@ fn decode_and_stream(
         };
 
         // Pull planar f32 channels from whatever sample format symphonia hands us.
+        // `skip` is the per-packet offset that discards frames before `start_ms`.
         match decoded {
             AudioBufferRef::F32(buf) => {
                 let n = buf.frames();
+                let skip = skip_offset(decoded_src_frames, skip_src_frames, n);
                 let l = buf.chan(0);
                 let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend_from_slice(&l[..n]);
-                buf_r.extend_from_slice(&r[..n]);
+                buf_l.extend_from_slice(&l[skip..n]);
+                buf_r.extend_from_slice(&r[skip..n]);
+                decoded_src_frames += n as u64;
             }
             AudioBufferRef::S16(buf) => {
                 let n = buf.frames();
+                let skip = skip_offset(decoded_src_frames, skip_src_frames, n);
                 let l = buf.chan(0);
                 let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend(l[..n].iter().map(|&s| s as f32 / 32768.0));
-                buf_r.extend(r[..n].iter().map(|&s| s as f32 / 32768.0));
+                buf_l.extend(l[skip..n].iter().map(|&s| s as f32 / 32768.0));
+                buf_r.extend(r[skip..n].iter().map(|&s| s as f32 / 32768.0));
+                decoded_src_frames += n as u64;
             }
             AudioBufferRef::S32(buf) => {
                 let n = buf.frames();
+                let skip = skip_offset(decoded_src_frames, skip_src_frames, n);
                 let l = buf.chan(0);
                 let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend(l[..n].iter().map(|&s| s as f32 / 2147483648.0));
-                buf_r.extend(r[..n].iter().map(|&s| s as f32 / 2147483648.0));
+                buf_l.extend(l[skip..n].iter().map(|&s| s as f32 / 2147483648.0));
+                buf_r.extend(r[skip..n].iter().map(|&s| s as f32 / 2147483648.0));
+                decoded_src_frames += n as u64;
             }
             other => {
                 tracing::warn!("YouTube: unsupported sample format {:?}", std::mem::discriminant(&other));
@@ -380,6 +425,9 @@ fn decode_and_stream(
                 interleave_to_i16(&in_l, &in_r)
             };
 
+            // Advance the reported playback position by this frame's duration.
+            let out_frames = (frame.len() / 2) as u64;
+
             // Send through the bounded channel without ever blocking, so a
             // paused or stopped track exits within ~50ms instead of stalling
             // until the audio pipeline drains.
@@ -397,7 +445,23 @@ fn decode_and_stream(
                     Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
                 }
             }
+
+            sent_output_frames += out_frames;
+            let pos = (start_ms as u64 + sent_output_frames * 1000 / PIPELINE_RATE as u64)
+                .min(u32::MAX as u64) as u32;
+            ctrl.position_ms.store(pos, Ordering::Relaxed);
+            state.lock().position_ms = pos;
         }
+    }
+}
+
+/// Per-packet offset that skips source frames still before the seek target.
+/// `decoded_before` is how many frames were decoded prior to this packet.
+fn skip_offset(decoded_before: u64, skip_target: u64, packet_frames: usize) -> usize {
+    if decoded_before >= skip_target {
+        0
+    } else {
+        (skip_target - decoded_before).min(packet_frames as u64) as usize
     }
 }
 
@@ -442,6 +506,19 @@ fn interleave_to_i16(l: &[f32], r: &[f32]) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skip_offset_discards_frames_before_target() {
+        // Target not yet reached: skip whole packet.
+        assert_eq!(skip_offset(0, 1000, 512), 512);
+        // Partially into the target: skip only the remaining frames.
+        assert_eq!(skip_offset(900, 1000, 512), 100);
+        // Target already passed: skip nothing.
+        assert_eq!(skip_offset(1000, 1000, 512), 0);
+        assert_eq!(skip_offset(2000, 1000, 512), 0);
+        // No seek (target 0): never skip.
+        assert_eq!(skip_offset(0, 0, 512), 0);
+    }
 
     #[test]
     fn generation_matches_are_fresh_mismatches_are_stale() {
