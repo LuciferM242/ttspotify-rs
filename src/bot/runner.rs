@@ -142,6 +142,12 @@ pub async fn run_bot(
     let exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>> =
         Arc::new(parking_lot::Mutex::new(None));
 
+    // Single writer for all runtime config persistence.
+    let config_store = Arc::new(crate::config::ConfigStore::new(
+        config_path.clone(),
+        config.clone(),
+    ));
+
     // Spawn command processor
     let bot_gender = crate::config::parse_gender(&config.bot_gender);
     let cmd_ctx = CmdContext {
@@ -159,7 +165,7 @@ pub async fn run_bot(
         radio_delay: config.radio_delay,
         radio_cmd_tx: cmd_tx.clone(),
         bot_gender,
-        config_path: config_path.clone(),
+        config_store: config_store.clone(),
         audio_reset: audio_reset.clone(),
         timing_reset: timing_reset.clone(),
         pause_flag: pause_flag.clone(),
@@ -361,7 +367,7 @@ struct CmdContext {
     radio_delay: f32,
     radio_cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
     bot_gender: ::teamtalk::types::UserGender,
-    config_path: String,
+    config_store: Arc<crate::config::ConfigStore>,
     audio_reset: Arc<AtomicBool>,
     timing_reset: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
@@ -401,7 +407,7 @@ async fn command_processor(
         player, metadata, youtube_metadata, youtube_player, session, auth,
         spotify_connected, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
-        bot_gender, config_path, audio_reset, timing_reset, pause_flag,
+        bot_gender, config_store, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx,
     } = ctx;
 
@@ -543,7 +549,7 @@ async fn command_processor(
             let repeat_queue = s.repeat_queue;
             let shuffle = s.shuffle;
             drop(s);
-            crate::config::BotConfig::update(&config_path, |cfg| {
+            config_store.update(|cfg| {
                 cfg.radio_enabled = radio;
                 cfg.volume = vol;
                 cfg.repeat_track = repeat_track;
@@ -830,11 +836,11 @@ async fn command_processor(
                     pending_volume_save.store(true, Ordering::Relaxed);
                     let save_flag = pending_volume_save.clone();
                     let vol_ref = volume_for_save.clone();
-                    let path = config_path.clone();
+                    let store = config_store.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                         let vol = vol_ref.load(Ordering::Relaxed);
-                        crate::config::BotConfig::update(&path, |cfg| {
+                        store.update(|cfg| {
                             cfg.volume = vol;
                         });
                         save_flag.store(false, Ordering::Relaxed);
@@ -872,7 +878,7 @@ async fn command_processor(
                 let mut s = state.lock();
                 s.radio_enabled = enable;
                 drop(s);
-                crate::config::BotConfig::update(&config_path, |cfg| {
+                config_store.update(|cfg| {
                     cfg.radio_enabled = enable;
                 });
             }
@@ -977,7 +983,7 @@ async fn command_processor(
                 let mut status = ::teamtalk::types::UserStatus::default();
                 status.gender = new_gender;
                 client.set_status(status, &status_text);
-                crate::config::BotConfig::update(&config_path, |cfg| {
+                config_store.update(|cfg| {
                     cfg.bot_gender = gender;
                 });
             }

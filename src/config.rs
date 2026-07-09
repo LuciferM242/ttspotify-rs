@@ -200,7 +200,7 @@ impl BotConfig {
     /// Read and parse a config file. No wizard prompt, no validation — pure I/O
     /// plus deserialization. Safe to call from async/background contexts (never
     /// blocks on stdin).
-    fn parse_file(path: &Path) -> Result<Self, BotError> {
+    pub(crate) fn parse_file(path: &Path) -> Result<Self, BotError> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
         serde_json::from_str(&contents)
@@ -298,30 +298,55 @@ impl BotConfig {
         warnings
     }
 
-    /// Load config, apply a mutation, and save it back. Non-interactive: a
-    /// missing config file logs an error rather than blocking on the wizard.
-    pub fn update(path: &str, f: impl FnOnce(&mut BotConfig)) {
-        match Self::load_noninteractive(path) {
-            Ok(mut cfg) => {
-                f(&mut cfg);
-                if let Err(e) = cfg.save(Path::new(path)) {
-                    tracing::error!("Failed to save config {path}: {e}");
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to load config for update {path}: {e}");
-            }
-        }
-    }
-
+    /// Write the config atomically: serialize to a temp file, then rename over
+    /// the target. A crash mid-write can never leave a truncated config, and
+    /// concurrent writers see whole files (last writer wins) rather than torn
+    /// ones. `std::fs::rename` replaces the destination on both Unix and Windows.
     pub fn save(&self, path: &Path) -> Result<(), BotError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| BotError::Config(format!("Failed to serialize config: {e}")))?;
-        std::fs::write(path, json)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+}
+
+/// Single owner of a bot's on-disk config during runtime. All runtime config
+/// mutations (volume debounce, mode/radio/gender saves, exit persistence) go
+/// through `update()` under one lock, eliminating the read-modify-write races
+/// the old `BotConfig::update(path, ..)` free function had (each call reloaded,
+/// mutated, and rewrote the whole file, clobbering concurrent writers).
+pub struct ConfigStore {
+    path: PathBuf,
+    cfg: parking_lot::Mutex<BotConfig>,
+}
+
+impl ConfigStore {
+    pub fn new(path: impl Into<PathBuf>, cfg: BotConfig) -> Self {
+        Self {
+            path: path.into(),
+            cfg: parking_lot::Mutex::new(cfg),
+        }
+    }
+
+    /// Apply a mutation to the config and persist it atomically, all under one
+    /// lock. Before mutating, re-sync from disk so edits made externally (e.g.
+    /// the tray GUI's config editor writing the same file in another thread)
+    /// are preserved rather than clobbered by a stale in-memory copy. Falls
+    /// back to the cached copy if the file is momentarily unreadable.
+    pub fn update(&self, f: impl FnOnce(&mut BotConfig)) {
+        let mut guard = self.cfg.lock();
+        if let Ok(on_disk) = BotConfig::parse_file(&self.path) {
+            *guard = on_disk;
+        }
+        f(&mut guard);
+        if let Err(e) = guard.save(&self.path) {
+            tracing::error!("Failed to save config {}: {e}", self.path.display());
+        }
     }
 }
 
@@ -449,6 +474,50 @@ mod tests {
         assert_eq!(cfg.volume_ramp_step, 0.03);
         assert_eq!(cfg.radio_batch_size, 1);
         assert_eq!(cfg.search_limit, 20);
+    }
+
+    #[test]
+    fn config_store_update_persists_and_reloads() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_cfgtest_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store_test.json");
+        let mut cfg = BotConfig::default();
+        cfg.volume = 30;
+        cfg.save(&path).unwrap();
+
+        let store = ConfigStore::new(path.clone(), cfg);
+        store.update(|c| c.volume = 55);
+        store.update(|c| c.radio_enabled = true);
+
+        let reloaded = BotConfig::parse_file(&path).unwrap();
+        assert_eq!(reloaded.volume, 55);
+        assert!(reloaded.radio_enabled);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_store_update_preserves_external_edits() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_cfgext_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ext_test.json");
+        let cfg = BotConfig::default();
+        cfg.save(&path).unwrap();
+        let store = ConfigStore::new(path.clone(), cfg);
+
+        // Simulate an external writer (e.g. GUI) changing a non-runtime field.
+        let mut external = BotConfig::parse_file(&path).unwrap();
+        external.host = "edited.example.com".to_string();
+        external.save(&path).unwrap();
+
+        // A runtime update must not clobber the external edit.
+        store.update(|c| c.volume = 42);
+
+        let reloaded = BotConfig::parse_file(&path).unwrap();
+        assert_eq!(reloaded.host, "edited.example.com");
+        assert_eq!(reloaded.volume, 42);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
