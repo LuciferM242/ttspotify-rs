@@ -9,7 +9,7 @@
 
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::process::ChildStdout;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +34,13 @@ use crate::youtube::metadata::YouTubeMetadata;
 const PIPELINE_RATE: u32 = 44_100;
 const CHANNELS: usize = 2;
 
+/// A track-end signal is stale when its generation no longer matches the
+/// currently-active one — i.e. the user skipped/stopped/replaced the track
+/// before its natural end reached the command processor.
+fn generation_is_stale(signal_gen: u64, current_gen: u64) -> bool {
+    signal_gen != current_gen
+}
+
 /// Per-track control flags. Recreated on every `load`.
 #[derive(Default)]
 struct TrackControl {
@@ -44,11 +51,14 @@ struct TrackControl {
 pub struct YouTubePlayer {
     audio_tx: Sender<Vec<i16>>,
     metadata: Arc<YouTubeMetadata>,
-    /// Used to send EndOfTrack-equivalent (`BotCommand::Next { user_id: 0 }`)
-    /// when the stream finishes naturally.
+    /// Signals end-of-track (`BotCommand::TrackEnded`) when the stream finishes.
     cmd_tx: UnboundedSender<BotCommand>,
     /// Active track's task + control. `None` when idle.
     current: Arc<Mutex<Option<(JoinHandle<()>, Arc<TrackControl>)>>>,
+    /// Monotonic token identifying the current load. Bumped on every load and
+    /// on stop/abort so a stale task's end-of-track signal can be recognized
+    /// and discarded instead of double-advancing the queue.
+    generation: Arc<AtomicU64>,
 }
 
 impl YouTubePlayer {
@@ -62,11 +72,27 @@ impl YouTubePlayer {
             metadata,
             cmd_tx,
             current: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
-    /// Stop and abort any currently-running track task.
+    /// The generation of the currently-loaded track. A `TrackEnded` whose
+    /// generation differs from this is stale and must be ignored.
+    pub fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// Whether a `TrackEnded` tagged with `signal_gen` is stale (belongs to an
+    /// older load than what is currently active), given the player's current
+    /// generation. Extracted for testing.
+    pub fn is_stale_generation(&self, signal_gen: u64) -> bool {
+        generation_is_stale(signal_gen, self.current_generation())
+    }
+
+    /// Stop and abort any currently-running track task, invalidating any
+    /// end-of-track signal still in flight from it.
     fn abort_current(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
         let mut cur = self.current.lock();
         if let Some((handle, ctrl)) = cur.take() {
             ctrl.stopped.store(true, Ordering::Relaxed);
@@ -78,6 +104,8 @@ impl YouTubePlayer {
 impl MediaPlayer for YouTubePlayer {
     fn load(&self, video_id: &str) {
         self.abort_current();
+        // This track's generation token (abort_current bumped past the old one).
+        let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
 
         let audio_tx = self.audio_tx.clone();
         let metadata = self.metadata.clone();
@@ -87,12 +115,16 @@ impl MediaPlayer for YouTubePlayer {
         let ctrl_for_task = ctrl.clone();
 
         let handle = tokio::spawn(async move {
-            if let Err(e) = play_track(video_id.clone(), metadata, audio_tx, ctrl_for_task).await {
-                tracing::error!("YouTube playback failed (video_id={video_id}): {e}");
-            }
-            // Tell the runner to advance regardless of whether playback ended
-            // naturally or errored — same contract as Spotify's EndOfTrack.
-            let _ = cmd_tx.send(BotCommand::Next { user_id: 0 });
+            let error = match play_track(video_id.clone(), metadata, audio_tx, ctrl_for_task).await {
+                Ok(()) => None,
+                Err(e) => {
+                    tracing::error!("YouTube playback failed (video_id={video_id}): {e}");
+                    Some(e.to_string())
+                }
+            };
+            // Signal end-of-track tagged with this generation. The processor
+            // drops it if a newer load/stop has since bumped the generation.
+            let _ = cmd_tx.send(BotCommand::TrackEnded { generation, error });
         });
 
         *self.current.lock() = Some((handle, ctrl));
@@ -410,6 +442,16 @@ fn interleave_to_i16(l: &[f32], r: &[f32]) -> Vec<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_matches_are_fresh_mismatches_are_stale() {
+        // Same generation => the signal belongs to the active track.
+        assert!(!generation_is_stale(5, 5));
+        // Older generation => a track the user already moved past.
+        assert!(generation_is_stale(4, 5));
+        // Any difference is stale, even a (never-expected) newer one.
+        assert!(generation_is_stale(6, 5));
+    }
 
     #[test]
     fn interleave_pairs_left_and_right() {

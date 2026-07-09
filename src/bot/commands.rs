@@ -36,6 +36,11 @@ pub enum BotCommand {
     RadioPreFetch { seed_uri: String },
     /// Internal: preload next track for gapless playback
     PreloadNext,
+    /// Internal: a YouTube track finished (or errored). `generation` identifies
+    /// which load this belongs to so a stale completion (after the user already
+    /// skipped/stopped) is dropped instead of double-advancing the queue.
+    /// `error` carries a short failure reason when playback did not end cleanly.
+    TrackEnded { generation: u64, error: Option<String> },
 }
 
 #[derive(Debug)]

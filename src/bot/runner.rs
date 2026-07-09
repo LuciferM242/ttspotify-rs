@@ -982,6 +982,20 @@ async fn command_processor(
                 });
             }
 
+            BotCommand::TrackEnded { generation, error } => {
+                // Drop stale end-of-track signals from a track the user has
+                // already skipped or stopped (generation no longer current).
+                if youtube_player.is_stale_generation(generation) {
+                    tracing::debug!("Ignoring stale YouTube TrackEnded (gen {generation})");
+                    continue;
+                }
+                if let Some(e) = error {
+                    tracing::warn!("YouTube track ended with error: {e}");
+                }
+                // Advance exactly like a natural end-of-track.
+                let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
+            }
+
             BotCommand::PreloadNext => {
                 let next_uri = {
                     let s = state.lock();
@@ -1081,9 +1095,25 @@ async fn player_event_loop(
                 s.status = PlaybackStatus::Paused;
                 s.position_ms = position_ms;
             }
-            PlayerEvent::EndOfTrack { .. } => {
-                tracing::info!("Track ended, advancing to next");
-                let _ = cmd_tx.send(BotCommand::Next { user_id: 0 });
+            PlayerEvent::EndOfTrack { track_id, .. } => {
+                // Guard against a stale EndOfTrack for a track we've already
+                // moved past (e.g. the user skipped just as it ended), which
+                // would otherwise double-advance the queue. Only advance if the
+                // ended track is still the current one.
+                let is_current = {
+                    let s = state.lock();
+                    match (s.current().map(|e| e.track.uri().to_string()), track_id.to_uri()) {
+                        (Some(cur_uri), Ok(ended_uri)) => cur_uri == ended_uri,
+                        // If we can't compare, fall back to advancing (old behavior).
+                        _ => true,
+                    }
+                };
+                if is_current {
+                    tracing::info!("Track ended, advancing to next");
+                    let _ = cmd_tx.send(BotCommand::Next { user_id: 0 });
+                } else {
+                    tracing::debug!("Ignoring stale Spotify EndOfTrack for {track_id:?}");
+                }
             }
             PlayerEvent::Unavailable { track_id, .. } => {
                 tracing::warn!("Track unavailable: {track_id:?}, skipping");
