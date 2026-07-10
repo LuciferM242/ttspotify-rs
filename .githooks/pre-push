@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-push gate: refuse to push if clippy or the tests fail.
+# Mirrors CI, so a passing push means a passing CI run.
+# Bypass in a pinch with:  git push --no-verify
+set -e
+
+echo "pre-push: cargo clippy (deny warnings)..."
+cargo clippy --all-targets -- -D warnings
+
+echo "pre-push: cargo test..."
+cargo test --lib
+
+echo "pre-push: OK"
