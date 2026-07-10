@@ -347,6 +347,12 @@ impl CommandDispatcher {
             "o" | "prev" => {
                 self.send(BotCommand::Prev { user_id: sender_id });
             }
+            // Restart the current track from the start. Reuses Seek: a large
+            // negative offset clamps to position 0 (works for both services).
+            "replay" | "rp" => {
+                self.send(BotCommand::Seek { offset_ms: -86_400_000, user_id: sender_id });
+                self.reply(client, sender_id, "Restarting track");
+            }
 
             // -- Info --
             "c" | "current" => {
@@ -595,6 +601,7 @@ impl CommandDispatcher {
                         "s" | "stop" => "s / stop\nStop playback and clear the queue.",
                         "n" | "next" => "n / next\nSkip to the next track in the queue.\nIf radio is on and queue is empty, fetches recommendations.",
                         "o" | "prev" => "o / prev\nGo back to the previous track in the queue.",
+                        "replay" | "rp" => "replay / rp\nRestart the current track from the beginning.",
                         "c" | "current" => "c / current\nShow the currently playing track with position, duration, and active modes.",
                         "queue" => HELP_QUEUE,
                         "mode" => HELP_MODE,
@@ -634,6 +641,7 @@ fn help_text(active: Service) -> String {
          \x20 s               Stop playback and clear queue\n\
          \x20 n               Next track\n\
          \x20 o               Previous track\n\
+         \x20 replay          Restart current track\n\
          \x20 c               Show current track info\n\
          \n\
          Queue:\n\
