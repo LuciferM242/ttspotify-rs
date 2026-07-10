@@ -4,13 +4,21 @@
 //!   config: ~/.config/ttspotify/myserver.json
 //!   log:    ~/.config/ttspotify/logs/myserver.log
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
+
+/// Directory where the panic hook writes `panics.log`. Set once during logging
+/// init so the hook can dump panics synchronously to disk — the non-blocking
+/// file writer may not flush on `panic = "abort"`, and the tray has no console
+/// for the hook's `eprintln`, so without this a tray panic leaves no trace.
+static PANIC_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Derive the log file path from a config file path.
 /// Returns (log_dir, log_filename).
@@ -33,6 +41,8 @@ fn create_file_writer(log_dir: &Path, log_filename: &str) -> (tracing_appender::
     if let Err(e) = std::fs::create_dir_all(log_dir) {
         eprintln!("Warning: failed to create log directory {}: {e}", log_dir.display());
     }
+    // Remember the dir so the panic hook can write crashes here synchronously.
+    let _ = PANIC_LOG_DIR.set(log_dir.to_path_buf());
     match tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_suffix(log_filename)
@@ -71,6 +81,22 @@ pub fn install_panic_hook() {
             .unwrap_or_else(|| "<non-string panic payload>".to_string());
         tracing::error!("PANIC at {location}: {payload}\n{backtrace}");
         eprintln!("PANIC at {location}: {payload}\n{backtrace}");
+        // Write the panic to a dedicated crash file synchronously — the only
+        // path that reliably reaches disk under panic=abort with no console.
+        if let Some(dir) = PANIC_LOG_DIR.get() {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("panics.log"))
+            {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = writeln!(f, "[unix:{ts}] PANIC at {location}: {payload}\n{backtrace}\n");
+                let _ = f.flush();
+            }
+        }
         // Preserve any prior hook behavior (e.g. default abort message).
         default_hook(info);
     }));

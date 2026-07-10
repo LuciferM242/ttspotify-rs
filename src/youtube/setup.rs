@@ -59,6 +59,50 @@ pub fn is_installed(paths: &YoutubeSetupPaths) -> bool {
     paths.yt_dlp.is_file() && paths.bgutil_pot.is_file() && paths.plugin_dir.is_dir()
 }
 
+/// Detected versions of the YouTube tools, for the startup version log.
+/// `None` means the tool isn't installed.
+pub struct ToolVersions {
+    pub yt_dlp: Option<String>,
+    pub bgutil: Option<String>,
+}
+
+/// Detect installed YouTube tool versions: `yt-dlp --version` (bundled first,
+/// then PATH) and the bgutil sidecar version file.
+pub fn installed_tool_versions() -> ToolVersions {
+    let paths = resolve_paths().ok();
+
+    let yt_dlp_exe = paths
+        .as_ref()
+        .map(|p| p.yt_dlp.clone())
+        .filter(|p| p.is_file())
+        .or_else(|| which("yt-dlp"));
+    let yt_dlp = yt_dlp_exe.and_then(|exe| {
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("--version");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let out = cmd.output().ok()?;
+        if out.status.success() {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        } else {
+            None
+        }
+    });
+
+    let bgutil = paths.as_ref().and_then(|p| {
+        if p.bgutil_pot.is_file() {
+            Some(installed_bgutil_version(p))
+        } else {
+            None
+        }
+    });
+
+    ToolVersions { yt_dlp, bgutil }
+}
+
 /// Download + install yt-dlp, bgutil-pot, and the plugin zip.
 /// Reports progress via the callback.
 pub async fn install(

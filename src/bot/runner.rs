@@ -71,6 +71,7 @@ pub async fn run_bot(
 
     tracing::info!("TeamTalk Spotify Bot starting...");
     tracing::info!("Config loaded from {}", config_path);
+    log_startup_versions();
 
     let mut initial_state = PlayerState::new();
     initial_state.radio_enabled = config.radio_enabled;
@@ -382,6 +383,24 @@ pub async fn run_bot(
     event_loop_handle.abort();
     let _ = client.disconnect();
     Ok(reason)
+}
+
+/// Log the app version plus the versions of the tools we depend on (TeamTalk
+/// SDK, yt-dlp, bgutil-pot). Written to each instance's log at startup so a bug
+/// report's log self-identifies exactly what was running.
+fn log_startup_versions() {
+    let app = env!("CARGO_PKG_VERSION");
+    let sdk = std::fs::read_to_string("TEAMTALK_DLL/TEAMTALK_SDK_VERSION.txt")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    let tools = crate::youtube::setup::installed_tool_versions();
+    let yt = tools.yt_dlp.as_deref().unwrap_or("not installed");
+    let bg = tools.bgutil.as_deref().unwrap_or("not installed");
+    tracing::info!(
+        "Versions — app: v{app}, TeamTalk SDK: {sdk}, yt-dlp: {yt}, bgutil-pot: {bg}"
+    );
 }
 
 fn schedule_radio_prefetch(
