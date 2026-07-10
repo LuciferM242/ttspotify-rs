@@ -4,7 +4,7 @@
 //! audio pipeline, command processor, and event loop.
 //! Used by both the standalone binary and the Windows tray manager.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,11 +48,17 @@ pub enum RunnerEvent {
 /// - `config_path`: Path to config file (for saving runtime changes).
 /// - `shutdown`: External shutdown signal. Set to true to stop the bot.
 /// - `event_tx`: Optional channel for status updates (used by tray).
+/// - `last_channel`: In-memory carry of the current channel across a restart.
+///   Applied only to the TT-connection config copy (never to `config` itself,
+///   so ConfigStore/the config file keep the configured default). On a `rs`
+///   restart it holds the channel the bot was in, so it rejoins there; `None`
+///   (fresh process start) joins the configured default.
 pub async fn run_bot(
     config: BotConfig,
     config_path: String,
     shutdown: Arc<AtomicBool>,
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
+    last_channel: Arc<parking_lot::Mutex<Option<String>>>,
 ) -> Result<BotExit, BotError> {
     let send_event = {
         let tx = event_tx.clone();
@@ -79,7 +85,19 @@ pub async fn run_bot(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<BotCommand>();
 
     send_event(RunnerEvent::Connecting);
-    let tt_config = config.clone();
+    // Only the TT connection copy gets the restart channel override; the real
+    // `config` (and thus ConfigStore) keeps the configured default channel, so
+    // the config file's channel_name is never rewritten.
+    let tt_config = {
+        let mut c = config.clone();
+        if let Some(ch) = last_channel.lock().clone() {
+            if ch != c.channel_name {
+                tracing::info!("Restart: rejoining last channel {ch} (default is {})", c.channel_name);
+                c.channel_name = ch;
+            }
+        }
+        c
+    };
     let client = tokio::task::spawn_blocking(move || {
         crate::tt::connection::setup_teamtalk(&tt_config)
     }).await.map_err(|e| BotError::TeamTalk(format!("TT setup task failed: {e}")))??;
@@ -94,10 +112,19 @@ pub async fn run_bot(
     let audio_reset = Arc::new(AtomicBool::new(false));
     let timing_reset = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::new(AtomicBool::new(false));
+    // Realtime playback position (ms injected since last reset), written by the
+    // pipeline and read by the YouTube player for accurate `c`/seek positions.
+    let pipeline_pos_ms = Arc::new(AtomicU32::new(0));
     let pipeline_reset = audio_reset.clone();
     let pipeline_timing_reset = timing_reset.clone();
     let pipeline_pause = pause_flag.clone();
-    let pipeline_shutdown = shutdown.clone();
+    // Internal teardown signal set on EVERY run_bot exit (including the
+    // reconnect-exhausted Err path, which must not touch the shared `shutdown`
+    // — that would stop the supervisor from retrying). Keeps the pipeline
+    // thread from leaking across tray restart-retries.
+    let local_shutdown = Arc::new(AtomicBool::new(false));
+    let pipeline_shutdown = local_shutdown.clone();
+    let pipeline_pos = pipeline_pos_ms.clone();
     std::thread::spawn(move || {
         let mut pipeline = crate::audio::pipeline::AudioPipeline::new(
             audio_rx,
@@ -107,6 +134,7 @@ pub async fn run_bot(
             pipeline_timing_reset,
             pipeline_pause,
             pipeline_shutdown,
+            pipeline_pos,
             &pipeline_config,
         );
         pipeline.run();
@@ -138,6 +166,7 @@ pub async fn run_bot(
         youtube_metadata.clone(),
         cmd_tx.clone(),
         state.clone(),
+        pipeline_pos_ms.clone(),
     );
 
     // Exit signal: command_processor sets this instead of process::exit
@@ -176,14 +205,14 @@ pub async fn run_bot(
         shutdown: shutdown.clone(),
         event_tx: event_tx.clone(),
     };
-    tokio::spawn(async move {
+    let processor_handle = tokio::spawn(async move {
         command_processor(cmd_rx, cmd_ctx).await;
     });
 
     // Spawn player event loop
     let event_state = state.clone();
     let event_cmd_tx = cmd_tx.clone();
-    tokio::spawn(async move {
+    let event_loop_handle = tokio::spawn(async move {
         player_event_loop(event_rx, event_state, event_cmd_tx).await;
     });
 
@@ -215,6 +244,7 @@ pub async fn run_bot(
     let event_shutdown = shutdown.clone();
     let event_exit = exit_reason.clone();
     let event_event_tx = event_tx.clone();
+    let event_last_channel = last_channel.clone();
     // If the SDK's auto-reconnect can't restore the session within this window,
     // stop spinning and return an error so the supervisor (tray restart /
     // systemd Restart=) can recover with a fresh client instead of the bot
@@ -281,6 +311,12 @@ pub async fn run_bot(
                             if user.id == event_client.my_id() && user.channel_id != ::teamtalk::types::ChannelId(0) {
                                 *last_channel_id.lock() = user.channel_id;
                                 tracing::info!("Now in channel {}", user.channel_id.0);
+                                // Remember the current channel (in memory only) so a
+                                // restart rejoins here instead of the configured
+                                // default. The config file is never modified.
+                                if let Some(path) = event_client.get_channel_path(user.channel_id) {
+                                    *event_last_channel.lock() = Some(path);
+                                }
                             }
                         }
                     }
@@ -304,7 +340,14 @@ pub async fn run_bot(
         }
     }).await.map_err(|e| BotError::TeamTalk(format!("Event loop failed: {e}")))?;
 
+    // Tear down the pipeline thread on every exit path (the shared `shutdown`
+    // may be untouched — e.g. reconnect-exhausted, where the supervisor still
+    // needs it clear to retry).
+    local_shutdown.store(true, Ordering::Relaxed);
+
     if reconnect_exhausted {
+        processor_handle.abort();
+        event_loop_handle.abort();
         let _ = client.disconnect();
         return Err(BotError::TeamTalk(
             "Lost connection to the TeamTalk server and auto-reconnect was exhausted".into(),
@@ -333,6 +376,10 @@ pub async fn run_bot(
         None if shutdown.load(Ordering::Relaxed) => BotExit::Shutdown,
         None => BotExit::Quit,
     };
+    // do_exit() has run by now (we waited for exit_reason), so config is saved;
+    // abort the spawned tasks so they don't linger across a restart.
+    processor_handle.abort();
+    event_loop_handle.abort();
     let _ = client.disconnect();
     Ok(reason)
 }

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -87,10 +87,16 @@ pub struct AudioPipeline {
     frame_buf: Vec<i16>,
     stream_id: i32,
     sample_index: u32,
+    /// Milliseconds of audio actually injected since the last reset. Paced at
+    /// realtime by frame injection, so it reflects true playback position (the
+    /// YouTube player reads this to report position, rather than counting
+    /// frames buffered ahead in the channel).
+    pos_ms: Arc<AtomicU32>,
     next_block_time: Option<Instant>,
 }
 
 impl AudioPipeline {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         audio_rx: Receiver<Vec<i16>>,
         client: Arc<Client>,
@@ -99,6 +105,7 @@ impl AudioPipeline {
         timing_reset_flag: Arc<AtomicBool>,
         pause_flag: Arc<AtomicBool>,
         shutdown_flag: Arc<AtomicBool>,
+        pos_ms: Arc<AtomicU32>,
         config: &BotConfig,
     ) -> Self {
         let mut volume_controller = VolumeController::new(config.volume_ramp_step);
@@ -113,6 +120,7 @@ impl AudioPipeline {
             timing_reset_flag,
             pause_flag,
             shutdown_flag,
+            pos_ms,
             volume_controller,
             framer: Framer::new(FRAME_SIZE * 4),
             frame_buf: vec![0i16; FRAME_SIZE],
@@ -145,6 +153,7 @@ impl AudioPipeline {
                 self.framer.clear();
                 self.next_block_time = None;
                 self.sample_index = 0;
+                self.pos_ms.store(0, Ordering::Relaxed);
                 tracing::info!("Audio pipeline reset for new track (stream_id={})", self.stream_id);
             }
 
@@ -233,6 +242,11 @@ impl AudioPipeline {
                 }
 
                 self.sample_index = self.sample_index.wrapping_add(FRAME_SAMPLES as u32);
+                // Publish realtime playback position (ms injected since reset).
+                self.pos_ms.store(
+                    (self.sample_index as u64 * 1000 / SAMPLE_RATE as u64) as u32,
+                    Ordering::Relaxed,
+                );
             }
         }
     }

@@ -143,11 +143,14 @@ async fn main() -> Result<(), BotError> {
 
     let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
 
+    // Carries the current channel across restarts (in memory); the config
+    // default is used on a fresh process start.
+    let last_channel = std::sync::Arc::new(parking_lot::Mutex::new(None));
     loop {
         let config = BotConfig::load(&config_path)?;
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        match tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None).await? {
+        match tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None, last_channel.clone()).await? {
             BotExit::Restart => {
                 tracing::info!("Restarting bot...");
                 continue;

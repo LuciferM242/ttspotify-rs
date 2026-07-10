@@ -343,6 +343,9 @@ fn run_bot_instance(
     // at startup) with capped exponential backoff before giving up.
     const MAX_ERROR_RETRIES: u32 = 5;
     let mut error_retries: u32 = 0;
+    // Carries the current channel across restarts (in memory); config default
+    // is used on a fresh start.
+    let last_channel = Arc::new(Mutex::new(None));
     rt.block_on(async {
         loop {
             // Reload config each iteration so edits take effect on restart
@@ -361,6 +364,7 @@ fn run_bot_instance(
                 config_path_str.clone(),
                 shutdown_clone,
                 Some(event_tx_clone),
+                last_channel.clone(),
             )
             .await
             {
