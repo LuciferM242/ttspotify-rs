@@ -80,7 +80,8 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
         reconnect_config,
         workflow,
         ConnectParamsOwned::new(&config.host, config.tcp_port, config.udp_port, config.encrypted),
-        LoginParams::new(&config.bot_name, &config.username, &config.password, "TTSpotifyBot"),
+        // password is an `impl Into<SecretString>`; pass an owned String.
+        LoginParams::new(&config.bot_name, &config.username, config.password.clone(), "TTSpotifyBot"),
     );
     tracing::info!("Auto-reconnect enabled");
 

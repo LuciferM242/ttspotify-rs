@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 # TeamTalk SDK. Pinned to a specific revision for reproducible builds (was a
 # floating `branch = "main"`).
-teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", rev = "c1ecfc1decde427505f4c135cd4b0e17af58c0c8", features = ["logging"] }
+teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", rev = "1f4eb1578b14084becf491285e3482bfbc8c583f", features = ["logging"] }
 
 # Spotify (librespot - native Rust). default-features = false drops the default
 # native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
