@@ -24,10 +24,12 @@ librespot-oauth = { version = "0.8", default-features = false, features = ["rust
 rustypipe = { version = "0.11", default-features = false, features = ["rustls-tls-native-roots"] }
 
 # YouTube audio: HTTP fetch + decode + resample.
-# symphonia handles Opus and AAC/M4A (the two codecs YouTube serves).
-# rubato resamples 48k Opus down to the 44.1k pipeline rate.
+# symphonia decodes YouTube's m4a (ISO-MP4 container + AAC). default-features
+# = false drops decoders nothing feeds it (adpcm/mkv/pcm/wav); Spotify's
+# ogg/vorbis are still pulled in by librespot-playback.
+# rubato resamples to the 44.1k pipeline rate.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-symphonia = { version = "0.5", features = ["isomp4", "aac"] }
+symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
 rubato = "0.16"
 
 # Plugin zip extraction for the YouTube binaries auto-installer.
