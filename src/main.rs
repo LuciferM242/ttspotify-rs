@@ -15,6 +15,20 @@ use tt_spotify_bot::config::BotConfig;
 #[cfg(not(windows))]
 use tt_spotify_bot::error::BotError;
 
+/// TeamTalk SDK version this build pins by default. The teamtalk crate reads
+/// `TEAMTALK_SDK_VERSION` at runtime to choose which SDK to download; we set it
+/// (unless already set in the environment) so builds use a known-good version
+/// and never silently auto-update to a newer SDK. Bump this to move versions.
+const PINNED_TEAMTALK_SDK_VERSION: &str = "v5.19a";
+
+/// Pin the TeamTalk SDK version unless the user explicitly overrode it. Call
+/// once, first thing in `main`, before any TeamTalk client is created.
+fn pin_teamtalk_sdk_version() {
+    if std::env::var_os("TEAMTALK_SDK_VERSION").is_none() {
+        std::env::set_var("TEAMTALK_SDK_VERSION", PINNED_TEAMTALK_SDK_VERSION);
+    }
+}
+
 #[cfg(not(windows))]
 #[derive(Parser)]
 #[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot")]
@@ -59,6 +73,7 @@ struct Args {
 #[cfg(not(windows))]
 #[tokio::main]
 async fn main() -> Result<(), BotError> {
+    pin_teamtalk_sdk_version();
     tt_spotify_bot::logging::install_panic_hook();
     let args = Args::parse();
 
@@ -164,6 +179,7 @@ async fn main() -> Result<(), BotError> {
 /// tray icon. `--setup` opens the GUI config dialog directly.
 #[cfg(windows)]
 fn main() {
+    pin_teamtalk_sdk_version();
     tt_spotify_bot::logging::install_panic_hook();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--setup") {
