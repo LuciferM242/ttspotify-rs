@@ -1,0 +1,4 @@
+# Shell scripts and git hooks must stay LF, or git-bash chokes on the
+# CRLF in the shebang line on Windows checkouts.
+*.sh text eol=lf
+.githooks/pre-push text eol=lf
