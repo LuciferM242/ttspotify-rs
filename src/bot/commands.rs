@@ -87,7 +87,7 @@ pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
 pub fn send_reply(client: &Client, user_id: i32, text: &str) {
     let uid = ::teamtalk::types::UserId(user_id);
     for chunk in chunk_message(text, MAX_REPLY_LEN) {
-        client.send_to_user(uid, &chunk);
+        let _ = client.send_to_user(uid, &chunk);
     }
 }
 
@@ -218,7 +218,7 @@ pub fn user_error(e: impl std::fmt::Display) -> String {
 pub fn format_search_results(tracks: &[crate::track::Track]) -> String {
     let mut msg = String::from("Search results:\n");
     for (i, track) in tracks.iter().enumerate() {
-        let _ = write!(msg, "  {}: {} [{}]\n",
+        let _ = writeln!(msg, "  {}: {} [{}]",
             i + 1, track.display_name(), track.duration_display());
     }
     msg.push_str("Type a number to play, or a to cancel");

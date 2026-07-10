@@ -75,6 +75,7 @@ pub struct YouTubePlayer {
     /// than frames buffered ahead in the channel.
     pipeline_pos_ms: Arc<AtomicU32>,
     /// Active track's task + control. `None` when idle.
+    #[allow(clippy::type_complexity)]
     current: Arc<Mutex<Option<(JoinHandle<()>, Arc<TrackControl>)>>>,
     /// Monotonic token identifying the current load. Bumped on every load and
     /// on stop/abort so a stale task's end-of-track signal can be recognized

@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn parse_uri_unsupported_kind_returns_none() {
         // Unsupported URI types (artist, episode, show) → None.
-        assert!(matches!(parse_spotify_ref("spotify:artist:x"), None));
-        assert!(matches!(parse_spotify_ref("spotify:episode:x"), None));
+        assert!(parse_spotify_ref("spotify:artist:x").is_none());
+        assert!(parse_spotify_ref("spotify:episode:x").is_none());
     }
 
     // -- parse_spotify_ref: URL form --
@@ -240,13 +240,10 @@ mod tests {
 
     #[test]
     fn parse_garbage_returns_none() {
-        assert!(matches!(parse_spotify_ref(""), None));
-        assert!(matches!(parse_spotify_ref("hello world"), None));
-        assert!(matches!(parse_spotify_ref("spotify:"), None));
-        assert!(matches!(
-            parse_spotify_ref("https://example.com/track/abc"),
-            None
-        ));
+        assert!(parse_spotify_ref("").is_none());
+        assert!(parse_spotify_ref("hello world").is_none());
+        assert!(parse_spotify_ref("spotify:").is_none());
+        assert!(parse_spotify_ref("https://example.com/track/abc").is_none());
     }
 
     #[test]

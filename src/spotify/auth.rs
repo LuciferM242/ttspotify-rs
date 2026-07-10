@@ -42,6 +42,12 @@ fn detect_headless() -> bool {
     false
 }
 
+impl Default for SpotifyAuth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SpotifyAuth {
     pub fn new() -> Self {
         let base = crate::config::config_dir();

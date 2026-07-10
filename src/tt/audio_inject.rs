@@ -33,5 +33,5 @@ pub fn flush_audio(client: &Client) {
     block.nSamples = 0;
     block.uSampleIndex = 0;
     block.uStreamTypes = ffi::StreamType::STREAMTYPE_VOICE as u32;
-    client.insert_audio_block(&block);
+    let _ = client.insert_audio_block(&block);
 }

@@ -5,7 +5,9 @@
 //! "active service" — the one new commands like `p <query>` target.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub enum Service {
+    #[default]
     Spotify,
     YouTube,
 }
@@ -37,11 +39,6 @@ impl Service {
     }
 }
 
-impl Default for Service {
-    fn default() -> Self {
-        Self::Spotify
-    }
-}
 
 #[cfg(test)]
 mod tests {

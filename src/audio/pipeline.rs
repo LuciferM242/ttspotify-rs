@@ -147,7 +147,7 @@ impl AudioPipeline {
                 // Flush any old audio from TeamTalk
                 crate::tt::audio_inject::flush_audio(&self.client);
                 // Ensure voice transmission is disabled (like Python bot does before each track)
-                self.client.enable_voice_transmission(false);
+                let _ = self.client.enable_voice_transmission(false);
                 // New stream ID for new track (like Python bot: time-based)
                 self.stream_id = new_stream_id();
                 self.framer.clear();

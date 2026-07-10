@@ -60,6 +60,12 @@ pub struct PlayerState {
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
 
+impl Default for PlayerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlayerState {
     pub fn new() -> Self {
         Self {

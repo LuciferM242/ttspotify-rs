@@ -50,6 +50,7 @@ fn ask_int(prompt: &str, default: i32) -> Option<i32> {
     }
 }
 
+#[allow(clippy::field_reassign_with_default)] // building config field-by-field from wizard input reads clearer
 pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     println!();
     println!("TTSpotify Configuration Setup");

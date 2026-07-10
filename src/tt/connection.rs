@@ -53,13 +53,13 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     tracing::info!("Virtual sound devices initialized");
 
     // Disable voice transmission (we inject audio blocks manually)
-    client.enable_voice_transmission(false);
+    let _ = client.enable_voice_transmission(false);
 
     // Set bot gender
     let gender = crate::config::parse_gender(&config.bot_gender);
     let mut status = UserStatus::default();
     status.gender = gender;
-    client.set_status(status, "");
+    let _ = client.set_status(status, "");
     tracing::info!("Bot gender set to {:?}", gender);
 
     // Join channel

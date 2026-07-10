@@ -420,7 +420,7 @@ fn open_file(path: &std::path::Path) {
                     .is_some_and(|n| n.ends_with(suffix) && n != suffix)
             })
             .collect();
-        matches.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        matches.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
         match matches.first() {
             Some(entry) => entry.path(),
             None => return,

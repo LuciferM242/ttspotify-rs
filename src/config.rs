@@ -375,6 +375,7 @@ impl ConfigStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)] // tweaking a couple of fields off Default reads fine in tests
 mod tests {
     use super::*;
     use ::teamtalk::types::UserGender;

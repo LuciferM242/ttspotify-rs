@@ -230,7 +230,7 @@ pub async fn run_bot(
     {
         let mut status = ::teamtalk::types::UserStatus::default();
         status.gender = bot_gender;
-        client.set_status(status, "Idle");
+        let _ = client.set_status(status, "Idle");
     }
     send_event(RunnerEvent::Idle);
 
@@ -328,11 +328,10 @@ pub async fn run_bot(
                             }
                             let sender_id = text_msg.from_id.0;
                             let my_id = event_client.my_id().0;
-                            if sender_id != my_id && !text_msg.text.is_empty() {
-                                if !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
+                            if sender_id != my_id && !text_msg.text.is_empty()
+                                && !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
                                     break false;
                                 }
-                            }
                         }
                     }
                     _ => {}
@@ -577,7 +576,7 @@ async fn command_processor(
     let set_status = |text: &str| {
         let mut status = ::teamtalk::types::UserStatus::default();
         status.gender = bot_gender;
-        client.set_status(status, text);
+        let _ = client.set_status(status, text);
     };
 
     let now_playing_status = |track_name: &str, st: &SharedState| -> String {
@@ -605,7 +604,7 @@ async fn command_processor(
         player.stop();
         youtube_player.stop();
         crate::tt::audio_inject::flush_audio(client);
-        client.enable_voice_transmission(false);
+        let _ = client.enable_voice_transmission(false);
         audio_reset.store(true, Ordering::Relaxed);
         let mut s = state.lock();
         s.status = PlaybackStatus::Idle;
@@ -620,7 +619,7 @@ async fn command_processor(
                     player.stop();
                     youtube_player.stop();
                     crate::tt::audio_inject::flush_audio(client);
-                    client.enable_voice_transmission(false);
+                    let _ = client.enable_voice_transmission(false);
                     audio_reset.store(true, Ordering::Relaxed);
                     player.load_track(&uri);
                     {
@@ -638,7 +637,7 @@ async fn command_processor(
                 player.stop();
                 youtube_player.stop();
                 crate::tt::audio_inject::flush_audio(client);
-                client.enable_voice_transmission(false);
+                let _ = client.enable_voice_transmission(false);
                 audio_reset.store(true, Ordering::Relaxed);
                 youtube_player.load(uri_str);
                 {
@@ -1075,12 +1074,12 @@ async fn command_processor(
                 if channel_id == ::teamtalk::types::ChannelId(0) {
                     reply(user_id, &format!("Channel not found: {path}"));
                 } else {
-                    client.join_channel(channel_id, "");
+                    let _ = client.join_channel(channel_id, "");
                 }
             }
 
             BotCommand::ChangeNick { name, user_id: _ } => {
-                client.change_nickname(&name);
+                let _ = client.change_nickname(&name);
             }
 
             BotCommand::SetGender { gender, user_id: _ } => {
@@ -1091,7 +1090,7 @@ async fn command_processor(
                     .unwrap_or_else(|| "Idle".to_string());
                 let mut status = ::teamtalk::types::UserStatus::default();
                 status.gender = new_gender;
-                client.set_status(status, &status_text);
+                let _ = client.set_status(status, &status_text);
                 config_store.update(|cfg| {
                     cfg.bot_gender = gender;
                 });

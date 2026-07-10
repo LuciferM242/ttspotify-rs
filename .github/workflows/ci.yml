@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: test + clippy (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # teamtalk-sys runs bindgen at build time, which needs libclang.
+      # (The TeamTalk SDK library itself is downloaded at runtime, not here.)
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --lib
+
+  windows:
+    name: build + clippy (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # bindgen (teamtalk-sys) needs libclang; the runner ships LLVM.
+      - name: Point bindgen at libclang
+        shell: pwsh
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - uses: Swatinem/rust-cache@v2
+
+      # This compiles the tray GUI (wxdragon), which downloads prebuilt
+      # wxWidgets on first build (~3 min).
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test --lib
