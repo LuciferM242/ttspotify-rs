@@ -58,11 +58,33 @@ jobs:
       - name: Stage artifact
         run: |
           mkdir -p dist
-          cp target/release/tt-spotify-bot dist/tt-spotify-bot-linux-x86_64
+          cp target/release/tt-spotify-bot tt-spotify-bot
+          tar -czf dist/tt-spotify-bot-linux-x86_64.tar.gz tt-spotify-bot
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: dist/tt-spotify-bot-linux-x86_64
+          path: dist/tt-spotify-bot-linux-x86_64.tar.gz
+
+  build-linux-arm64:
+    needs: guards
+    runs-on: ubuntu-22.04-arm # native aarch64 runner; SDK arm64 build floors at Debian 12 glibc
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp target/release/tt-spotify-bot tt-spotify-bot
+          tar -czf dist/tt-spotify-bot-linux-aarch64.tar.gz tt-spotify-bot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: dist/tt-spotify-bot-linux-aarch64.tar.gz
 
   build-windows:
     needs: guards
@@ -80,14 +102,15 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/tt-spotify-bot.exe dist/tt-spotify-bot-windows-x86_64.exe
+          Copy-Item target/release/tt-spotify-bot.exe tt-spotify-bot.exe
+          Compress-Archive -Path tt-spotify-bot.exe -DestinationPath dist/tt-spotify-bot-windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/tt-spotify-bot-windows-x86_64.exe
+          path: dist/tt-spotify-bot-windows-x86_64.zip
 
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-linux-arm64, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -101,6 +124,7 @@ jobs:
         run: |
           mkdir -p dist
           cp artifacts/linux/* dist/
+          cp artifacts/linux-arm64/* dist/
           cp artifacts/windows/* dist/
           cd dist && sha256sum * > SHA256SUMS && cd ..
           ls -la dist
@@ -123,5 +147,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
-          files: dist/*
+          # Explicit order (not a glob) so assets display windows, linux, arm.
+          files: |
+            dist/tt-spotify-bot-windows-x86_64.zip
+            dist/tt-spotify-bot-linux-x86_64.tar.gz
+            dist/tt-spotify-bot-linux-aarch64.tar.gz
+            dist/SHA256SUMS
           fail_on_unmatched_files: true

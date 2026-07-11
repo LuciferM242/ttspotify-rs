@@ -3,6 +3,20 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
 
+## [0.3.0] - 2026-07-11
+### Added
+- aarch64 Linux support: runs on Raspberry Pi (Pi Zero 2 W through Pi 5) on
+  64-bit Raspberry Pi OS. The release workflow builds a native aarch64 binary,
+  and `--setup-yt` installs arch-correct yt-dlp and bgutil-pot binaries.
+
+### Changed
+- Release binaries are now packaged (Windows `.zip`, Linux/arm `.tar.gz`)
+  instead of shipped bare.
+
+### Note
+- aarch64 Linux needs `libpulse0` installed at runtime (the TeamTalk SDK links
+  PulseAudio); a headless Debian without it fails with "Init failed".
+
 ## [0.2.0] - 2026-07-10
 ### Added
 - YouTube seek in both directions with accurate live position tracking.

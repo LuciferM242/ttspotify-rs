@@ -119,7 +119,13 @@ pub async fn install(
 
     // 1. yt-dlp — verify against the release's SHA2-256SUMS manifest.
     progress(&format!("Downloading yt-dlp {YT_DLP_VERSION}..."));
-    let yt_dlp_asset = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp_linux" };
+    let yt_dlp_asset = if cfg!(windows) {
+        "yt-dlp.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "yt-dlp_linux_aarch64"
+    } else {
+        "yt-dlp_linux"
+    };
     let yt_dlp_url = format!(
         "https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/{yt_dlp_asset}"
     );
@@ -146,7 +152,13 @@ pub async fn install(
 
     // 2. bgutil-pot
     progress(&format!("Downloading bgutil-pot {BGUTIL_VERSION}..."));
-    let bgutil_asset = if cfg!(windows) { "bgutil-pot-windows-x86_64.exe" } else { "bgutil-pot-linux-x86_64" };
+    let bgutil_asset = if cfg!(windows) {
+        "bgutil-pot-windows-x86_64.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "bgutil-pot-linux-aarch64"
+    } else {
+        "bgutil-pot-linux-x86_64"
+    };
     let bgutil_url = format!(
         "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/{bgutil_asset}"
     );
@@ -212,7 +224,13 @@ pub async fn install_bgutil_version(
     ).await;
 
     progress(&format!("Downloading bgutil-pot {version}..."));
-    let bgutil_asset = if cfg!(windows) { "bgutil-pot-windows-x86_64.exe" } else { "bgutil-pot-linux-x86_64" };
+    let bgutil_asset = if cfg!(windows) {
+        "bgutil-pot-windows-x86_64.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "bgutil-pot-linux-aarch64"
+    } else {
+        "bgutil-pot-linux-x86_64"
+    };
     let bgutil_url = format!(
         "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/{bgutil_asset}"
     );

@@ -763,7 +763,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2726,7 +2726,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3394,7 +3394,7 @@ dependencies = [
 [[package]]
 name = "teamtalk"
 version = "6.0.0"
-source = "git+https://github.com/BlindMaster24/TeamTalkRust.git?rev=1f4eb1578b14084becf491285e3482bfbc8c583f#1f4eb1578b14084becf491285e3482bfbc8c583f"
+source = "git+https://github.com/LuciferM242/TeamTalkRust.git?branch=arm64-linux#eb7cad2c390623fd2a60f5b2bdc10696a6096721"
 dependencies = [
  "bitflags 2.11.1",
  "rand 0.10.1",
@@ -3425,10 +3425,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3779,7 +3779,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tt-spotify-bot"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "crossbeam-channel",

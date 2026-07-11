@@ -1,14 +1,14 @@
 [package]
 name = "tt-spotify-bot"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 default-run = "tt-spotify-bot"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-# TeamTalk SDK. Pinned to a specific revision for reproducible builds (was a
-# floating `branch = "main"`).
-teamtalk = { git = "https://github.com/BlindMaster24/TeamTalkRust.git", rev = "1f4eb1578b14084becf491285e3482bfbc8c583f", features = ["logging"] }
+# TeamTalk SDK. Fork of BlindMaster24/TeamTalkRust; the `arm64-linux` branch
+# adds aarch64 SDK downloading (upstream only fetches win64 + x86_64).
+teamtalk = { git = "https://github.com/LuciferM242/TeamTalkRust.git", branch = "arm64-linux", features = ["logging"] }
 
 # Spotify (librespot - native Rust). default-features = false drops the default
 # native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
