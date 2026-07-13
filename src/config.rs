@@ -61,7 +61,10 @@ pub fn config_dir() -> PathBuf {
 
 /// List config files in the config directory, skipping non-bot files.
 pub fn list_configs() -> Vec<(String, PathBuf)> {
-    let skip = ["credentials", "cookies", "sessions"];
+    // Non-bot JSON files that share the config directory. "settings" is the
+    // app-global settings.json (update-check toggle); the rest are auth/session
+    // artifacts. None are server configs, so they must never appear as bots.
+    let skip = ["credentials", "cookies", "sessions", "settings"];
     let dir = config_dir();
     if !dir.exists() {
         return Vec::new();

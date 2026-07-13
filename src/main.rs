@@ -68,6 +68,11 @@ struct Args {
     /// update, then checks GitHub for a newer bgutil-pot release.
     #[arg(long)]
     update_tools: bool,
+
+    /// Check GitHub for a newer release; if found, show the changelog and
+    /// (with confirmation) download, verify, and replace this binary.
+    #[arg(long)]
+    update: bool,
 }
 
 #[cfg(not(windows))]
@@ -124,6 +129,10 @@ async fn main() -> Result<(), BotError> {
         }
     }
 
+    if args.update {
+        return run_cli_update().await;
+    }
+
     if args.auth {
         tracing_subscriber::fmt()
             .with_target(false)
@@ -171,6 +180,72 @@ async fn main() -> Result<(), BotError> {
                 continue;
             }
             _ => std::process::exit(0),
+        }
+    }
+}
+
+/// Interactive `--update`: check GitHub, show the changelog, confirm, then
+/// download + verify + replace this binary. Refuses to run non-interactively
+/// (e.g. under systemd) since it needs a y/N answer.
+#[cfg(not(windows))]
+async fn run_cli_update() -> Result<(), BotError> {
+    use std::io::{IsTerminal, Write};
+    use std::sync::atomic::AtomicBool;
+
+    let info = match tt_spotify_bot::update::check().await {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            println!("Already up to date (v{}).", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("Update check failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!(
+        "Update available: {} (you have v{})",
+        info.tag,
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("\n{}\n", tt_spotify_bot::update::plain_changelog(&info.changelog));
+
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "Not a terminal; refusing to update non-interactively. Run `ttspotify --update` from a shell."
+        );
+        std::process::exit(1);
+    }
+
+    print!("Download and install {}? [y/N] ", info.tag);
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).ok();
+    if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let cancel = AtomicBool::new(false);
+    let progress = |done: u64, total: Option<u64>| {
+        match total {
+            Some(t) if t > 0 => print!("\rDownloading... {}%   ", done * 100 / t),
+            _ => print!("\rDownloading... {done} bytes   "),
+        }
+        let _ = std::io::stdout().flush();
+    };
+    match tt_spotify_bot::update::download_and_apply(&info, &progress, &cancel).await {
+        Ok(()) => {
+            println!("\nUpdated to {}.", info.tag);
+            println!(
+                "If running as a service, restart it: systemctl --user restart ttspotify@<name>"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("\nUpdate failed: {e}");
+            std::process::exit(1);
         }
     }
 }

@@ -1,7 +1,11 @@
 # Changelog
 
-All notable changes to this project are documented here.
-Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [SemVer](https://semver.org/).
+## [0.5.0] - 2026-07-13
+### Added
+- Self-updater: checks GitHub for a newer release and installs it (Windows via a
+  tray dialog, Linux via `ttspotify --update`). Downloads are minisign-signed and
+  verified before anything is replaced.
+- Windows tray Settings: toggle update checks on startup and launch-on-startup.
 
 ## [0.3.0] - 2026-07-11
 ### Added

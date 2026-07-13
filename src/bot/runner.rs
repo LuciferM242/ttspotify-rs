@@ -227,6 +227,17 @@ pub async fn run_bot(
 
     tracing::info!("Bot is ready! Listening for commands...");
 
+    // One-shot, non-blocking update check. Logs a breadcrumb if a newer release
+    // exists; never blocks startup and never self-updates a running service.
+    #[cfg(not(windows))]
+    if crate::settings::load().check_updates_on_startup {
+        tokio::spawn(async {
+            if let Ok(Some(info)) = crate::update::check().await {
+                tracing::info!("Update {} available - run: ttspotify --update", info.tag);
+            }
+        });
+    }
+
     {
         let mut status = ::teamtalk::types::UserStatus::default();
         status.gender = bot_gender;

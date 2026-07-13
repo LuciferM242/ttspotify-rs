@@ -317,6 +317,9 @@ fn add_text_field(parent: &Panel, sizer: &FlexGridSizer, label: &str, value: &st
     let lbl = StaticText::builder(parent).with_label(label).build();
     let input = TextCtrl::builder(parent).build();
     input.set_value(value);
+    // Programmatic accessible name (not just the adjacent StaticText's proximity)
+    // so MSAA/UIA screen readers reliably announce the field's purpose.
+    input.set_name(label);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
     input
@@ -328,6 +331,7 @@ fn add_password_field(parent: &Panel, sizer: &FlexGridSizer, label: &str, value:
         .with_style(TextCtrlStyle::Password)
         .build();
     input.set_value(value);
+    input.set_name(label);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
     input
@@ -339,6 +343,7 @@ fn add_spin_field(parent: &Panel, sizer: &FlexGridSizer, label: &str, value: i32
         .with_range(min, max)
         .with_initial_value(value)
         .build();
+    input.set_name(label);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
     input
@@ -370,6 +375,7 @@ fn add_combo_field(
         .with_style(ComboBoxStyle::ReadOnly)
         .build();
     input.set_value(selected);
+    input.set_name(label);
     sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
     sizer.add(&input, 1, SizerFlag::Expand, 0);
     input
@@ -437,6 +443,7 @@ fn add_text_with_browse(
     let lbl = StaticText::builder(parent).with_label(label).build();
     let input = TextCtrl::builder(parent).build();
     input.set_value(value);
+    input.set_name(label);
     let browse = Button::builder(parent).with_label("Browse...").build();
 
     let row = BoxSizer::builder(Orientation::Horizontal).build();

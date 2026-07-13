@@ -21,6 +21,8 @@ const ID_ADD_SERVER: i32 = 2;
 const ID_SPOTIFY_AUTH: i32 = 3;
 const ID_YT_INSTALL: i32 = 4;
 const ID_YT_UPDATE: i32 = 5;
+const ID_CHECK_UPDATES: i32 = 6;
+const ID_SETTINGS: i32 = 7;
 
 // Per-bot menu IDs: base + (bot_index * 10) + action
 const ID_BOT_BASE: i32 = 1000;
@@ -54,53 +56,32 @@ pub fn run() {
         let icon = create_icon();
         taskbar.set_icon(&icon, "TT Spotify");
 
-        // Load configs and auto-start bots, or prompt to create one
-        {
-            let mut mgr = manager.borrow_mut();
-            let names = mgr.load_configs();
-
-            if names.is_empty() {
-                drop(mgr);
-
-                use MessageDialogStyle as MDS;
-                let res = MessageDialog::builder(
-                    &hidden_frame,
-                    "No config files found.\nWould you like to create one now?\n\nYou can also create one later from the tray menu (Add Server).",
-                    "TT Spotify - No Configurations",
-                )
-                .with_style(MDS::YesNo | MDS::IconQuestion)
-                .build()
-                .show_modal();
-
-                if res == ID_YES {
-                    let mgr_save = manager.clone();
-                    let tb = taskbar.clone();
-                    let ic = icon.clone();
-                    config_dialog::open_config_dialog(
-                        BotConfig::default(),
-                        None,
-                        move |_path| {
-                            let mut m = mgr_save.borrow_mut();
-                            let new_names = m.load_configs();
-                            for name in &new_names {
-                                m.start(name);
-                            }
-                            drop(m);
-                            let tooltip = build_tooltip(&mgr_save.borrow().statuses());
-                            tb.set_icon(&ic, &tooltip);
-                        },
-                    );
-                }
-            } else {
-                for name in &names {
-                    mgr.start(name);
-                }
-            }
-        }
-
-        // Update tooltip with initial status
+        // Initial tooltip (no bots started yet).
         let tooltip = build_tooltip(&manager.borrow().statuses());
         taskbar.set_icon(&icon, &tooltip);
+
+        // Set on Exit. Guards the gated-startup path: if the update dialog is
+        // still open when the app exits, its dismiss callback must not start
+        // bots into a shutting-down app.
+        let exiting = Rc::new(std::cell::Cell::new(false));
+
+        // Startup update check gates bot startup, but only when bots are actually
+        // configured — there's nothing to gate on a fresh install, so skip the
+        // check and go straight to start_bots (which prompts to create the first
+        // config) with no network wait. When configured and enabled, run the
+        // check on a worker thread; the status timer below acts on the result
+        // (show the dialog and hold off starting bots, or start them if none).
+        let has_configs = !crate::config::list_configs().is_empty();
+        let update_rx = if has_configs && crate::settings::load().check_updates_on_startup {
+            let (tx, rx) = crossbeam_channel::unbounded::<Option<crate::update::UpdateInfo>>();
+            std::thread::spawn(move || {
+                let _ = tx.send(check_for_update());
+            });
+            Some(rx)
+        } else {
+            start_bots(&manager, &taskbar, &icon, hidden_frame);
+            None
+        };
 
         // --- Right-click: build fresh menu, bind handler ON THE MENU, show it ---
         // popup_menu() is synchronous (blocks until dismissed). Events from
@@ -129,11 +110,13 @@ pub fn run() {
             taskbar_popup.set_icon(&icon_popup, &tooltip);
         });
 
-        // --- Timer: poll status channel and update tooltip ---
+        // --- Timer: poll status channel + one-shot startup update result ---
         let mgr_timer = manager.clone();
         let taskbar_timer = taskbar.clone();
         let icon_timer = icon.clone();
+        let exiting_timer = exiting.clone();
         let timer = Timer::new(&hidden_frame);
+        let update_done = std::cell::Cell::new(false);
         timer.on_tick(move |_| {
             let mut changed = false;
             while status_rx.try_recv().is_ok() {
@@ -143,12 +126,39 @@ pub fn run() {
                 let tooltip = build_tooltip(&mgr_timer.borrow().statuses());
                 taskbar_timer.set_icon(&icon_timer, &tooltip);
             }
+
+            // Startup update result (handled once): show the dialog and gate bot
+            // startup on the user's choice; start bots outright if no update.
+            if let Some(rx) = &update_rx {
+                if !update_done.get() {
+                    if let Ok(result) = rx.try_recv() {
+                        update_done.set(true);
+                        match result {
+                            Some(info) => {
+                                let m = mgr_timer.clone();
+                                let tb = taskbar_timer.clone();
+                                let ic = icon_timer.clone();
+                                let exiting = exiting_timer.clone();
+                                crate::gui::update_dialog::show_update_available(info, move || {
+                                    if !exiting.get() {
+                                        start_bots(&m, &tb, &ic, hidden_frame);
+                                    }
+                                });
+                            }
+                            None => {
+                                start_bots(&mgr_timer, &taskbar_timer, &icon_timer, hidden_frame)
+                            }
+                        }
+                    }
+                }
+            }
         });
         timer.start(200, false);
 
         // Cleanup on exit
         let taskbar_destroy = taskbar.clone();
         hidden_frame.on_destroy(move |evt| {
+            exiting.set(true);
             timer.stop();
             // Wait (bounded) for bots to disconnect cleanly from the server and
             // persist config before the process exits, instead of dropping them
@@ -160,6 +170,62 @@ pub fn run() {
             evt.skip(true);
         });
     });
+}
+
+/// Load configs and start every bot, or prompt to create the first config if
+/// none exist, then refresh the tray tooltip. Called at startup — directly when
+/// the update check is off, or after the user declines an available update.
+fn start_bots(manager: &Rc<RefCell<BotManager>>, taskbar: &TaskBarIcon, icon: &Bitmap, parent: Frame) {
+    let names = { manager.borrow_mut().load_configs() };
+    if names.is_empty() {
+        use MessageDialogStyle as MDS;
+        let res = MessageDialog::builder(
+            &parent,
+            "No config files found.\nWould you like to create one now?\n\nYou can also create one later from the tray menu (Add Server).",
+            "TT Spotify - No Configurations",
+        )
+        .with_style(MDS::YesNo | MDS::IconQuestion)
+        .build()
+        .show_modal();
+        if res == ID_YES {
+            let mgr_save = manager.clone();
+            let tb = taskbar.clone();
+            let ic = icon.clone();
+            config_dialog::open_config_dialog(BotConfig::default(), None, move |_path| {
+                let mut m = mgr_save.borrow_mut();
+                let new_names = m.load_configs();
+                for name in &new_names {
+                    m.start(name);
+                }
+                drop(m);
+                let tooltip = build_tooltip(&mgr_save.borrow().statuses());
+                tb.set_icon(&ic, &tooltip);
+            });
+        }
+    } else {
+        let mut m = manager.borrow_mut();
+        for name in &names {
+            m.start(name);
+        }
+    }
+    let tooltip = build_tooltip(&manager.borrow().statuses());
+    taskbar.set_icon(icon, &tooltip);
+}
+
+/// Blocking startup update check: runs `update::check()` on a fresh runtime with
+/// an 8s cap so a slow or unreachable network can't stall bot startup. Returns
+/// `Some` only when a newer release is definitively available.
+fn check_for_update() -> Option<crate::update::UpdateInfo> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async {
+        match tokio::time::timeout(std::time::Duration::from_secs(8), crate::update::check()).await {
+            Ok(Ok(info)) => info,
+            _ => None,
+        }
+    })
 }
 
 /// Process a menu item click by ID.
@@ -225,6 +291,13 @@ fn handle_menu_action(
                 |p| crate::gui::progress::youtube_update(p),
                 |_| {},
             );
+        }
+        ID_CHECK_UPDATES => {
+            // Manual check announces "up to date" / errors.
+            spawn_update_check(true);
+        }
+        ID_SETTINGS => {
+            crate::gui::settings_dialog::open_settings_dialog();
         }
         _ if id >= ID_BOT_BASE => {
             let bot_idx = ((id - ID_BOT_BASE) / 10) as usize;
@@ -396,10 +469,44 @@ fn build_menu(manager: &BotManager) -> Menu {
 
     menu.append_separator();
     menu.append(ID_ADD_SERVER, "Add Server", "", ItemKind::Normal);
+    menu.append(ID_CHECK_UPDATES, "Check for updates", "", ItemKind::Normal);
+    menu.append(ID_SETTINGS, "Settings", "", ItemKind::Normal);
     menu.append_separator();
     menu.append(ID_EXIT, "Exit", "", ItemKind::Normal);
 
     menu
+}
+
+/// Run a GitHub update check on a worker thread and marshal the result back to
+/// the GUI thread via `call_after`. `announce_up_to_date` controls whether the
+/// "you're up to date" / error boxes appear (manual check) or stay silent
+/// (startup check).
+fn spawn_update_check(announce_up_to_date: bool) {
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::error!("Update check: tokio runtime failed: {e}");
+                return;
+            }
+        };
+        let result = rt.block_on(crate::update::check());
+        wxdragon::call_after(Box::new(move || match result {
+            Ok(Some(info)) => crate::gui::update_dialog::show_update_available(info, || {}),
+            Ok(None) => {
+                if announce_up_to_date {
+                    crate::gui::update_dialog::show_up_to_date();
+                }
+            }
+            Err(e) => {
+                if announce_up_to_date {
+                    crate::gui::update_dialog::show_check_error(&e.to_string());
+                } else {
+                    tracing::warn!("Startup update check failed: {e}");
+                }
+            }
+        }));
+    });
 }
 
 /// Open a file with the default Windows application.

@@ -96,6 +96,18 @@ jobs:
         shell: pwsh
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
+      # Cache the wxWidgets source + its CMake build (the slow part). wxdragon-sys
+      # extracts/builds these at profile-level paths, so they survive at a stable
+      # location. Version-only key (no Cargo.lock) so it isn't busted by dep bumps;
+      # restored after rust-cache so these dirs win. Bump the key when wxdragon's
+      # pinned wxWidgets version changes.
+      - name: Cache wxWidgets build
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/release/wxWidgets
+            target/release/wxwidgets_cmake_build
+          key: wxwidgets-3.3.2-${{ runner.os }}
       - name: Build
         run: cargo build --release
       - name: Stage artifact
@@ -129,6 +141,19 @@ jobs:
           cd dist && sha256sum * > SHA256SUMS && cd ..
           ls -la dist
 
+      - name: Sign SHA256SUMS (minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -e
+          sudo apt-get update && sudo apt-get install -y minisign
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > minisign.key
+          # Passwordless key: feed an empty passphrase on stdin.
+          minisign -S -s minisign.key -m dist/SHA256SUMS </dev/null
+          rm -f minisign.key
+          test -f dist/SHA256SUMS.minisig
+          echo "Signed SHA256SUMS:"; cat dist/SHA256SUMS.minisig
+
       - name: Extract changelog section for this version
         run: |
           VER="${GITHUB_REF_NAME#v}"
@@ -147,10 +172,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
-          # Explicit order (not a glob) so assets display windows, linux, arm.
+          # GitHub sorts release assets alphabetically; this list only controls
+          # which files are uploaded, not their display order.
           files: |
             dist/tt-spotify-bot-windows-x86_64.zip
             dist/tt-spotify-bot-linux-x86_64.tar.gz
             dist/tt-spotify-bot-linux-aarch64.tar.gz
             dist/SHA256SUMS
+            dist/SHA256SUMS.minisig
           fail_on_unmatched_files: true

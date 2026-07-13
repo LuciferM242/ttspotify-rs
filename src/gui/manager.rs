@@ -259,20 +259,34 @@ impl BotManager {
                 None => continue,
             };
             if let Some(handle) = inst.thread.take() {
-                // Poll for completion until the shared deadline. If the thread
-                // finishes, join it; if the deadline passes first, abandon it
-                // (dropping the handle detaches it) rather than blocking on
-                // join() forever — the process is exiting anyway.
-                loop {
-                    if handle.is_finished() {
-                        let _ = handle.join();
-                        break;
+                // Only wait for bots with a live session: they see the shutdown
+                // flag within one 100ms poll and disconnect cleanly. A bot still
+                // starting/connecting is blocked inside a connect/login wait and
+                // can't respond until it times out — waiting for it just delays
+                // exit (the process is going away and the half-open connection
+                // gets dropped either way), so abandon it immediately.
+                let live = matches!(
+                    *inst.status.lock(),
+                    BotStatus::Connected | BotStatus::Playing(_)
+                );
+                if live {
+                    // Poll for completion until the shared deadline. If the
+                    // thread finishes, join it; if the deadline passes first,
+                    // abandon it (dropping the handle detaches it) rather than
+                    // blocking on join() forever — the process is exiting anyway.
+                    loop {
+                        if handle.is_finished() {
+                            let _ = handle.join();
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            tracing::warn!("[{name}] did not shut down within timeout; abandoning thread");
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
-                    if std::time::Instant::now() >= deadline {
-                        tracing::warn!("[{name}] did not shut down within timeout; abandoning thread");
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                } else {
+                    tracing::info!("[{name}] no live session; not waiting on exit");
                 }
             }
             *inst.status.lock() = BotStatus::Stopped;

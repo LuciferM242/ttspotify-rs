@@ -1,6 +1,6 @@
 [package]
 name = "tt-spotify-bot"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 default-run = "tt-spotify-bot"
 license = "GPL-3.0-or-later"
@@ -32,8 +32,19 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
 rubato = "0.16"
 
-# Plugin zip extraction for the YouTube binaries auto-installer.
+# Plugin zip extraction for the YouTube binaries auto-installer + Windows
+# release-archive extraction in the self-updater.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Self-updater: verify the minisign signature over SHA256SUMS, swap the running
+# binary, decode the Linux/arm .tar.gz release archives, compare semver
+# versions, and stream download chunks for progress reporting.
+minisign-verify = "0.2"
+self-replace = "1"
+tar = "0.4"
+flate2 = "1"
+semver = "1"
+futures-util = { version = "0.3", default-features = false }
 
 # SHA-256 verification of downloaded binaries (yt-dlp / bgutil-pot).
 sha2 = "0.10"
@@ -75,6 +86,8 @@ codegen-units = 1
 # GUI (Windows tray + config editor)
 [target.'cfg(windows)'.dependencies]
 wxdragon = "0.9"
+# Per-user autostart via the HKCU Run registry key.
+winreg = "0.52"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
