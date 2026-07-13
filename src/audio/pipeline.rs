@@ -58,6 +58,59 @@ impl Framer {
     }
 }
 
+/// Number of consecutive empty 50ms channel polls after which a closed gate
+/// opens anyway: the producer has gone quiet mid-fill (end of stream or a hard
+/// stall), so play out whatever is buffered instead of holding it hostage.
+const IDLE_POLLS_BEFORE_FLUSH: u32 = 6;
+
+/// Holds back injection after a (re)start until `jitter_buffer_ms` worth of
+/// audio is buffered, absorbing bursty producer starts. Latches open once
+/// filled; `rearm` closes it again for the next track/seek. A target of 0
+/// keeps the gate permanently open (previous pipeline behavior).
+struct PrebufferGate {
+    target_samples: usize,
+    open: bool,
+    idle_polls: u32,
+}
+
+impl PrebufferGate {
+    fn new(jitter_buffer_ms: u32) -> Self {
+        let target_samples =
+            (SAMPLE_RATE as u64 * CHANNELS as u64 * jitter_buffer_ms as u64 / 1000) as usize;
+        Self { target_samples, open: target_samples == 0, idle_polls: 0 }
+    }
+
+    /// Close the gate again (new track / seek): buffer must refill before
+    /// injection resumes.
+    fn rearm(&mut self) {
+        self.open = self.target_samples == 0;
+        self.idle_polls = 0;
+    }
+
+    /// Data arrived; `buffered` is the framer fill level. Opens the gate once
+    /// the target is reached. Returns whether the gate is open.
+    fn on_data(&mut self, buffered: usize) -> bool {
+        self.idle_polls = 0;
+        if buffered >= self.target_samples {
+            self.open = true;
+        }
+        self.open
+    }
+
+    /// A channel poll timed out with no data. With samples stuck behind a
+    /// closed gate this counts toward the flush threshold. Returns whether
+    /// the gate is open.
+    fn on_idle(&mut self, buffered: usize) -> bool {
+        if !self.open && buffered > 0 {
+            self.idle_polls += 1;
+            if self.idle_polls >= IDLE_POLLS_BEFORE_FLUSH {
+                self.open = true;
+            }
+        }
+        self.open
+    }
+}
+
 /// Monotonic, always-positive stream IDs. The previous millisecond-based scheme
 /// could collide when two tracks started within the same millisecond and could
 /// produce negative IDs once the value overflowed i32.
@@ -84,6 +137,7 @@ pub struct AudioPipeline {
     shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     framer: Framer,
+    prebuffer: PrebufferGate,
     frame_buf: Vec<i16>,
     stream_id: i32,
     sample_index: u32,
@@ -123,6 +177,7 @@ impl AudioPipeline {
             pos_ms,
             volume_controller,
             framer: Framer::new(FRAME_SIZE * 4),
+            prebuffer: PrebufferGate::new(config.jitter_buffer_ms),
             frame_buf: vec![0i16; FRAME_SIZE],
             stream_id: new_stream_id(),
             sample_index: 0,
@@ -151,6 +206,7 @@ impl AudioPipeline {
                 // New stream ID for new track (like Python bot: time-based)
                 self.stream_id = new_stream_id();
                 self.framer.clear();
+                self.prebuffer.rearm();
                 self.next_block_time = None;
                 self.sample_index = 0;
                 self.pos_ms.store(0, Ordering::Relaxed);
@@ -168,6 +224,7 @@ impl AudioPipeline {
                 // Drain channel to prevent backpressure on the sink
                 while self.audio_rx.try_recv().is_ok() {}
                 self.framer.clear();
+                self.prebuffer.rearm();
                 self.next_block_time = None;
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
@@ -179,7 +236,15 @@ impl AudioPipeline {
                     self.framer.push(&pcm_data);
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    continue; // Loop back to check reset flag
+                    // Producer idle: give a closed gate a chance to flush any
+                    // trapped tail (short track / end of stream), otherwise
+                    // loop back to check the reset flag.
+                    if !self.prebuffer.on_idle(self.framer.len()) {
+                        continue;
+                    }
+                    if self.framer.len() < FRAME_SIZE {
+                        continue;
+                    }
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     tracing::info!("Audio pipeline channel closed, exiting");
@@ -190,6 +255,11 @@ impl AudioPipeline {
             // Drain any additional buffered data without blocking
             while let Ok(pcm_data) = self.audio_rx.try_recv() {
                 self.framer.push(&pcm_data);
+            }
+
+            // Hold injection until the jitter buffer has filled (no-op at 0ms).
+            if !self.prebuffer.on_data(self.framer.len()) {
+                continue;
             }
 
             while self.framer.len() >= FRAME_SIZE {
@@ -323,5 +393,71 @@ mod tests {
         let b = new_stream_id();
         assert!(a > 0 && b > 0);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn prebuffer_gate_zero_ms_is_always_open() {
+        let mut gate = PrebufferGate::new(0);
+        assert!(gate.on_data(0));
+        assert!(gate.on_idle(0));
+        gate.rearm();
+        assert!(gate.on_data(0));
+    }
+
+    #[test]
+    fn prebuffer_gate_holds_until_target_then_latches_open() {
+        // 400ms at 44100Hz stereo = 35280 samples
+        let mut gate = PrebufferGate::new(400);
+        assert!(!gate.on_data(0));
+        assert!(!gate.on_data(35279));
+        assert!(gate.on_data(35280));
+        // Latched: stays open even as the buffer drains below target.
+        assert!(gate.on_data(100));
+        assert!(gate.on_idle(0));
+    }
+
+    #[test]
+    fn prebuffer_gate_rearm_closes_again() {
+        let mut gate = PrebufferGate::new(100); // 8820 samples
+        assert!(gate.on_data(8820));
+        gate.rearm();
+        assert!(!gate.on_data(8819));
+        assert!(gate.on_data(8820));
+    }
+
+    #[test]
+    fn prebuffer_gate_flushes_after_idle_polls_with_data() {
+        let mut gate = PrebufferGate::new(400);
+        assert!(!gate.on_data(5000));
+        for _ in 0..IDLE_POLLS_BEFORE_FLUSH - 1 {
+            assert!(!gate.on_idle(5000));
+        }
+        // Producer quiet with samples stuck behind the gate: flush.
+        assert!(gate.on_idle(5000));
+    }
+
+    #[test]
+    fn prebuffer_gate_stays_armed_while_idle_and_empty() {
+        let mut gate = PrebufferGate::new(400);
+        // Idle-while-empty is the normal waiting-for-track state; never open.
+        for _ in 0..IDLE_POLLS_BEFORE_FLUSH * 3 {
+            assert!(!gate.on_idle(0));
+        }
+        assert!(!gate.on_data(100));
+    }
+
+    #[test]
+    fn prebuffer_gate_data_resets_idle_streak() {
+        let mut gate = PrebufferGate::new(400);
+        assert!(!gate.on_data(5000));
+        for _ in 0..IDLE_POLLS_BEFORE_FLUSH - 1 {
+            assert!(!gate.on_idle(5000));
+        }
+        // Fresh data below target resets the idle counter.
+        assert!(!gate.on_data(6000));
+        for _ in 0..IDLE_POLLS_BEFORE_FLUSH - 1 {
+            assert!(!gate.on_idle(6000));
+        }
+        assert!(gate.on_idle(6000));
     }
 }

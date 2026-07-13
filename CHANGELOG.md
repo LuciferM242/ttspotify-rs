@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Jitter buffer is now implemented: the pipeline pre-fills `spotifyJitterBufferSizeMs`
+  (default 400ms) of audio before injection starts on each track start and seek,
+  absorbing bursty producer starts and network hiccups. Set it to 0 in the config
+  or GUI for the old inject-immediately behavior. Short tracks and end-of-stream
+  tails flush automatically after ~300ms of producer silence. Values above
+  2000ms are clamped on load.
+
 ## [0.5.0] - 2026-07-13
 ### Added
 - Self-updater: checks GitHub for a newer release and installs it (Windows via a

@@ -115,7 +115,7 @@ pub fn open_config_dialog(
         &audio_sizer,
         "Jitter Buffer (ms):",
         config.jitter_buffer_ms as i32,
-        100,
+        0,
         2000,
     );
     let ramp_input = add_text_field(

@@ -302,6 +302,10 @@ impl BotConfig {
             warnings.push(format!("search_limit {} out of 1..=20, set to {clamped}", self.search_limit));
             self.search_limit = clamped;
         }
+        if self.jitter_buffer_ms > 2000 {
+            warnings.push(format!("jitter_buffer_ms {} > 2000, clamped to 2000", self.jitter_buffer_ms));
+            self.jitter_buffer_ms = 2000;
+        }
         if self.volume_ramp_step <= 0.0 || !self.volume_ramp_step.is_finite() {
             warnings.push(format!("volume_ramp_step {} invalid, reset to 0.03", self.volume_ramp_step));
             self.volume_ramp_step = 0.03;
@@ -502,6 +506,24 @@ mod tests {
         assert_eq!(cfg.volume_ramp_step, 0.03);
         assert_eq!(cfg.radio_batch_size, 1);
         assert_eq!(cfg.search_limit, 20);
+    }
+
+    #[test]
+    fn validate_clamps_jitter_buffer_over_2000() {
+        let mut cfg = BotConfig::default();
+        cfg.jitter_buffer_ms = 10_000;
+        let warnings = cfg.validate();
+        assert_eq!(cfg.jitter_buffer_ms, 2000);
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_accepts_jitter_buffer_zero_and_default() {
+        let mut cfg = BotConfig::default();
+        cfg.jitter_buffer_ms = 0;
+        assert!(cfg.validate().is_empty());
+        cfg.jitter_buffer_ms = 400;
+        assert!(cfg.validate().is_empty());
     }
 
     #[test]
