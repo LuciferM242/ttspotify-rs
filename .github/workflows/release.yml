@@ -96,18 +96,10 @@ jobs:
         shell: pwsh
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
-      # Cache the wxWidgets source + its CMake build (the slow part). wxdragon-sys
-      # extracts/builds these at profile-level paths, so they survive at a stable
-      # location. Version-only key (no Cargo.lock) so it isn't busted by dep bumps;
-      # restored after rust-cache so these dirs win. Bump the key when wxdragon's
-      # pinned wxWidgets version changes.
-      - name: Cache wxWidgets build
-        uses: actions/cache@v4
-        with:
-          path: |
-            target/release/wxWidgets
-            target/release/wxwidgets_cmake_build
-          key: wxwidgets-3.3.2-${{ runner.os }}
+      # NOTE: do not add an actions/cache step for wxWidgets here. Caches saved
+      # by tag-triggered runs are scoped to that tag ref and are never restored
+      # by later tags (only default-branch caches are shared), so in a tag-only
+      # workflow it always misses and just adds minutes of cache upload.
       - name: Build
         run: cargo build --release
       - name: Stage artifact
