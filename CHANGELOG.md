@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 ### Added
+- New `liked` command (alias `fav`): queues your Spotify Liked Songs.
+- Big playlists and Liked Songs now start playing after the first 50 tracks;
+  the rest load quietly in the background instead of making you wait.
 - Update notes now cover every version since the one you have installed, not
   just the newest release, so skipped releases are no longer invisible.
 - Linux: after `ttspotify --update` succeeds, the bot offers to restart your
