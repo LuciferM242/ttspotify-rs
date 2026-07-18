@@ -353,6 +353,18 @@ impl CommandDispatcher {
                 self.send(BotCommand::Seek { offset_ms: -86_400_000, user_id: sender_id });
                 self.reply(client, sender_id, "Restarting track");
             }
+            // Spotify-only: queue the user's Liked Songs. Silently no-ops on
+            // YouTube (service-private, same convention as radio).
+            "liked" | "fav" => {
+                if self.state.lock().active_service == Service::Spotify {
+                    self.send(BotCommand::SearchAndPlay {
+                        query: "spotify:collection:liked".to_string(),
+                        user_id: sender_id,
+                        user_name: format!("User#{sender_id}"),
+                    });
+                    self.reply(client, sender_id, "Loading liked songs...");
+                }
+            }
 
             // -- Info --
             "c" | "current" => {
@@ -654,6 +666,7 @@ fn help_text(active: Service) -> String {
     );
     if active == Service::Spotify {
         out.push_str("  radio [on|off]      Toggle radio (auto-recommendations)\n");
+        out.push_str("  liked               Play your Liked Songs (also: fav)\n");
     }
     out.push_str(
         "\n\
