@@ -99,6 +99,64 @@ WantedBy=default.target
     Ok(())
 }
 
+/// Parse `systemctl --user list-units 'ttspotify@*' --state=running --plain
+/// --no-legend` output into unit names. First column of each line, filtered to
+/// our template's instances.
+fn parse_running_units(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|unit| unit.starts_with("ttspotify@") && unit.ends_with(".service"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Names of the `ttspotify@` user units currently running. Empty when systemd
+/// is unavailable or nothing is running.
+pub fn running_bot_units() -> Vec<String> {
+    let out = Command::new("systemctl")
+        .args([
+            "--user",
+            "list-units",
+            "ttspotify@*",
+            "--state=running",
+            "--plain",
+            "--no-legend",
+        ])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => parse_running_units(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+/// After a successful self-update, offer to restart the running bot units so
+/// they pick up the new binary. Prints a manual hint when nothing is running
+/// or the user declines.
+pub fn offer_restart_running_bots() {
+    let units = running_bot_units();
+    if units.is_empty() {
+        println!("If running as a service, restart it: systemctl --user restart ttspotify@<name>");
+        return;
+    }
+    if !prompt_yes_no(&format!("Restart {} running bot(s) now?", units.len())) {
+        println!("Restart later with: systemctl --user restart ttspotify@<name>");
+        return;
+    }
+    for unit in &units {
+        let ok = Command::new("systemctl")
+            .args(["--user", "restart", unit])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("  {unit} restarted.");
+        } else {
+            println!("  {unit} failed to restart - check: systemctl --user status {unit}");
+        }
+    }
+}
+
 pub fn uninstall_service() -> Result<(), BotError> {
     let service_path = systemd_dir().join(SERVICE_NAME);
     if service_path.exists() {
@@ -112,4 +170,31 @@ pub fn uninstall_service() -> Result<(), BotError> {
         println!("No service file found at {}", service_path.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_running_units;
+
+    #[test]
+    fn parses_unit_names_from_first_column() {
+        let out = "ttspotify@home.service loaded active running TTSpotify bot (home)\n\
+                   ttspotify@work.service loaded active running TTSpotify bot (work)\n";
+        assert_eq!(
+            parse_running_units(out),
+            vec!["ttspotify@home.service", "ttspotify@work.service"]
+        );
+    }
+
+    #[test]
+    fn ignores_foreign_units_and_blank_lines() {
+        let out = "\nother@x.service loaded active running Something else\n\
+                   ttspotify@home.service loaded active running TTSpotify bot\n\n";
+        assert_eq!(parse_running_units(out), vec!["ttspotify@home.service"]);
+    }
+
+    #[test]
+    fn empty_output_is_empty() {
+        assert!(parse_running_units("").is_empty());
+    }
 }

@@ -1,6 +1,12 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- Update notes now cover every version since the one you have installed, not
+  just the newest release, so skipped releases are no longer invisible.
+- Linux: after `ttspotify --update` succeeds, the bot offers to restart your
+  running systemd instances so they pick up the new version immediately.
+
 ### Fixed
 - Smoother playback at track start: audio now buffers briefly before playing,
   so tracks no longer stutter when the connection is slow to get going.

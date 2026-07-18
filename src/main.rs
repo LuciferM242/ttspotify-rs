@@ -238,9 +238,10 @@ async fn run_cli_update() -> Result<(), BotError> {
     match tt_spotify_bot::update::download_and_apply(&info, &progress, &cancel).await {
         Ok(()) => {
             println!("\nUpdated to {}.", info.tag);
-            println!(
-                "If running as a service, restart it: systemctl --user restart ttspotify@<name>"
-            );
+            #[cfg(target_os = "linux")]
+            tt_spotify_bot::service::offer_restart_running_bots();
+            #[cfg(not(target_os = "linux"))]
+            println!("Restart the bot to use the new version.");
             Ok(())
         }
         Err(e) => {

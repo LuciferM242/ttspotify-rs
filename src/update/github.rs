@@ -80,9 +80,52 @@ fn select_from_release(json: &Value) -> Result<Option<UpdateInfo>, UpdateError> 
     }))
 }
 
-/// Query GitHub for the latest release and return update info if newer.
+/// Given the parsed `releases` list JSON, build an `UpdateInfo` for the newest
+/// release, with `changelog` holding the notes of every release newer than the
+/// running version (newest first, each under its tag heading) so a user several
+/// versions behind sees everything they missed. Drafts and prereleases are
+/// skipped. Returns `Ok(None)` when nothing newer is available or the newest
+/// release lacks our platform assets.
+fn select_from_releases(list: &Value) -> Result<Option<UpdateInfo>, UpdateError> {
+    let releases = list
+        .as_array()
+        .ok_or_else(|| UpdateError::Parse("expected a release list".into()))?;
+
+    let mut newer: Vec<(semver::Version, &Value)> = releases
+        .iter()
+        .filter(|r| {
+            !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false)
+        })
+        .filter_map(|r| {
+            let tag = r["tag_name"].as_str()?;
+            newer_than_current(tag).map(|v| (v, r))
+        })
+        .collect();
+    if newer.is_empty() {
+        return Ok(None);
+    }
+    newer.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let Some(mut info) = select_from_release(newer[0].1)? else {
+        return Ok(None);
+    };
+
+    info.changelog = newer
+        .iter()
+        .map(|(_, r)| {
+            let tag = r["tag_name"].as_str().unwrap_or("");
+            let body = r["body"].as_str().unwrap_or("").trim();
+            format!("## {tag}\n{body}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(Some(info))
+}
+
+/// Query GitHub for releases and return update info if one is newer, with
+/// release notes accumulated across every version since the running one.
 pub async fn check() -> Result<Option<UpdateInfo>, UpdateError> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=20");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .user_agent(concat!("ttspotify-rs/", env!("CARGO_PKG_VERSION")))
@@ -101,7 +144,7 @@ pub async fn check() -> Result<Option<UpdateInfo>, UpdateError> {
         .json()
         .await
         .map_err(|e| UpdateError::Parse(e.to_string()))?;
-    select_from_release(&json)
+    select_from_releases(&json)
 }
 
 #[cfg(test)]
@@ -153,6 +196,67 @@ mod tests {
             "assets": []
         });
         assert!(select_from_release(&json).unwrap().is_none());
+    }
+
+    fn full_release(tag: &str, body: &str) -> serde_json::Value {
+        let asset = current_asset_name();
+        serde_json::json!({
+            "tag_name": tag,
+            "body": body,
+            "assets": [
+                { "name": asset, "browser_download_url": format!("https://x/{tag}/asset") },
+                { "name": "SHA256SUMS", "browser_download_url": format!("https://x/{tag}/sums") },
+                { "name": "SHA256SUMS.minisig", "browser_download_url": format!("https://x/{tag}/sig") }
+            ]
+        })
+    }
+
+    #[test]
+    fn releases_list_accumulates_notes_newest_first() {
+        let list = serde_json::json!([
+            full_release("v999.1.0", "newest notes"),
+            full_release("v999.0.0", "older notes"),
+            full_release("v0.0.1", "ancient notes"),
+        ]);
+        let info = select_from_releases(&list).unwrap().unwrap();
+        assert_eq!(info.tag, "v999.1.0");
+        // Assets come from the newest release only.
+        assert_eq!(info.asset_url, "https://x/v999.1.0/asset");
+        // Notes of both newer-than-current releases, newest first; the
+        // already-installed v0.0.1 is excluded.
+        assert_eq!(
+            info.changelog,
+            "## v999.1.0\nnewest notes\n\n## v999.0.0\nolder notes"
+        );
+    }
+
+    #[test]
+    fn releases_list_skips_drafts_and_prereleases() {
+        let mut draft = full_release("v999.2.0", "draft notes");
+        draft["draft"] = serde_json::json!(true);
+        let mut pre = full_release("v999.3.0", "beta notes");
+        pre["prerelease"] = serde_json::json!(true);
+        let list = serde_json::json!([pre, draft, full_release("v999.1.0", "stable notes")]);
+        let info = select_from_releases(&list).unwrap().unwrap();
+        assert_eq!(info.tag, "v999.1.0");
+        assert_eq!(info.changelog, "## v999.1.0\nstable notes");
+    }
+
+    #[test]
+    fn releases_list_none_when_nothing_newer() {
+        let list = serde_json::json!([full_release("v0.0.1", "old")]);
+        assert!(select_from_releases(&list).unwrap().is_none());
+        let empty = serde_json::json!([]);
+        assert!(select_from_releases(&empty).unwrap().is_none());
+    }
+
+    #[test]
+    fn releases_list_none_when_newest_lacks_assets() {
+        let list = serde_json::json!([
+            { "tag_name": "v999.1.0", "body": "no assets", "assets": [] },
+            full_release("v999.0.0", "has assets"),
+        ]);
+        assert!(select_from_releases(&list).unwrap().is_none());
     }
 
     #[test]
