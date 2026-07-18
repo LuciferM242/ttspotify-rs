@@ -56,6 +56,10 @@ pub struct PlayerState {
     // The service that bare commands target (e.g. `p <query>`).
     // Switched via `/sp` or `/yt`. In-memory only — resets on restart.
     pub active_service: Service,
+
+    /// Bumped on stop/clear and each new bulk load; a background bulk loader
+    /// captures the value at spawn and dies when it no longer matches.
+    pub bulk_load_generation: u64,
 }
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
@@ -80,6 +84,7 @@ impl PlayerState {
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
+            bulk_load_generation: 0,
         }
     }
 
@@ -214,6 +219,14 @@ impl PlayerState {
         self.current_index = None;
         self.status = PlaybackStatus::Idle;
         self.position_ms = 0;
+        self.bulk_load_generation += 1;
+    }
+
+    /// Start a new bulk load: invalidates any in-flight background loader and
+    /// returns the generation the new loader must carry.
+    pub fn begin_bulk_load(&mut self) -> u64 {
+        self.bulk_load_generation += 1;
+        self.bulk_load_generation
     }
 
     pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
@@ -277,6 +290,23 @@ impl PlayerState {
 mod tests {
     use super::*;
     use crate::spotify::types::SpotifyTrack;
+
+    #[test]
+    fn begin_bulk_load_increments_and_returns_generation() {
+        let mut state = PlayerState::new();
+        let g1 = state.begin_bulk_load();
+        let g2 = state.begin_bulk_load();
+        assert_eq!(g2, g1 + 1);
+        assert_eq!(state.bulk_load_generation, g2);
+    }
+
+    #[test]
+    fn clear_invalidates_bulk_load_generation() {
+        let mut state = PlayerState::new();
+        let g = state.begin_bulk_load();
+        state.clear();
+        assert_ne!(state.bulk_load_generation, g);
+    }
 
     fn track(id: &str) -> Track {
         Track::Spotify(SpotifyTrack {
