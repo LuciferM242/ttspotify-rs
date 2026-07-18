@@ -239,6 +239,12 @@ pub fn open_config_dialog(
             return;
         }
 
+        // ---- Unchanged edit: nothing to write, no bot restart needed ----
+        if config_path.is_some() && cfg == config {
+            frame.close(true);
+            return;
+        }
+
         // ---- Determine save path ----
         let save_path = if let Some(ref path) = config_path {
             path.clone()
@@ -297,8 +303,14 @@ pub fn open_config_dialog(
         // Run the post-save action (start/restart the bot) only after any
         // YouTube install finishes; otherwise the bot launches before the
         // binaries exist and won't see them until a manual restart.
+        // Only offered when creating a new config — edits of an existing
+        // config save silently (tray menu has Install tools for later).
         let on_save = on_save.clone();
-        prompt_youtube_setup(&frame, cfg.default_service, move || on_save(save_path));
+        if config_path.is_some() {
+            on_save(save_path);
+        } else {
+            prompt_youtube_setup(&frame, cfg.default_service, move || on_save(save_path));
+        }
         frame.close(true);
     });
 
