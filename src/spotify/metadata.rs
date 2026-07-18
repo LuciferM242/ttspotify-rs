@@ -5,6 +5,18 @@ use librespot_metadata::Metadata;
 use crate::error::BotError;
 use crate::spotify::types::{SpotifyRef, SpotifyTrack, parse_spotify_ref};
 
+/// Metadata for the tracks to enqueue now, plus URIs still to be fetched by a
+/// background loader (empty when the resolve was complete).
+pub struct ResolvedTracks {
+    pub tracks: Vec<SpotifyTrack>,
+    pub remaining: Vec<SpotifyUri>,
+}
+
+/// How many tracks a bulk source (playlist / liked songs) fetches up front
+/// before handing the rest to the background loader.
+pub const BULK_FIRST_BATCH: usize = 50;
+
+#[derive(Clone)]
 pub struct SpotifyMetadata {
     session: Session,
 }
@@ -63,21 +75,61 @@ impl SpotifyMetadata {
         Ok(tracks)
     }
 
-    /// Fetch all tracks from a playlist via librespot-metadata.
-    pub async fn get_playlist_tracks_meta(&self, uri: &SpotifyUri) -> Result<Vec<SpotifyTrack>, BotError> {
-        let playlist = librespot_metadata::Playlist::get(&self.session, uri).await
-            .map_err(|e| BotError::Playback(format!("Failed to fetch playlist metadata: {e}")))?;
-
-        let mut tracks = Vec::new();
-
-        for track_uri in playlist.tracks() {
-            match self.fetch_track(track_uri).await {
+    /// Fetch metadata for each URI, skipping failures with a warning.
+    pub async fn fetch_tracks_meta(&self, uris: &[SpotifyUri]) -> Vec<SpotifyTrack> {
+        let mut tracks = Vec::with_capacity(uris.len());
+        for uri in uris {
+            match self.fetch_track(uri).await {
                 Ok(t) => tracks.push(t),
-                Err(e) => tracing::warn!("Failed to fetch track {track_uri:?}: {e}"),
+                Err(e) => tracing::warn!("Failed to fetch track {uri:?}: {e}"),
             }
         }
+        tracks
+    }
 
-        Ok(tracks)
+    /// All track URIs of a playlist (metadata is fetched in batches later).
+    pub async fn get_playlist_track_uris(&self, uri: &SpotifyUri) -> Result<Vec<SpotifyUri>, BotError> {
+        let playlist = librespot_metadata::Playlist::get(&self.session, uri).await
+            .map_err(|e| BotError::Playback(format!("Failed to fetch playlist metadata: {e}")))?;
+        Ok(playlist.tracks().cloned().collect())
+    }
+
+    /// URIs of the user's Liked Songs, newest first, via the same spclient
+    /// context endpoint Connect devices use for `spotify:user:<id>:collection`.
+    pub async fn get_liked_track_uris(&self) -> Result<Vec<SpotifyUri>, BotError> {
+        let ctx_uri = format!("spotify:user:{}:collection", self.session.username());
+        let ctx = self.session.spclient().get_context(&ctx_uri).await
+            .map_err(|e| BotError::Playback(format!("Liked songs fetch failed: {e}")))?;
+
+        let mut uris = Vec::new();
+        for page in ctx.pages.iter() {
+            for track_ctx in page.tracks.iter() {
+                if let Some(uri_str) = track_ctx.uri.as_deref() {
+                    if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
+                        uris.push(uri);
+                    }
+                }
+            }
+        }
+        if uris.is_empty() {
+            return Err(BotError::NoResults);
+        }
+        Ok(uris)
+    }
+
+    /// Fetch metadata for the first `BULK_FIRST_BATCH` URIs now; the rest are
+    /// returned for a background loader.
+    async fn split_and_fetch_first(&self, mut uris: Vec<SpotifyUri>) -> Result<ResolvedTracks, BotError> {
+        let remaining = if uris.len() > BULK_FIRST_BATCH {
+            uris.split_off(BULK_FIRST_BATCH)
+        } else {
+            Vec::new()
+        };
+        let tracks = self.fetch_tracks_meta(&uris).await;
+        if tracks.is_empty() {
+            return Err(BotError::NoResults);
+        }
+        Ok(ResolvedTracks { tracks, remaining })
     }
 
     /// Fetch radio recommendations using Spotify's radio-apollo endpoint.
@@ -169,9 +221,13 @@ impl SpotifyMetadata {
         Ok(tracks)
     }
 
-    /// Resolve any query (search text, URL, URI) to a list of tracks.
-    /// Uses librespot-metadata for URIs (faster), Web API for search.
-    pub async fn resolve(&self, query: &str, search_limit: u8) -> Result<Vec<SpotifyTrack>, BotError> {
+    /// Resolve any query (search text, URL, URI) to tracks. Track/album/search
+    /// resolve completely; playlists and the liked collection resolve their
+    /// first `BULK_FIRST_BATCH` tracks and return the rest as `remaining` URIs
+    /// for a background loader.
+    pub async fn resolve(&self, query: &str, search_limit: u8) -> Result<ResolvedTracks, BotError> {
+        let complete = |tracks: Vec<SpotifyTrack>| ResolvedTracks { tracks, remaining: Vec::new() };
+
         if let Some(spotify_ref) = parse_spotify_ref(query) {
             return match spotify_ref {
                 SpotifyRef::Track(id) => {
@@ -179,32 +235,37 @@ impl SpotifyMetadata {
                     match SpotifyUri::from_uri(&uri_str) {
                         Ok(uri) => {
                             let track = self.get_track_meta(&uri).await?;
-                            Ok(vec![track])
+                            Ok(complete(vec![track]))
                         }
-                        Err(_) => self.search_tracks(&id, 1).await,
+                        Err(_) => self.search_tracks(&id, 1).await.map(complete),
                     }
                 }
                 SpotifyRef::Album(id) => {
                     let uri_str = format!("spotify:album:{id}");
                     match SpotifyUri::from_uri(&uri_str) {
-                        Ok(uri) => self.get_album_tracks_meta(&uri).await,
+                        Ok(uri) => self.get_album_tracks_meta(&uri).await.map(complete),
                         Err(_) => Err(BotError::Playback(format!("Invalid album ID: {id}"))),
                     }
                 }
                 SpotifyRef::Playlist(id) => {
                     let uri_str = format!("spotify:playlist:{id}");
                     match SpotifyUri::from_uri(&uri_str) {
-                        Ok(uri) => self.get_playlist_tracks_meta(&uri).await,
+                        Ok(uri) => {
+                            let uris = self.get_playlist_track_uris(&uri).await?;
+                            self.split_and_fetch_first(uris).await
+                        }
                         Err(_) => Err(BotError::Playback(format!("Invalid playlist ID: {id}"))),
                     }
                 }
-                // Wired up with the two-phase loader in the next commit.
-                SpotifyRef::Liked => Err(BotError::NoResults),
+                SpotifyRef::Liked => {
+                    let uris = self.get_liked_track_uris().await?;
+                    self.split_and_fetch_first(uris).await
+                }
             };
         }
 
         // Plain text search via Web API
-        self.search_tracks(query, search_limit).await
+        self.search_tracks(query, search_limit).await.map(complete)
     }
 }
 

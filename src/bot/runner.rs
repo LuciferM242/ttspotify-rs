@@ -431,6 +431,42 @@ fn schedule_radio_prefetch(
     }
 }
 
+/// How many tracks each background batch fetches, and the pause between
+/// batches. Pacing keeps the request stream looking like a normal client.
+const BULK_BG_BATCH: usize = 25;
+const BULK_BG_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Fetch the remaining tracks of a bulk load (playlist / liked songs) in paced
+/// batches, appending each batch to the queue. Dies silently the moment the
+/// state's bulk_load_generation no longer matches `generation` (stop, queue
+/// clear, or a newer bulk load).
+fn spawn_bulk_loader(
+    metadata: crate::spotify::metadata::SpotifyMetadata,
+    state: crate::bot::state::SharedState,
+    uris: Vec<librespot_core::spotify_uri::SpotifyUri>,
+    requester: String,
+    generation: u64,
+) {
+    tokio::spawn(async move {
+        for chunk in uris.chunks(BULK_BG_BATCH) {
+            if state.lock().bulk_load_generation != generation {
+                return;
+            }
+            let tracks = metadata.fetch_tracks_meta(chunk).await;
+            let batch: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
+            {
+                let mut s = state.lock();
+                if s.bulk_load_generation != generation {
+                    return;
+                }
+                s.enqueue_all(batch, requester.clone(), false);
+            }
+            tokio::time::sleep(BULK_BG_DELAY).await;
+        }
+        tracing::info!("Background bulk load complete");
+    });
+}
+
 /// Format queue position and estimated wait time for a newly queued track.
 /// Returns a string like " (3rd up, ~8 min)" or empty if not applicable.
 pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
@@ -727,22 +763,23 @@ async fn command_processor(
         match cmd {
             BotCommand::SearchAndPlay { query, user_id, user_name } => {
                 let active = state.lock().active_service;
-                let result: Result<Vec<crate::track::Track>, BotError> = match active {
+                type ResolveOk = (Vec<crate::track::Track>, Vec<librespot_core::spotify_uri::SpotifyUri>);
+                let result: Result<ResolveOk, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
                             reply(user_id, &format!("Spotify unavailable: {}", crate::bot::commands::user_error(&e)));
                             continue;
                         }
                         with_reconnect!(metadata.resolve(&query, search_limit))
-                            .map(|v| v.into_iter().map(Into::into).collect())
+                            .map(|r| (r.tracks.into_iter().map(Into::into).collect(), r.remaining))
                     }
                     crate::services::Service::YouTube => {
                         youtube_metadata.resolve(&query, search_limit).await
-                            .map(|v| v.into_iter().map(Into::into).collect())
+                            .map(|v| (v.into_iter().map(Into::into).collect(), Vec::new()))
                     }
                 };
                 match result {
-                    Ok(tracks) => {
+                    Ok((tracks, remaining_uris)) => {
                         if tracks.is_empty() {
                             reply(user_id, "No results found");
                             continue;
@@ -758,21 +795,40 @@ async fn command_processor(
                         let first_service = tracks_to_add[0].service();
                         let count = tracks_to_add.len();
 
-                        // Hold lock across idle check + enqueue to prevent race
-                        let is_idle = {
+                        // Hold lock across idle check + enqueue to prevent race.
+                        // A generation is claimed only for loads that continue in
+                        // the background, so single/album plays don't kill an
+                        // in-flight bulk loader.
+                        let (is_idle, loader_gen) = {
                             let mut s = state.lock();
                             let idle = s.status == PlaybackStatus::Idle;
                             if idle {
                                 s.clear();
                             }
-                            s.enqueue_all(tracks_to_add, user_name, !is_multi);
-                            idle
+                            s.enqueue_all(tracks_to_add, user_name.clone(), !is_multi);
+                            let generation = if remaining_uris.is_empty() {
+                                None
+                            } else {
+                                Some(s.begin_bulk_load())
+                            };
+                            (idle, generation)
                         };
+
+                        if let Some(generation) = loader_gen {
+                            spawn_bulk_loader(
+                                metadata.clone(),
+                                state.clone(),
+                                remaining_uris,
+                                user_name.clone(),
+                                generation,
+                            );
+                        }
+                        let more = if loader_gen.is_some() { ", more loading" } else { "" };
 
                         if is_idle {
                             if start_or_skip!(first_service, &first_uri, user_id, &first_name) {
                                 if count > 1 {
-                                    reply(user_id, &format!("Now playing: {first_name} (+{} queued)", count - 1));
+                                    reply(user_id, &format!("Now playing: {first_name} (+{} queued{more})", count - 1));
                                 } else {
                                     reply(user_id, &format!("Now playing: {first_name}"));
                                 }
@@ -790,7 +846,7 @@ async fn command_processor(
                                 let s = state.lock();
                                 let upcoming = queue_wait_info(&s);
                                 if count > 1 {
-                                    format!("Queued {count} tracks{upcoming}")
+                                    format!("Queued {count} tracks{upcoming}{more}")
                                 } else {
                                     format!("Queued: {first_name}{upcoming}")
                                 }
