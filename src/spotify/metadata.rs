@@ -198,6 +198,8 @@ impl SpotifyMetadata {
                         Err(_) => Err(BotError::Playback(format!("Invalid playlist ID: {id}"))),
                     }
                 }
+                // Wired up with the two-phase loader in the next commit.
+                SpotifyRef::Liked => Err(BotError::NoResults),
             };
         }
 

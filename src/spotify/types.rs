@@ -30,6 +30,8 @@ pub enum SpotifyRef {
     Track(String),
     Album(String),
     Playlist(String),
+    /// The user's Liked Songs collection (internal sentinel, no ID).
+    Liked,
 }
 
 /// Parse a Spotify URL or URI into a SpotifyRef.
@@ -52,6 +54,7 @@ pub fn parse_spotify_ref(input: &str) -> Option<SpotifyRef> {
                 "track" => Some(SpotifyRef::Track(id)),
                 "album" => Some(SpotifyRef::Album(id)),
                 "playlist" => Some(SpotifyRef::Playlist(id)),
+                "collection" if id == "liked" => Some(SpotifyRef::Liked),
                 _ => None,
             };
         }
@@ -165,6 +168,19 @@ mod tests {
             Some(SpotifyRef::Album(id)) => assert_eq!(id, "1234abcd"),
             other => panic!("expected Album, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_uri_liked_collection() {
+        assert!(matches!(
+            parse_spotify_ref("spotify:collection:liked"),
+            Some(SpotifyRef::Liked)
+        ));
+    }
+
+    #[test]
+    fn parse_uri_collection_other_id_is_none() {
+        assert!(parse_spotify_ref("spotify:collection:xyz").is_none());
     }
 
     #[test]
