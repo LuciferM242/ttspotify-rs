@@ -592,12 +592,10 @@ impl CommandDispatcher {
                 ));
             }
             "q" | "quit" => {
-                self.reply(client, sender_id, "Shutting down...");
                 self.send(BotCommand::Quit { user_id: sender_id });
                 return false;
             }
             "rs" | "restart" => {
-                self.reply(client, sender_id, "Restarting...");
                 self.send(BotCommand::Restart { user_id: sender_id });
                 return false;
             }
