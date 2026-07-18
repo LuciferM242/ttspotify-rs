@@ -239,6 +239,12 @@ pub fn open_config_dialog(
             return;
         }
 
+        // ---- Unchanged edit: nothing to write, no bot restart needed ----
+        if config_path.is_some() && cfg == config {
+            frame.close(true);
+            return;
+        }
+
         // ---- Determine save path ----
         let save_path = if let Some(ref path) = config_path {
             path.clone()

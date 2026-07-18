@@ -5,6 +5,8 @@
 - Editing an existing config from the tray no longer re-asks about installing
   YouTube support on every save; the prompt now only appears when creating a
   new config.
+- Saving a config edit with no changes no longer rewrites the file or restarts
+  the bot; the dialog just closes.
 
 ## [0.5.0] - 2026-07-13
 ### Added

@@ -94,7 +94,7 @@ fn default_norm_threshold() -> f64 { -2.0 }
 fn default_norm_knee() -> f64 { 5.0 }
 
 /// Config format matches the Python ttspotify bot's data/config.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BotConfig {
     // TeamTalk connection
@@ -382,6 +382,17 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use ::teamtalk::types::UserGender;
+
+    // -- BotConfig equality (unchanged-edit detection in the GUI dialog) --
+
+    #[test]
+    fn botconfig_eq_clone_equal_and_field_change_detected() {
+        let a = BotConfig::default();
+        let mut b = a.clone();
+        assert_eq!(a, b);
+        b.volume = a.volume + 1;
+        assert_ne!(a, b);
+    }
 
     // -- is_valid_gender --
 
