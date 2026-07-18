@@ -1,15 +1,9 @@
 # Changelog
 
 ## [Unreleased]
-### Added
-- Jitter buffer is now implemented: the pipeline pre-fills `spotifyJitterBufferSizeMs`
-  (default 400ms) of audio before injection starts on each track start and seek,
-  absorbing bursty producer starts and network hiccups. Set it to 0 in the config
-  or GUI for the old inject-immediately behavior. Short tracks and end-of-stream
-  tails flush automatically after ~300ms of producer silence. Values above
-  2000ms are clamped on load.
-
 ### Fixed
+- Smoother playback at track start: audio now buffers briefly before playing,
+  so tracks no longer stutter when the connection is slow to get going.
 - Editing an existing config from the tray no longer re-asks about installing
   YouTube support on every save; the prompt now only appears when creating a
   new config.
