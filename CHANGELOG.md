@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Editing an existing config from the tray no longer re-asks about installing
+  YouTube support on every save; the prompt now only appears when creating a
+  new config.
+
 ## [0.5.0] - 2026-07-13
 ### Added
 - Self-updater: checks GitHub for a newer release and installs it (Windows via a
