@@ -229,6 +229,17 @@ impl PlayerState {
         self.bulk_load_generation
     }
 
+    /// Drop incoming tracks that are already in the queue (by track id), so
+    /// repeating a bulk source (liked songs, a playlist) doesn't duplicate it.
+    pub fn filter_unqueued(&self, tracks: Vec<Track>) -> Vec<Track> {
+        let queued: std::collections::HashSet<&str> =
+            self.queue.iter().map(|e| e.track.id()).collect();
+        tracks
+            .into_iter()
+            .filter(|t| !queued.contains(t.id()))
+            .collect()
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
         if index >= self.queue.len() {
             return None;
@@ -290,6 +301,24 @@ impl PlayerState {
 mod tests {
     use super::*;
     use crate::spotify::types::SpotifyTrack;
+
+    #[test]
+    fn filter_unqueued_drops_tracks_already_in_queue() {
+        let mut state = PlayerState::new();
+        state.enqueue(track("a"), "u".into(), true);
+        state.enqueue(track("b"), "u".into(), true);
+        let incoming = vec![track("b"), track("c")];
+        let fresh = state.filter_unqueued(incoming);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id(), "c");
+    }
+
+    #[test]
+    fn filter_unqueued_keeps_all_when_queue_empty() {
+        let state = PlayerState::new();
+        let fresh = state.filter_unqueued(vec![track("a"), track("b")]);
+        assert_eq!(fresh.len(), 2);
+    }
 
     #[test]
     fn begin_bulk_load_increments_and_returns_generation() {

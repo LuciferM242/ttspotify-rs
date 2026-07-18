@@ -459,7 +459,11 @@ fn spawn_bulk_loader(
                 if s.bulk_load_generation != generation {
                     return;
                 }
-                s.enqueue_all(batch, requester.clone(), false);
+                // A repeated bulk source may overlap what's queued already.
+                let fresh = s.filter_unqueued(batch);
+                if !fresh.is_empty() {
+                    s.enqueue_all(fresh, requester.clone(), false);
+                }
             }
             tokio::time::sleep(BULK_BG_DELAY).await;
         }
@@ -793,25 +797,32 @@ async fn command_processor(
                         let first_name = tracks_to_add[0].display_name();
                         let first_uri = tracks_to_add[0].uri().to_string();
                         let first_service = tracks_to_add[0].service();
-                        let count = tracks_to_add.len();
 
                         // Hold lock across idle check + enqueue to prevent race.
                         // A generation is claimed only for loads that continue in
                         // the background, so single/album plays don't kill an
                         // in-flight bulk loader.
-                        let (is_idle, loader_gen) = {
+                        let (is_idle, loader_gen, count) = {
                             let mut s = state.lock();
                             let idle = s.status == PlaybackStatus::Idle;
                             if idle {
                                 s.clear();
                             }
-                            s.enqueue_all(tracks_to_add, user_name.clone(), !is_multi);
+                            // Repeating a bulk source (liked, same playlist)
+                            // must not duplicate what's already queued.
+                            let fresh = if is_multi {
+                                s.filter_unqueued(tracks_to_add)
+                            } else {
+                                tracks_to_add
+                            };
+                            let count = fresh.len();
+                            s.enqueue_all(fresh, user_name.clone(), !is_multi);
                             let generation = if remaining_uris.is_empty() {
                                 None
                             } else {
                                 Some(s.begin_bulk_load())
                             };
-                            (idle, generation)
+                            (idle, generation, count)
                         };
 
                         if let Some(generation) = loader_gen {
@@ -845,7 +856,15 @@ async fn command_processor(
                             let msg = {
                                 let s = state.lock();
                                 let upcoming = queue_wait_info(&s);
-                                if count > 1 {
+                                if count == 0 {
+                                    // Whole first batch was already queued
+                                    // (repeat of the same bulk source).
+                                    if loader_gen.is_some() {
+                                        "Already queued, loading the rest".to_string()
+                                    } else {
+                                        "Already in queue".to_string()
+                                    }
+                                } else if is_multi {
                                     format!("Queued {count} tracks{upcoming}{more}")
                                 } else {
                                     format!("Queued: {first_name}{upcoming}")
