@@ -228,7 +228,7 @@ impl SpotifyMetadata {
     /// resolve completely; playlists and the liked collection resolve their
     /// first `BULK_FIRST_BATCH` tracks and return the rest as `remaining` URIs
     /// for a background loader.
-    pub async fn resolve(&self, query: &str, search_limit: u8) -> Result<ResolvedTracks, BotError> {
+    pub async fn resolve(&self, query: &str, _search_limit: u8) -> Result<ResolvedTracks, BotError> {
         let complete = |tracks: Vec<SpotifyTrack>| ResolvedTracks {
             tracks,
             remaining: Vec::new(),
@@ -271,8 +271,9 @@ impl SpotifyMetadata {
             };
         }
 
-        // Plain text search via Web API
-        self.search_tracks(query, search_limit).await.map(complete)
+        // Free-form search plays just the top hit (matching YouTube's
+        // resolve); the `search` command is the multi-result picker.
+        self.search_tracks(query, 1).await.map(complete)
     }
 }
 

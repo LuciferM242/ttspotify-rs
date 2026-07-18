@@ -13,6 +13,8 @@
 ### Fixed
 - Smoother playback at track start: audio now buffers briefly before playing,
   so tracks no longer stutter when the connection is slow to get going.
+- `p <song name>` on Spotify now plays just the best match instead of queueing
+  several search results (matching how YouTube already behaved).
 - Editing an existing config from the tray no longer re-asks about installing
   YouTube support on every save; the prompt now only appears when creating a
   new config.
