@@ -6,10 +6,13 @@ use crate::error::BotError;
 use crate::spotify::types::{SpotifyRef, SpotifyTrack, parse_spotify_ref};
 
 /// Metadata for the tracks to enqueue now, plus URIs still to be fetched by a
-/// background loader (empty when the resolve was complete).
+/// background loader (empty when the resolve was complete). `bulk` marks
+/// collection sources (playlist / liked songs) so the runner applies bulk
+/// semantics (dedup against the queue, no radio seed) even for a single track.
 pub struct ResolvedTracks {
     pub tracks: Vec<SpotifyTrack>,
     pub remaining: Vec<SpotifyUri>,
+    pub bulk: bool,
 }
 
 /// How many tracks a bulk source (playlist / liked songs) fetches up front
@@ -129,7 +132,7 @@ impl SpotifyMetadata {
         if tracks.is_empty() {
             return Err(BotError::NoResults);
         }
-        Ok(ResolvedTracks { tracks, remaining })
+        Ok(ResolvedTracks { tracks, remaining, bulk: true })
     }
 
     /// Fetch radio recommendations using Spotify's radio-apollo endpoint.
@@ -226,7 +229,11 @@ impl SpotifyMetadata {
     /// first `BULK_FIRST_BATCH` tracks and return the rest as `remaining` URIs
     /// for a background loader.
     pub async fn resolve(&self, query: &str, search_limit: u8) -> Result<ResolvedTracks, BotError> {
-        let complete = |tracks: Vec<SpotifyTrack>| ResolvedTracks { tracks, remaining: Vec::new() };
+        let complete = |tracks: Vec<SpotifyTrack>| ResolvedTracks {
+            tracks,
+            remaining: Vec::new(),
+            bulk: false,
+        };
 
         if let Some(spotify_ref) = parse_spotify_ref(query) {
             return match spotify_ref {

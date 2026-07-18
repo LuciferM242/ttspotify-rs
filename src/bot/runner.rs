@@ -767,7 +767,7 @@ async fn command_processor(
         match cmd {
             BotCommand::SearchAndPlay { query, user_id, user_name } => {
                 let active = state.lock().active_service;
-                type ResolveOk = (Vec<crate::track::Track>, Vec<librespot_core::spotify_uri::SpotifyUri>);
+                type ResolveOk = (Vec<crate::track::Track>, Vec<librespot_core::spotify_uri::SpotifyUri>, bool);
                 let result: Result<ResolveOk, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
@@ -775,23 +775,24 @@ async fn command_processor(
                             continue;
                         }
                         with_reconnect!(metadata.resolve(&query, search_limit))
-                            .map(|r| (r.tracks.into_iter().map(Into::into).collect(), r.remaining))
+                            .map(|r| (r.tracks.into_iter().map(Into::into).collect(), r.remaining, r.bulk))
                     }
                     crate::services::Service::YouTube => {
                         youtube_metadata.resolve(&query, search_limit).await
-                            .map(|v| (v.into_iter().map(Into::into).collect(), Vec::new()))
+                            .map(|v| (v.into_iter().map(Into::into).collect(), Vec::new(), false))
                     }
                 };
                 match result {
-                    Ok((tracks, remaining_uris)) => {
+                    Ok((tracks, remaining_uris, is_bulk)) => {
                         if tracks.is_empty() {
                             reply(user_id, "No results found");
                             continue;
                         }
 
-                        // A search returns the top single match; a URL/URI for
-                        // a playlist or album resolves into multiple entries.
-                        let is_multi = tracks.len() > 1;
+                        // Multi entries and bulk sources (playlist/liked, even
+                        // with a single track) get collection semantics:
+                        // dedup against the queue, no radio seeding.
+                        let is_multi = tracks.len() > 1 || is_bulk;
                         let tracks_to_add = tracks;
 
                         let first_name = tracks_to_add[0].display_name();
@@ -802,7 +803,7 @@ async fn command_processor(
                         // A generation is claimed only for loads that continue in
                         // the background, so single/album plays don't kill an
                         // in-flight bulk loader.
-                        let (is_idle, loader_gen, count) = {
+                        let (is_idle, loader_gen, count, added_name) = {
                             let mut s = state.lock();
                             let idle = s.status == PlaybackStatus::Idle;
                             if idle {
@@ -816,13 +817,14 @@ async fn command_processor(
                                 tracks_to_add
                             };
                             let count = fresh.len();
+                            let added_name = fresh.first().map(|t| t.display_name());
                             s.enqueue_all(fresh, user_name.clone(), !is_multi);
                             let generation = if remaining_uris.is_empty() {
                                 None
                             } else {
                                 Some(s.begin_bulk_load())
                             };
-                            (idle, generation, count)
+                            (idle, generation, count, added_name)
                         };
 
                         if let Some(generation) = loader_gen {
@@ -864,10 +866,11 @@ async fn command_processor(
                                     } else {
                                         "Already in queue".to_string()
                                     }
-                                } else if is_multi {
+                                } else if count > 1 {
                                     format!("Queued {count} tracks{upcoming}{more}")
                                 } else {
-                                    format!("Queued: {first_name}{upcoming}")
+                                    let name = added_name.as_deref().unwrap_or(&first_name);
+                                    format!("Queued: {name}{upcoming}{more}")
                                 }
                             };
                             reply(user_id, &msg);
