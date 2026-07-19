@@ -96,6 +96,12 @@ impl SpotifyPlayer {
         self.inner().load(uri.clone(), true, 0);
     }
 
+    /// Load and start a track at a specific position (ms). Used to resume the
+    /// interrupted track after a session recovery.
+    pub fn load_track_at(&self, uri: &SpotifyUri, position_ms: u32) {
+        self.inner().load(uri.clone(), true, position_ms);
+    }
+
     pub fn play(&self) {
         self.inner().play();
     }

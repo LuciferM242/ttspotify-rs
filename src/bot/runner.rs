@@ -221,14 +221,23 @@ pub async fn run_bot(
         SpotifyPlayer::new(s, &config, audio_tx.clone())
     };
     let metadata = SpotifyMetadata::new(session_holder.clone());
+    // Shared with the recovery supervisor for rebuilding a dead session.
+    let auth = Arc::new(auth);
     let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new(&config)?);
     let youtube_player = crate::youtube::player::YouTubePlayer::new(
-        audio_tx,
+        audio_tx.clone(),
         youtube_metadata.clone(),
         cmd_tx.clone(),
         state.clone(),
         pipeline_pos_ms.clone(),
     );
+
+    // Session-recovery coordination (see `spotify_supervisor`). `recovery_notify`
+    // wakes the supervisor immediately; `recovery_suspended` latches after a
+    // give-up so it stops auto-retrying until a Spotify command clears it.
+    let recovery_notify = Arc::new(tokio::sync::Notify::new());
+    let recovery_suspended = Arc::new(AtomicBool::new(false));
+    let recovery_guard = Arc::new(crate::spotify::recovery::RecoveryGuard::new());
 
     // Exit signal: command_processor sets this instead of process::exit
     let exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>> =
@@ -248,6 +257,25 @@ pub async fn run_bot(
         &config.default_language,
     ));
 
+    // Session-recovery supervisor: rebuilds a dead Spotify session and resumes
+    // playback with no user action. Uses cheap clones of the shared handles.
+    let recovery = SpotifyRecovery {
+        session_holder: session_holder.clone(),
+        auth: auth.clone(),
+        config: config.clone(),
+        audio_tx: audio_tx.clone(),
+        player: player.clone(),
+        state: state.clone(),
+        cmd_tx: cmd_tx.clone(),
+        pause_flag: pause_flag.clone(),
+        audio_reset: audio_reset.clone(),
+        guard: recovery_guard.clone(),
+        recovery_notify: recovery_notify.clone(),
+        local_shutdown: local_shutdown.clone(),
+        event_tx: event_tx.clone(),
+    };
+    tokio::spawn(spotify_supervisor(recovery, recovery_suspended.clone()));
+
     // Spawn command processor
     let bot_gender = crate::config::parse_gender(&config.bot_gender);
     let cmd_ctx = CmdContext {
@@ -258,6 +286,8 @@ pub async fn run_bot(
         session: session_holder.clone(),
         auth,
         spotify_connected,
+        recovery_notify: recovery_notify.clone(),
+        recovery_suspended: recovery_suspended.clone(),
         state: state.clone(),
         client: client.clone(),
         search_limit: config.search_limit,
@@ -282,8 +312,10 @@ pub async fn run_bot(
     // Spawn player event loop
     let event_state = state.clone();
     let event_cmd_tx = cmd_tx.clone();
+    let event_session = session_holder.clone();
+    let event_notify = recovery_notify.clone();
     let event_loop_handle = tokio::spawn(async move {
-        player_event_loop(event_rx, event_state, event_cmd_tx).await;
+        player_event_loop(event_rx, event_state, event_cmd_tx, event_session, event_notify).await;
     });
 
     let dispatcher = crate::bot::commands::CommandDispatcher {
@@ -588,8 +620,12 @@ struct CmdContext {
     youtube_metadata: Arc<crate::youtube::metadata::YouTubeMetadata>,
     youtube_player: crate::youtube::player::YouTubePlayer,
     session: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
-    auth: crate::spotify::auth::SpotifyAuth,
+    auth: Arc<crate::spotify::auth::SpotifyAuth>,
     spotify_connected: bool,
+    /// Wakes the recovery supervisor when a command detects a dead session.
+    recovery_notify: Arc<tokio::sync::Notify>,
+    /// Cleared by a Spotify command to un-latch auto-recovery after a give-up.
+    recovery_suspended: Arc<AtomicBool>,
     state: SharedState,
     client: Arc<::teamtalk::Client>,
     search_limit: u8,
@@ -608,24 +644,161 @@ struct CmdContext {
     i18n: Arc<crate::i18n::I18n>,
 }
 
-/// Attempt to reconnect the Spotify session using cached credentials.
-async fn try_reconnect_session(session: &librespot_core::session::Session) -> bool {
-    let creds = session.cache().and_then(|c| c.credentials());
-    if let Some(creds) = creds {
-        tracing::info!("Spotify session error, reconnecting with cached credentials...");
-        match session.connect(creds, true).await {
-            Ok(()) => {
-                tracing::info!("Spotify session reconnected");
-                true
+/// Everything the session-recovery supervisor needs to rebuild a dead Spotify
+/// session and resume playback. All fields are cheap handles/clones.
+struct SpotifyRecovery {
+    session_holder: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
+    auth: Arc<crate::spotify::auth::SpotifyAuth>,
+    config: BotConfig,
+    audio_tx: crossbeam_channel::Sender<Vec<i16>>,
+    player: SpotifyPlayer,
+    state: SharedState,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
+    pause_flag: Arc<AtomicBool>,
+    audio_reset: Arc<AtomicBool>,
+    guard: Arc<crate::spotify::recovery::RecoveryGuard>,
+    recovery_notify: Arc<tokio::sync::Notify>,
+    local_shutdown: Arc<AtomicBool>,
+    event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
+}
+
+/// Build a brand-new Spotify session (cached credentials only — never opens a
+/// browser) and rebuild the player from it, swapping both into the shared
+/// holders. Returns the new player event channel for the caller to restart the
+/// event loop on. librespot Sessions are single-use, so this is the only way to
+/// recover a session whose connection has died.
+async fn rebuild_spotify_engine(
+    rec: &SpotifyRecovery,
+) -> Result<librespot_playback::player::PlayerEventChannel, BotError> {
+    if !rec.auth.has_cached_credentials() {
+        return Err(BotError::Playback(
+            "no cached Spotify credentials to rebuild the session".into(),
+        ));
+    }
+    let session = rec.auth.new_session();
+    rec.auth.connect_existing(&session).await?;
+    // Publish the new session to metadata (shared holder) and rebuild the player.
+    *rec.session_holder.lock() = session.clone();
+    let event_rx = rec
+        .player
+        .rebuild(session, &rec.config, rec.audio_tx.clone());
+    Ok(event_rx)
+}
+
+/// Recover a dead Spotify session: pause, rebuild with bounded backoff, restart
+/// the player event loop, and resume the interrupted track where it left off.
+/// Single-flight via `rec.guard`.
+async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::RecoveryOutcome {
+    use crate::spotify::recovery::{delay_before_attempt, resume_seek_ms, RecoveryOutcome, MAX_ATTEMPTS};
+
+    if !rec.guard.try_begin() {
+        // Another recovery cycle is already running.
+        return RecoveryOutcome::Recovered;
+    }
+    tracing::warn!("Spotify session died; starting bounded recovery");
+
+    // Capture the resume point: only a currently-playing Spotify track. When a
+    // Spotify track was playing we pause the pipeline so its decrypt-garbage
+    // stops; if YouTube is playing (or nothing), leave the pipeline alone so an
+    // idle Spotify session death never interrupts YouTube audio.
+    let resume = {
+        let s = rec.state.lock();
+        s.current().and_then(|e| {
+            if e.track.service() == crate::services::Service::Spotify {
+                Some((e.track.uri().to_string(), s.position_ms))
+            } else {
+                None
+            }
+        })
+    };
+    let pause_pipeline = resume.is_some();
+    if pause_pipeline {
+        rec.pause_flag.store(true, Ordering::Relaxed);
+    }
+
+    let mut attempt = 0usize;
+    let outcome = loop {
+        let Some(delay) = delay_before_attempt(attempt) else {
+            break RecoveryOutcome::GaveUp;
+        };
+        tokio::time::sleep(delay).await;
+        if rec.local_shutdown.load(Ordering::Relaxed) {
+            break RecoveryOutcome::GaveUp;
+        }
+        match rebuild_spotify_engine(rec).await {
+            Ok(event_rx) => {
+                tracing::info!("Spotify session rebuilt on attempt {}", attempt + 1);
+                // Restart the player event loop on the new channel; the old loop
+                // ends when the old player (and its channel) drops.
+                let st = rec.state.clone();
+                let tx = rec.cmd_tx.clone();
+                let sh = rec.session_holder.clone();
+                let notify = rec.recovery_notify.clone();
+                tokio::spawn(async move {
+                    player_event_loop(event_rx, st, tx, sh, notify).await;
+                });
+                // Resume the interrupted track slightly before where it died.
+                if let Some((uri, pos_ms)) = &resume {
+                    if let Ok(parsed) = librespot_core::spotify_uri::SpotifyUri::from_uri(uri) {
+                        rec.audio_reset.store(true, Ordering::Relaxed);
+                        let seek = resume_seek_ms(*pos_ms);
+                        rec.player.load_track_at(&parsed, seek);
+                        tracing::info!("Resumed {uri} at {seek}ms after recovery");
+                    }
+                }
+                if pause_pipeline {
+                    rec.pause_flag.store(false, Ordering::Relaxed);
+                }
+                if let Some(tx) = &rec.event_tx {
+                    let _ = tx.send(RunnerEvent::Connected);
+                }
+                break RecoveryOutcome::Recovered;
             }
             Err(e) => {
-                tracing::error!("Spotify reconnection failed: {e}");
-                false
+                tracing::error!("Spotify rebuild attempt {} failed: {e}", attempt + 1);
+                attempt += 1;
             }
         }
-    } else {
-        tracing::error!("No cached credentials available for reconnection");
-        false
+    };
+
+    if outcome == RecoveryOutcome::GaveUp {
+        tracing::error!(
+            "Spotify recovery gave up after {MAX_ATTEMPTS} attempts; playback stopped. \
+             A Spotify command will retry."
+        );
+        if pause_pipeline {
+            rec.pause_flag.store(false, Ordering::Relaxed);
+        }
+        if let Some(tx) = &rec.event_tx {
+            let _ = tx.send(RunnerEvent::Error(
+                "Spotify unreachable; playback stopped".to_string(),
+            ));
+        }
+    }
+    rec.guard.finish();
+    outcome
+}
+
+/// Supervisor task: watch for a dead session and drive recovery. Polls the local
+/// `session.is_invalid()` signal (free — no network) on a 1s tick, or wakes
+/// immediately when notified by the event loop / a command. After a give-up it
+/// stays suspended until a Spotify command clears the latch and re-notifies.
+async fn spotify_supervisor(rec: SpotifyRecovery, recovery_suspended: Arc<AtomicBool>) {
+    loop {
+        tokio::select! {
+            _ = rec.recovery_notify.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+        if rec.local_shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        let dead = rec.session_holder.lock().is_invalid();
+        if dead
+            && !recovery_suspended.load(Ordering::Relaxed)
+            && recover_spotify(&rec).await == crate::spotify::recovery::RecoveryOutcome::GaveUp
+        {
+            recovery_suspended.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -636,7 +809,7 @@ async fn command_processor(
     // Destructure context for ergonomic access
     let CmdContext {
         player, metadata, youtube_metadata, youtube_player, session, auth,
-        spotify_connected, state, client,
+        spotify_connected, recovery_notify, recovery_suspended, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_store, audio_reset, timing_reset, pause_flag,
         volume_for_save, exit_reason, shutdown, event_tx, i18n,
@@ -646,20 +819,18 @@ async fn command_processor(
     // for YouTube-only users; flipped true on first successful `ensure_spotify!`.
     let mut spotify_connected = spotify_connected;
 
-    // Macro to retry a metadata operation once after reconnecting on failure.
+    // On a metadata failure, if the session has died, wake the recovery
+    // supervisor to rebuild it (clearing any give-up latch first). The dead
+    // session can't be reconnected in place — only rebuilt — so we surface the
+    // error now; recovery happens asynchronously.
     macro_rules! with_reconnect {
         ($expr:expr) => {{
             let result = $expr.await;
-            if result.is_err() {
-                let s = session.lock().clone();
-                if try_reconnect_session(&s).await {
-                    $expr.await
-                } else {
-                    result
-                }
-            } else {
-                result
+            if result.is_err() && session.lock().is_invalid() {
+                recovery_suspended.store(false, Ordering::Relaxed);
+                recovery_notify.notify_one();
             }
+            result
         }};
     }
 
@@ -683,7 +854,16 @@ async fn command_processor(
     // first Spotify command, not at startup.
     macro_rules! ensure_spotify {
         () => {{
-            if spotify_connected {
+            if session.lock().is_invalid() {
+                // Session died mid-session. It cannot be reconnected in place;
+                // wake the supervisor to rebuild it (clearing a give-up latch)
+                // and tell the user to try again shortly.
+                recovery_suspended.store(false, Ordering::Relaxed);
+                recovery_notify.notify_one();
+                Err(BotError::Playback(
+                    "Spotify is reconnecting; try again in a moment".into(),
+                ))
+            } else if spotify_connected {
                 Ok(())
             } else {
                 send_event(RunnerEvent::Authenticating);
@@ -1425,6 +1605,8 @@ async fn player_event_loop(
     mut events: librespot_playback::player::PlayerEventChannel,
     state: SharedState,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
+    session: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
+    recovery_notify: Arc<tokio::sync::Notify>,
 ) {
     while let Some(event) = events.recv().await {
         match event {
@@ -1439,6 +1621,17 @@ async fn player_event_loop(
                 s.position_ms = position_ms;
             }
             PlayerEvent::EndOfTrack { track_id, .. } => {
+                // A dead session surfaces a decrypt failure as a normal
+                // EndOfTrack (librespot plays the still-encrypted bytes, the
+                // decoder chokes, and it "ends" the track). Advancing here would
+                // skip-storm through the whole queue in seconds. If the session
+                // is invalid, this is a fake end: don't advance; wake the
+                // recovery supervisor to rebuild the session instead.
+                if session.lock().is_invalid() {
+                    tracing::warn!("EndOfTrack with dead Spotify session; triggering recovery instead of advancing");
+                    recovery_notify.notify_one();
+                    continue;
+                }
                 // Guard against a stale EndOfTrack for a track we've already
                 // moved past (e.g. the user skipped just as it ended), which
                 // would otherwise double-advance the queue. Only advance if the

@@ -29,6 +29,15 @@ pub const RECOVERY_BACKOFF: [Duration; 5] = [
 /// trying automatically and waits for a manual/lazy re-trigger.
 pub const MAX_ATTEMPTS: usize = RECOVERY_BACKOFF.len();
 
+/// Result of a recovery cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryOutcome {
+    /// Session rebuilt and playback resumed.
+    Recovered,
+    /// All attempts exhausted; auto-recovery stops until a manual/lazy retrigger.
+    GaveUp,
+}
+
 /// Delay to wait before attempt `attempt` (0-based), or `None` when the attempt
 /// cap is exceeded (the caller should give up).
 ///
@@ -143,14 +152,9 @@ mod tests {
     fn driver_sequence_is_five_bounded_attempts() {
         let mut delays = Vec::new();
         let mut attempt = 0;
-        loop {
-            match delay_before_attempt(attempt) {
-                Some(d) => {
-                    delays.push(d);
-                    attempt += 1;
-                }
-                None => break,
-            }
+        while let Some(d) = delay_before_attempt(attempt) {
+            delays.push(d);
+            attempt += 1;
         }
         assert_eq!(delays.len(), MAX_ATTEMPTS);
         assert_eq!(delays.last(), Some(&Duration::from_secs(90)));
