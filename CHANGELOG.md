@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-07-19
 ### Added
 - Translations: the bot's replies can now be shown in other languages. Spanish,
   Portuguese, and Russian are built in; add or adjust any language by dropping a
@@ -11,11 +11,13 @@
   `glang <code>`. Anything not translated falls back to English, so partial
   translations are fine. Help text stays English for now.
 - A "Default Language" option in the config editor and setup wizard.
-- Admin permissions: the `q` (quit), `rs` (restart), and `jc` (join channel)
-  commands can now be limited to admins. Pick who counts as an admin in the
-  config editor or the setup wizard: everyone, your TeamTalk server's admins, a
-  username list, or both. Non-admins don't see these commands in help and get no
-  response if they try them.
+- Admin permissions: the `q` (quit), `rs` (restart), `jc` (join channel), and
+  `glang` (default language) commands can now be limited to admins. Pick who
+  counts as an admin in the config editor or the setup wizard: everyone, your
+  TeamTalk server's admins, a username list, or both. Non-admins don't see
+  these commands in help and get no response if they try them. The default
+  after upgrading is "Both" — if you used `q` or `rs` from a non-admin
+  TeamTalk account, add your username to the admin list (or pick "Everyone").
 - New `liked` command (alias `fav`): queues your Spotify Liked Songs.
 - Big playlists and Liked Songs now start playing after the first 50 tracks;
   the rest load quietly in the background instead of making you wait.
@@ -32,10 +34,6 @@
   config on disk but nothing running. Skipped on non-systemd systems.
 
 ### Changed
-- Admin commands default to "Both" mode: on a fresh config or after upgrading,
-  only your TeamTalk server admins can use `q`, `rs`, and `jc`. If you ran the
-  bot from a non-admin account and relied on those over private message, add
-  your username to the admin list (or switch to "Everyone") after upgrading.
 - After a successful update, newly added settings are written into your existing
   config files automatically, so you no longer have to start each bot for them
   to appear.
@@ -52,8 +50,8 @@
   init.
 - Smoother playback at track start: audio now buffers briefly before playing,
   so tracks no longer stutter when the connection is slow to get going.
-- `p <song name>` on Spotify now plays just the best match instead of queueing
-  several search results (matching how YouTube already behaved).
+- `p <song name>` now plays just the best match instead of queueing several
+  search results.
 - Editing an existing config from the tray no longer re-asks about installing
   YouTube support on every save; the prompt now only appears when creating a
   new config.
