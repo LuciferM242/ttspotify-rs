@@ -105,6 +105,25 @@ keys! {
     GenderUsage => "gender_usage",
     Info => "info",
     Stats => "stats",
+    // Player events (command processor)
+    SpotifyUnavailable => "spotify_unavailable",
+    NoResults => "no_results",
+    NowPlaying => "now_playing",
+    NowPlayingQueued => "now_playing_queued",
+    MoreLoading => "more_loading",
+    QueuedMany => "queued_many",
+    QueuedOne => "queued_one",
+    AlreadyQueuedLoadingRest => "already_queued_loading_rest",
+    AlreadyInQueue => "already_in_queue",
+    SearchFailed => "search_failed",
+    RadioFetching => "radio_fetching",
+    RadioPlaying => "radio_playing",
+    RadioNoRecs => "radio_no_recs",
+    RadioFailed => "radio_failed",
+    EndOfQueue => "end_of_queue",
+    InvalidPick => "invalid_pick",
+    ChannelNotFound => "channel_not_found",
+    FailedToStart => "failed_to_start",
 }
 
 /// Parse `.lang` file text into a key -> template map.

@@ -162,3 +162,63 @@ info = TeamTalk Spotify Bot (Rust) v{version}
 # The stats command. {uptime} = time running, {tracks} = tracks played,
 # {queue} = queue length, {volume} = current volume.
 stats = Uptime: {uptime}\nTracks played: {tracks}\nQueue: {queue} tracks\nVolume: {volume}%
+
+# ===== Player messages =====
+
+# Shown when Spotify could not be reached. {error} = a short error description.
+spotify_unavailable = Spotify unavailable: {error}
+
+# Shown when a search or play request found nothing.
+no_results = No results found
+
+# Shown when a track starts. {track} = the track title.
+now_playing = Now playing: {track}
+
+# Shown when a track starts and more were queued behind it. {track} = title,
+# {count} = how many more were queued, {more} = empty or the "more loading" note below.
+now_playing_queued = Now playing: {track} (+{count} queued{more})
+
+# A short note appended while the rest of a big playlist is still loading.
+# Keep the leading comma (or your language's equivalent separator).
+more_loading = , more loading
+
+# Shown when several tracks were added behind the current one. {count} = how many,
+# {upcoming} = queue position note, {more} = empty or the "more loading" note.
+queued_many = Queued {count} tracks{upcoming}{more}
+
+# Shown when one track was added behind the current one. {track} = title,
+# {upcoming} = queue position note, {more} = empty or the "more loading" note.
+queued_one = Queued: {track}{upcoming}{more}
+
+# Shown when everything asked for was already in the queue and more is loading.
+already_queued_loading_rest = Already queued, loading the rest
+
+# Shown when everything asked for was already in the queue.
+already_in_queue = Already in queue
+
+# Shown when a search could not be completed. {error} = a short error description.
+search_failed = Search failed: {error}
+
+# Shown while radio looks for recommendations.
+radio_fetching = Radio: fetching recommendations...
+
+# Shown when radio starts a recommended track. {track} = the track title.
+radio_playing = Radio: {track}
+
+# Shown when radio found no recommendations.
+radio_no_recs = Radio: no recommendations found
+
+# Shown when radio could not fetch recommendations. {error} = a short error description.
+radio_failed = Radio failed: {error}
+
+# Shown when the queue finishes and nothing else plays.
+end_of_queue = End of queue
+
+# Shown when a picked search-result number does not exist.
+invalid_pick = Invalid pick or no search results
+
+# Shown when the jc command names a channel that does not exist. {path} = the channel path.
+channel_not_found = Channel not found: {path}
+
+# Shown when a track could not be started. {track} = the track title.
+failed_to_start = Failed to start track: {track}

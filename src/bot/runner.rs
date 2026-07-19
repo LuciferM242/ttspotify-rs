@@ -15,6 +15,7 @@ use crate::bot::commands::{BotCommand, PlaybackMode};
 use crate::bot::state::{PlaybackStatus, PlayerState, SharedState};
 use crate::config::BotConfig;
 use crate::error::BotError;
+use crate::i18n::Key;
 use crate::spotify::metadata::SpotifyMetadata;
 use crate::spotify::player::SpotifyPlayer;
 
@@ -180,6 +181,14 @@ pub async fn run_bot(
         config.clone(),
     ));
 
+    // Shared i18n runtime: embedded English + any <config_dir>/lang/*.lang
+    // files, and per-user language prefs. Shared by the dispatcher (which
+    // seeds the per-user language at dispatch) and the command processor.
+    let i18n = std::sync::Arc::new(crate::i18n::I18n::load(
+        &crate::config::config_dir(),
+        &config.default_language,
+    ));
+
     // Spawn command processor
     let bot_gender = crate::config::parse_gender(&config.bot_gender);
     let cmd_ctx = CmdContext {
@@ -205,6 +214,7 @@ pub async fn run_bot(
         exit_reason: exit_reason.clone(),
         shutdown: shutdown.clone(),
         event_tx: event_tx.clone(),
+        i18n: i18n.clone(),
     };
     let processor_handle = tokio::spawn(async move {
         command_processor(cmd_rx, cmd_ctx).await;
@@ -216,14 +226,6 @@ pub async fn run_bot(
     let event_loop_handle = tokio::spawn(async move {
         player_event_loop(event_rx, event_state, event_cmd_tx).await;
     });
-
-    // Shared i18n runtime: embedded English + any <config_dir>/lang/*.lang
-    // files, and per-user language prefs. Shared by the dispatcher (which
-    // seeds the per-user language at dispatch) and the command processor.
-    let i18n = std::sync::Arc::new(crate::i18n::I18n::load(
-        &crate::config::config_dir(),
-        &config.default_language,
-    ));
 
     let dispatcher = crate::bot::commands::CommandDispatcher {
         state: state.clone(),
@@ -544,6 +546,7 @@ struct CmdContext {
     exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>>,
     shutdown: Arc<AtomicBool>,
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
+    i18n: Arc<crate::i18n::I18n>,
 }
 
 /// Attempt to reconnect the Spotify session using cached credentials.
@@ -577,7 +580,7 @@ async fn command_processor(
         spotify_connected, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_store, audio_reset, timing_reset, pause_flag,
-        volume_for_save, exit_reason, shutdown, event_tx,
+        volume_for_save, exit_reason, shutdown, event_tx, i18n,
     } = ctx;
 
     // Tracks whether the Spotify session has been connected yet. Starts false
@@ -636,6 +639,15 @@ async fn command_processor(
     let reply = |user_id: i32, text: &str| {
         if user_id > 0 {
             crate::bot::commands::send_reply(&client, user_id, text);
+        }
+    };
+
+    // Translated reply: resolves the target user's language (seeded at
+    // dispatch; falls back to the server default for internally-generated
+    // events like radio auto-advance where user_id is 0-or-unseeded).
+    let reply_t = |user_id: i32, key: crate::i18n::Key, args: &[(&str, String)]| {
+        if user_id > 0 {
+            crate::bot::commands::send_reply(&client, user_id, &i18n.tr(user_id, key, args));
         }
     };
 
@@ -759,7 +771,7 @@ async fn command_processor(
                 true
             } else {
                 consec_start_failures += 1;
-                reply($user_id, &format!("Failed to start track: {}", $name));
+                reply_t($user_id, Key::FailedToStart, &[("track", $name.to_string())]);
                 if consec_start_failures >= MAX_CONSECUTIVE_START_FAILURES {
                     consec_start_failures = 0;
                     stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
@@ -786,7 +798,9 @@ async fn command_processor(
                 let result: Result<ResolveOk, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
-                            reply(user_id, &format!("Spotify unavailable: {}", crate::bot::commands::user_error(&e)));
+                            reply_t(user_id, Key::SpotifyUnavailable, &[
+                                ("error", crate::bot::commands::user_error(&e)),
+                            ]);
                             continue;
                         }
                         with_reconnect!(metadata.resolve(&query, search_limit))
@@ -800,7 +814,7 @@ async fn command_processor(
                 match result {
                     Ok((tracks, remaining_uris, is_bulk)) => {
                         if tracks.is_empty() {
-                            reply(user_id, "No results found");
+                            reply_t(user_id, Key::NoResults, &[]);
                             continue;
                         }
 
@@ -851,14 +865,27 @@ async fn command_processor(
                                 generation,
                             );
                         }
-                        let more = if loader_gen.is_some() { ", more loading" } else { "" };
+                        // Translated "more loading" note, or empty when the
+                        // whole request is already queued. Fed into the
+                        // {more} slot of the queued/now-playing messages.
+                        let more = if loader_gen.is_some() {
+                            i18n.tr(user_id, Key::MoreLoading, &[])
+                        } else {
+                            String::new()
+                        };
 
                         if is_idle {
                             if start_or_skip!(first_service, &first_uri, user_id, &first_name) {
                                 if count > 1 {
-                                    reply(user_id, &format!("Now playing: {first_name} (+{} queued{more})", count - 1));
+                                    reply_t(user_id, Key::NowPlayingQueued, &[
+                                        ("track", first_name.clone()),
+                                        ("count", (count - 1).to_string()),
+                                        ("more", more.clone()),
+                                    ]);
                                 } else {
-                                    reply(user_id, &format!("Now playing: {first_name}"));
+                                    reply_t(user_id, Key::NowPlaying, &[
+                                        ("track", first_name.clone()),
+                                    ]);
                                 }
                                 announce_playing_status(&first_name);
 
@@ -870,29 +897,36 @@ async fn command_processor(
                                 }
                             }
                         } else {
-                            let msg = {
-                                let s = state.lock();
-                                let upcoming = queue_wait_info(&s);
-                                if count == 0 {
-                                    // Whole first batch was already queued
-                                    // (repeat of the same bulk source).
-                                    if loader_gen.is_some() {
-                                        "Already queued, loading the rest".to_string()
-                                    } else {
-                                        "Already in queue".to_string()
-                                    }
-                                } else if count > 1 {
-                                    format!("Queued {count} tracks{upcoming}{more}")
+                            let upcoming = queue_wait_info(&state.lock());
+                            let msg = if count == 0 {
+                                // Whole first batch was already queued
+                                // (repeat of the same bulk source).
+                                if loader_gen.is_some() {
+                                    i18n.tr(user_id, Key::AlreadyQueuedLoadingRest, &[])
                                 } else {
-                                    let name = added_name.as_deref().unwrap_or(&first_name);
-                                    format!("Queued: {name}{upcoming}{more}")
+                                    i18n.tr(user_id, Key::AlreadyInQueue, &[])
                                 }
+                            } else if count > 1 {
+                                i18n.tr(user_id, Key::QueuedMany, &[
+                                    ("count", count.to_string()),
+                                    ("upcoming", upcoming),
+                                    ("more", more.clone()),
+                                ])
+                            } else {
+                                let name = added_name.as_deref().unwrap_or(&first_name);
+                                i18n.tr(user_id, Key::QueuedOne, &[
+                                    ("track", name.to_string()),
+                                    ("upcoming", upcoming),
+                                    ("more", more.clone()),
+                                ])
                             };
                             reply(user_id, &msg);
                         }
                     }
                     Err(e) => {
-                        reply(user_id, &format!("Search failed: {}", crate::bot::commands::user_error(&e)));
+                        reply_t(user_id, Key::SearchFailed, &[
+                            ("error", crate::bot::commands::user_error(&e)),
+                        ]);
                     }
                 }
             }
@@ -947,7 +981,7 @@ async fn command_processor(
                 };
                 if let Some((service, uri_str, name)) = next {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
-                        reply(user_id, &format!("Now playing: {name}"));
+                        reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
                         announce_playing_status(&name);
 
                         let (radio_on, at_end, allow_rec) = {
@@ -969,7 +1003,7 @@ async fn command_processor(
                     if radio_on && pre_allow_rec {
                         if let Some(seed) = pre_seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
-                                reply(user_id, "Radio: fetching recommendations...");
+                                reply_t(user_id, Key::RadioFetching, &[]);
                                 match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
                                         let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
@@ -981,21 +1015,25 @@ async fn command_processor(
                                         }
                                         if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
                                             resumed = true;
-                                            reply(user_id, &format!("Radio: {first_name}"));
+                                            reply_t(user_id, Key::RadioPlaying, &[
+                                                ("track", first_name.clone()),
+                                            ]);
                                             announce_playing_status(&first_name);
                                         }
                                     }
                                     Ok(_) => {
-                                        reply(user_id, "Radio: no recommendations found");
+                                        reply_t(user_id, Key::RadioNoRecs, &[]);
                                     }
                                     Err(e) => {
-                                        reply(user_id, &format!("Radio failed: {}", crate::bot::commands::user_error(&e)));
+                                        reply_t(user_id, Key::RadioFailed, &[
+                                            ("error", crate::bot::commands::user_error(&e)),
+                                        ]);
                                     }
                                 }
                             }
                         }
                     } else if user_id > 0 {
-                        reply(user_id, "End of queue");
+                        reply_t(user_id, Key::EndOfQueue, &[]);
                     }
 
                     // Nothing left playing: reset to a clean idle state so the
@@ -1019,7 +1057,7 @@ async fn command_processor(
                 };
                 if let Some((service, uri_str, name)) = prev {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
-                        reply(user_id, &format!("Now playing: {name}"));
+                        reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
                         announce_playing_status(&name);
                     }
                 }
@@ -1116,7 +1154,9 @@ async fn command_processor(
                 let result: Result<Vec<crate::track::Track>, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
-                            reply(user_id, &format!("Spotify unavailable: {}", crate::bot::commands::user_error(&e)));
+                            reply_t(user_id, Key::SpotifyUnavailable, &[
+                                ("error", crate::bot::commands::user_error(&e)),
+                            ]);
                             continue;
                         }
                         with_reconnect!(metadata.search_tracks(&query, search_limit))
@@ -1131,13 +1171,15 @@ async fn command_processor(
                     Ok(tracks) => {
                         reply(user_id, &crate::bot::commands::format_search_results(
                             &tracks,
-                            "Search results:",
-                            "Type a number to play, or a to cancel",
+                            &i18n.tr(user_id, Key::SearchResultsHeader, &[]),
+                            &i18n.tr(user_id, Key::SearchResultsFooter, &[]),
                         ));
                         state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
-                        reply(user_id, &format!("Search failed: {}", crate::bot::commands::user_error(&e)));
+                        reply_t(user_id, Key::SearchFailed, &[
+                            ("error", crate::bot::commands::user_error(&e)),
+                        ]);
                     }
                 }
             }
@@ -1160,7 +1202,7 @@ async fn command_processor(
                 if let Some((service, uri_str, track_name, is_idle)) = picked {
                     if is_idle {
                         if start_or_skip!(service, &uri_str, user_id, &track_name) {
-                            reply(user_id, &format!("Now playing: {track_name}"));
+                            reply_t(user_id, Key::NowPlaying, &[("track", track_name.clone())]);
                             announce_playing_status(&track_name);
 
                             let radio_on = state.lock().radio_enabled;
@@ -1170,17 +1212,21 @@ async fn command_processor(
                         }
                     } else {
                         let upcoming = queue_wait_info(&state.lock());
-                        reply(user_id, &format!("Queued: {track_name}{upcoming}"));
+                        reply_t(user_id, Key::QueuedOne, &[
+                            ("track", track_name),
+                            ("upcoming", upcoming),
+                            ("more", String::new()),
+                        ]);
                     }
                 } else {
-                    reply(user_id, "Invalid pick or no search results");
+                    reply_t(user_id, Key::InvalidPick, &[]);
                 }
             }
 
             BotCommand::JoinChannel { path, user_id } => {
                 let channel_id = client.get_channel_id_from_path(&path);
                 if channel_id == ::teamtalk::types::ChannelId(0) {
-                    reply(user_id, &format!("Channel not found: {path}"));
+                    reply_t(user_id, Key::ChannelNotFound, &[("path", path)]);
                 } else {
                     let _ = client.join_channel(channel_id, "");
                 }
