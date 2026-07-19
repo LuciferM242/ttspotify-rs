@@ -9,8 +9,20 @@
   just the newest release, so skipped releases are no longer invisible.
 - Linux: after `ttspotify --update` succeeds, the bot offers to restart your
   running systemd instances so they pick up the new version immediately.
+- Linux: `--install-service` now offers to enable systemd lingering so the
+  bot keeps running after you log out (important on a headless VPS). It only
+  asks when lingering isn't already on.
+
+### Changed
+- Headless Spotify login now warns that the browser's "site can't be reached"
+  page after authorizing is expected, so remote/VPS users no longer mistake it
+  for a failure and know to copy the address-bar URL back to the bot.
 
 ### Fixed
+- Linux: `--install-service` on systems without systemd (Alpine, Void, etc.)
+  no longer writes a dead unit file and claims success; it now explains that
+  systemd is required and points to running the binary directly or via another
+  init.
 - Smoother playback at track start: audio now buffers briefly before playing,
   so tracks no longer stutter when the connection is slow to get going.
 - `p <song name>` on Spotify now plays just the best match instead of queueing
