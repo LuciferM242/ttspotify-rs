@@ -12,7 +12,9 @@
 //! rather than silently dropped.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use parking_lot::Mutex;
 
 /// The language code of the embedded fallback catalog.
 pub const ENGLISH: &str = "en";
@@ -296,6 +298,146 @@ pub fn validate(catalog: &Catalog, code: &str) -> LangValidation {
     }
 }
 
+/// Shared i18n runtime: the loaded catalog plus per-user state. Wrapped in an
+/// `Arc` and shared by the command dispatcher and the command processor.
+///
+/// Locks are only ever taken one at a time (never nested), and every critical
+/// section is a quick map access — safe to call from async contexts.
+pub struct I18n {
+    catalog: Catalog,
+    prefs: Mutex<LangPrefs>,
+    default_lang: Mutex<String>,
+    /// Session cache: TeamTalk user id -> resolved language code. Seeded at
+    /// dispatch time (where the sender's username is known) so every later
+    /// reply site can resolve by user id alone.
+    session: Mutex<HashMap<i32, String>>,
+}
+
+impl I18n {
+    /// Build the runtime: embedded English plus every `<config_dir>/lang/*.lang`
+    /// file, and per-user prefs from `<config_dir>/lang_prefs.json`. Each loaded
+    /// file gets a coverage log line and placeholder-mismatch warnings; a broken
+    /// file degrades, it never fails startup.
+    pub fn load(config_dir: &Path, default_language: &str) -> I18n {
+        let mut catalog = Catalog::new_embedded();
+        let lang_dir = config_dir.join("lang");
+        if let Ok(entries) = std::fs::read_dir(&lang_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("lang") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let code = stem.to_lowercase();
+                if code == ENGLISH {
+                    // English is embedded and authoritative; an en.lang file
+                    // in the lang dir is ignored.
+                    continue;
+                }
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        catalog.add_language(&code, parse_lang(&text));
+                        let v = validate(&catalog, &code);
+                        tracing::info!(
+                            "Loaded translation {}: {}/{} messages",
+                            code, v.present, v.total
+                        );
+                        for id in &v.slot_mismatches {
+                            tracing::warn!(
+                                "{code}.lang `{id}`: {{placeholders}} differ from English (renamed or dropped)"
+                            );
+                        }
+                        for id in &v.unknown_keys {
+                            tracing::warn!("{code}.lang has unknown key `{id}` (ignored)");
+                        }
+                    }
+                    Err(e) => tracing::warn!("Could not read {}: {e}", path.display()),
+                }
+            }
+        }
+        let default_lang = default_language.to_lowercase();
+        if !catalog.has_language(&default_lang) {
+            tracing::warn!(
+                "Default language `{default_lang}` has no {default_lang}.lang file; English will be shown"
+            );
+        }
+        I18n {
+            catalog,
+            prefs: Mutex::new(LangPrefs::load(config_dir.join("lang_prefs.json"))),
+            default_lang: Mutex::new(default_lang),
+            session: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve and cache the language for a user id. Called at dispatch, where
+    /// the sender's username is known. Order: user pref -> server default.
+    pub fn seed(&self, user_id: i32, username: &str) {
+        let lang = self.resolve_for(username);
+        self.session.lock().insert(user_id, lang);
+    }
+
+    fn resolve_for(&self, username: &str) -> String {
+        if let Some(code) = self.prefs.lock().get(username) {
+            return code.to_string();
+        }
+        self.default_lang.lock().clone()
+    }
+
+    /// The cached language for a user id; server default if never seeded.
+    pub fn lang_of(&self, user_id: i32) -> String {
+        self.session
+            .lock()
+            .get(&user_id)
+            .cloned()
+            .unwrap_or_else(|| self.default_lang.lock().clone())
+    }
+
+    /// Translate `key` for the user behind `user_id`.
+    pub fn tr(&self, user_id: i32, key: Key, args: &[(&str, String)]) -> String {
+        self.catalog.t(&self.lang_of(user_id), key, args)
+    }
+
+    /// Translate directly into an explicit language (used for the `lang_set`
+    /// confirmation, which renders in the just-picked language).
+    pub fn tr_in(&self, code: &str, key: Key, args: &[(&str, String)]) -> String {
+        self.catalog.t(&code.to_lowercase(), key, args)
+    }
+
+    /// Persist a user's language pick and update their session immediately.
+    pub fn set_pref(&self, user_id: i32, username: &str, code: &str) {
+        let code = code.to_lowercase();
+        self.prefs.lock().set(username, &code);
+        self.session.lock().insert(user_id, code);
+    }
+
+    /// Change the server default (glang). Personal picks are untouched.
+    pub fn set_default(&self, code: &str) {
+        *self.default_lang.lock() = code.to_lowercase();
+    }
+
+    pub fn is_available(&self, code: &str) -> bool {
+        self.catalog.has_language(&code.to_lowercase())
+    }
+
+    /// All loaded languages as (code, display name), sorted by code.
+    pub fn available(&self) -> Vec<(String, String)> {
+        self.catalog
+            .codes()
+            .into_iter()
+            .map(|code| {
+                let name = self.catalog.language_name(&code);
+                (code, name)
+            })
+            .collect()
+    }
+
+    pub fn language_name(&self, code: &str) -> String {
+        self.catalog.language_name(&code.to_lowercase())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,5 +644,95 @@ mod tests {
         c.add_language("de", parse_lang("lang_set = {language} ist jetzt aktiv"));
         let v = validate(&c, "de");
         assert!(v.slot_mismatches.is_empty());
+    }
+
+    // -- I18n runtime --
+
+    /// A temp config dir with a de.lang translation, torn down by the caller.
+    fn runtime_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_i18n_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lang")).unwrap();
+        std::fs::write(
+            dir.join("lang").join("de.lang"),
+            "language_name = Deutsch\nlang_set = Sprache auf {language} gesetzt\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn runtime_resolution_order_pref_then_default_then_english() {
+        let dir = runtime_dir("resolve");
+        let i18n = I18n::load(&dir, "de");
+
+        // Unseeded user id -> server default (de).
+        assert_eq!(i18n.lang_of(99), "de");
+
+        // Seeded user without a pref -> server default.
+        i18n.seed(1, "alice");
+        assert_eq!(i18n.lang_of(1), "de");
+
+        // A personal pick beats the default and survives re-seeding.
+        i18n.set_pref(1, "alice", "en");
+        assert_eq!(i18n.lang_of(1), "en");
+        i18n.seed(1, "alice");
+        assert_eq!(i18n.lang_of(1), "en");
+
+        // Changing the default (glang) moves un-preffed users only.
+        i18n.seed(2, "bob");
+        i18n.set_default("en");
+        i18n.seed(2, "bob");
+        assert_eq!(i18n.lang_of(2), "en");
+        assert_eq!(i18n.lang_of(1), "en"); // alice's own pick still stands
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_tr_translates_and_falls_back() {
+        let dir = runtime_dir("tr");
+        let i18n = I18n::load(&dir, "de");
+
+        i18n.seed(1, "alice");
+        assert_eq!(
+            i18n.tr(1, Key::LangSet, &[("language", "Deutsch".to_string())]),
+            "Sprache auf Deutsch gesetzt"
+        );
+
+        // tr_in renders in an explicit language regardless of session.
+        assert_eq!(
+            i18n.tr_in("en", Key::LangSet, &[("language", "English".to_string())]),
+            "Language set to English"
+        );
+
+        // Availability and names.
+        assert!(i18n.is_available("de"));
+        assert!(i18n.is_available("EN"));
+        assert!(!i18n.is_available("xx"));
+        assert_eq!(i18n.language_name("de"), "Deutsch");
+        let codes: Vec<String> = i18n.available().into_iter().map(|(c, _)| c).collect();
+        assert_eq!(codes, vec!["de".to_string(), "en".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_set_pref_persists_across_reload() {
+        let dir = runtime_dir("persist");
+        {
+            let i18n = I18n::load(&dir, "en");
+            i18n.seed(1, "alice");
+            i18n.set_pref(1, "Alice", "de");
+        }
+        // A fresh runtime (bot restart) still knows alice's pick.
+        let i18n = I18n::load(&dir, "en");
+        i18n.seed(7, "alice"); // new session id after reconnect
+        assert_eq!(i18n.lang_of(7), "de");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
