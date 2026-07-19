@@ -22,6 +22,16 @@ pub struct SpotifyAuth {
     headless: bool,
 }
 
+/// Whether an interactive OAuth flow can possibly succeed: either a browser
+/// can be opened (non-headless), or stdin is a terminal so the headless
+/// paste-the-URL flow has someone to answer it. Under systemd both are false
+/// (no display, stdin is /dev/null) — attempting OAuth there fails after the
+/// bot has already logged into TeamTalk, which `Restart=on-failure` turns
+/// into a nonstop login/logout crash-restart loop.
+pub fn oauth_is_feasible(headless: bool, stdin_is_terminal: bool) -> bool {
+    !headless || stdin_is_terminal
+}
+
 /// Detect if we're running in a headless environment (no display server).
 fn detect_headless() -> bool {
     // Explicit override via env var
@@ -80,6 +90,13 @@ impl SpotifyAuth {
     /// Check if cached Spotify credentials exist (without connecting).
     pub fn has_cached_credentials(&self) -> bool {
         self.cache.as_ref().is_some_and(|c| c.credentials().is_some())
+    }
+
+    /// Whether an interactive OAuth flow could succeed in this process.
+    /// See [`oauth_is_feasible`].
+    pub fn oauth_feasible(&self) -> bool {
+        use std::io::IsTerminal;
+        oauth_is_feasible(self.headless, std::io::stdin().is_terminal())
     }
 
     /// Build a fresh, unconnected session. No network, no browser — just the
@@ -145,6 +162,16 @@ impl SpotifyAuth {
     /// Opens a browser URL for the user to authorize, then catches the callback.
     /// In headless mode, skips browser launch and prints instructions.
     fn oauth_login(&self) -> Result<Credentials, BotError> {
+        // Refuse cleanly when neither a browser nor a terminal is available
+        // (e.g. under systemd) instead of blocking on a stdin that is EOF.
+        if !self.oauth_feasible() {
+            return Err(BotError::SpotifyAuth(
+                "no cached Spotify credentials and no way to log in interactively here; \
+                 run `tt-spotify-bot --auth` on this machine, then restart the bot"
+                    .to_string(),
+            ));
+        }
+
         // In headless mode, use a port-less redirect URI so librespot-oauth
         // falls back to stdin input instead of starting a local HTTP server.
         // The user pastes the redirect URL from their browser's address bar.
@@ -187,4 +214,28 @@ impl SpotifyAuth {
         Ok(Credentials::with_access_token(&token.access_token))
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::oauth_is_feasible;
+
+    #[test]
+    fn oauth_feasible_with_browser_regardless_of_stdin() {
+        // Non-headless (Windows tray, desktop Linux): browser flow works.
+        assert!(oauth_is_feasible(false, false));
+        assert!(oauth_is_feasible(false, true));
+    }
+
+    #[test]
+    fn oauth_feasible_headless_with_terminal_paste_flow() {
+        // SSH session on a headless box: paste-the-URL flow reads stdin.
+        assert!(oauth_is_feasible(true, true));
+    }
+
+    #[test]
+    fn oauth_infeasible_headless_without_terminal() {
+        // systemd service: no display, stdin is /dev/null. OAuth can only fail.
+        assert!(!oauth_is_feasible(true, false));
+    }
 }

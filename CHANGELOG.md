@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Linux: a bot running as a systemd service no longer crashes (and gets
+  restarted over and over, appearing to log in and out of the TeamTalk server
+  nonstop) when Spotify credentials are missing or rejected. A service has no
+  browser and no keyboard, so the interactive Spotify login could never
+  succeed there; the bot now detects this, logs a clear message telling you
+  to run `tt-spotify-bot --auth`, and keeps running with Spotify disabled
+  (YouTube still works). Interactive runs in a terminal behave as before.
+
 ## [0.6.0] - 2026-07-19
 ### Added
 - Translations: the bot's replies can now be shown in other languages. Spanish,

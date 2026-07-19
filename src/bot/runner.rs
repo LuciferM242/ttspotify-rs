@@ -43,6 +43,37 @@ pub enum RunnerEvent {
     Error(String),
 }
 
+/// How the runner should handle Spotify auth at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupAuthPlan {
+    /// Connect eagerly; a failure aborts startup (interactive contexts, where
+    /// the user is present to complete or fix the OAuth flow).
+    ConnectFatal,
+    /// Connect eagerly with cached credentials; on failure log, disable
+    /// Spotify, and keep running. Used when OAuth is infeasible (systemd):
+    /// dying here would loop TeamTalk login/logout via Restart=on-failure.
+    ConnectBestEffort,
+    /// Don't touch Spotify at startup (YouTube-only user, no cached creds);
+    /// the connection happens lazily on the first Spotify command.
+    Skip,
+}
+
+/// Decide the startup auth plan from what's cached, what the default service
+/// is, and whether an interactive OAuth flow could succeed in this process.
+fn startup_auth_plan(
+    has_cached_credentials: bool,
+    spotify_is_default: bool,
+    oauth_feasible: bool,
+) -> StartupAuthPlan {
+    if !has_cached_credentials && !spotify_is_default {
+        StartupAuthPlan::Skip
+    } else if oauth_feasible {
+        StartupAuthPlan::ConnectFatal
+    } else {
+        StartupAuthPlan::ConnectBestEffort
+    }
+}
+
 /// Run a single bot instance. Returns when the bot exits.
 ///
 /// - `config`: Bot configuration.
@@ -148,16 +179,37 @@ pub async fn run_bot(
     // Connect Spotify eagerly only if credentials are already cached or Spotify
     // is the default service. A YouTube-only user with no cached credentials is
     // never sent to the browser at startup; the connection happens lazily on
-    // their first Spotify command instead (see `ensure_spotify!`).
-    let spotify_connected = if auth.has_cached_credentials()
-        || config.default_service == crate::services::Service::Spotify
-    {
-        send_event(RunnerEvent::Authenticating);
-        auth.connect_existing(&session).await?;
-        true
-    } else {
-        tracing::info!("Skipping Spotify auth at startup; no cached credentials and default service is YouTube");
-        false
+    // their first Spotify command instead (see `ensure_spotify!`). When OAuth
+    // is infeasible (systemd: no browser, no stdin) a failure must NOT abort —
+    // we've already logged into TeamTalk, so exiting turns Restart=on-failure
+    // into a nonstop login/logout loop on the server.
+    let spotify_connected = match startup_auth_plan(
+        auth.has_cached_credentials(),
+        config.default_service == crate::services::Service::Spotify,
+        auth.oauth_feasible(),
+    ) {
+        StartupAuthPlan::ConnectFatal => {
+            send_event(RunnerEvent::Authenticating);
+            auth.connect_existing(&session).await?;
+            true
+        }
+        StartupAuthPlan::ConnectBestEffort => {
+            send_event(RunnerEvent::Authenticating);
+            match auth.connect_existing(&session).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::error!(
+                        "Spotify is unavailable and interactive login is impossible here: {e}. \
+                         Continuing without Spotify; run `tt-spotify-bot --auth`, then restart."
+                    );
+                    false
+                }
+            }
+        }
+        StartupAuthPlan::Skip => {
+            tracing::info!("Skipping Spotify auth at startup; no cached credentials and default service is YouTube");
+            false
+        }
     };
 
     let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx.clone());
@@ -1419,6 +1471,32 @@ mod tests {
     use crate::bot::state::PlayerState;
     use crate::spotify::types::SpotifyTrack;
     use crate::track::Track;
+
+    // -- startup_auth_plan --
+
+    #[test]
+    fn youtube_only_user_without_creds_skips_eager_connect() {
+        assert_eq!(startup_auth_plan(false, false, true), StartupAuthPlan::Skip);
+        assert_eq!(startup_auth_plan(false, false, false), StartupAuthPlan::Skip);
+    }
+
+    #[test]
+    fn interactive_contexts_keep_fatal_eager_connect() {
+        // Cached creds present, spotify default, or both — with OAuth feasible
+        // a startup failure should still abort (user is there to see/fix it).
+        assert_eq!(startup_auth_plan(true, false, true), StartupAuthPlan::ConnectFatal);
+        assert_eq!(startup_auth_plan(false, true, true), StartupAuthPlan::ConnectFatal);
+        assert_eq!(startup_auth_plan(true, true, true), StartupAuthPlan::ConnectFatal);
+    }
+
+    #[test]
+    fn noninteractive_contexts_never_die_on_spotify_failure() {
+        // systemd: OAuth infeasible. Failure must disable Spotify, not kill the
+        // bot — a fatal exit here becomes a TT login/logout crash-restart loop.
+        assert_eq!(startup_auth_plan(true, false, false), StartupAuthPlan::ConnectBestEffort);
+        assert_eq!(startup_auth_plan(false, true, false), StartupAuthPlan::ConnectBestEffort);
+        assert_eq!(startup_auth_plan(true, true, false), StartupAuthPlan::ConnectBestEffort);
+    }
 
     fn track(id: &str, duration_ms: u32) -> Track {
         Track::Spotify(SpotifyTrack {
