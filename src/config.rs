@@ -166,6 +166,7 @@ fn default_norm_method() -> String { "dynamic".to_string() }
 fn default_norm_pregain() -> f64 { 0.0 }
 fn default_norm_threshold() -> f64 { -2.0 }
 fn default_norm_knee() -> f64 { 5.0 }
+fn default_language_en() -> String { "en".to_string() }
 
 /// Config format matches the Python ttspotify bot's data/config.json
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -193,6 +194,8 @@ pub struct BotConfig {
     pub admin_mode: AdminMode,
     #[serde(default)]
     pub admins: Vec<String>,
+    #[serde(default = "default_language_en", rename = "defaultLanguage")]
+    pub default_language: String,
 
     // TeamTalk license (optional, overridden by compile-time TT_LICENSE_NAME/TT_LICENSE_KEY)
     #[serde(default, rename = "licenseName", skip_serializing_if = "Option::is_none")]
@@ -272,6 +275,7 @@ impl Default for BotConfig {
             bot_gender: "neutral".to_string(),
             admin_mode: AdminMode::default(),
             admins: Vec::new(),
+            default_language: default_language_en(),
             license_name: None,
             license_key: None,
 
@@ -673,6 +677,27 @@ mod tests {
         let cfg: BotConfig = serde_json::from_str(json).expect("config should deserialize");
         assert_eq!(cfg.admin_mode, AdminMode::Both);
         assert!(cfg.admins.is_empty());
+    }
+
+    #[test]
+    fn default_language_defaults_to_en_and_round_trips() {
+        // Absent field -> "en" (existing configs keep working).
+        let json = r#"{
+            "host": "localhost", "tcpPort": 10333, "udpPort": 10333,
+            "botName": "Spotify", "username": "", "password": "",
+            "ChannelName": "/", "ChannelPassword": "", "botGender": "neutral",
+            "spotifyQuality": "VERY_HIGH", "spotifyEnableNormalization": true
+        }"#;
+        let cfg: BotConfig = serde_json::from_str(json).expect("config should deserialize");
+        assert_eq!(cfg.default_language, "en");
+
+        // Round-trip preserves a non-default value under the serde name.
+        let mut cfg = BotConfig::default();
+        cfg.default_language = "pt".to_string();
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"defaultLanguage\":\"pt\""));
+        let back: BotConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.default_language, "pt");
     }
 
     #[test]

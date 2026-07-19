@@ -12,6 +12,7 @@
 //! rather than silently dropped.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 
 /// The language code of the embedded fallback catalog.
 pub const ENGLISH: &str = "en";
@@ -182,6 +183,63 @@ impl Catalog {
 
     pub fn has_language(&self, code: &str) -> bool {
         self.langs.contains_key(code)
+    }
+}
+
+/// Per-user language picks, keyed by lowercased TeamTalk username. Stored as
+/// machine-written JSON (`<config_dir>/lang_prefs.json`) — unlike `.lang`
+/// files, this is never hand-edited.
+pub struct LangPrefs {
+    map: HashMap<String, String>,
+    path: PathBuf,
+}
+
+impl LangPrefs {
+    /// Load prefs from `path`. A missing or unreadable file yields empty prefs
+    /// (never an error — a lost prefs file just means everyone is back on the
+    /// server default until they pick again).
+    pub fn load(path: PathBuf) -> LangPrefs {
+        let map = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<HashMap<String, String>>(&text).ok())
+            .map(|m| {
+                m.into_iter()
+                    .map(|(user, code)| (user.to_lowercase(), code))
+                    .collect()
+            })
+            .unwrap_or_default();
+        LangPrefs { map, path }
+    }
+
+    pub fn get(&self, username: &str) -> Option<&str> {
+        self.map.get(&username.to_lowercase()).map(String::as_str)
+    }
+
+    /// Set and persist a user's language pick. Persisting is atomic
+    /// (temp + rename); a write error is logged, never fatal.
+    pub fn set(&mut self, username: &str, code: &str) {
+        self.map
+            .insert(username.to_lowercase(), code.to_lowercase());
+        self.save();
+    }
+
+    fn save(&self) {
+        let json = match serde_json::to_string_pretty(&self.map) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::warn!("Could not serialize language prefs: {e}");
+                return;
+            }
+        };
+        let tmp = self.path.with_extension("json.tmp");
+        if let Err(e) =
+            std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &self.path))
+        {
+            tracing::warn!(
+                "Could not save language prefs {}: {e}",
+                self.path.display()
+            );
+        }
     }
 }
 
@@ -405,6 +463,36 @@ mod tests {
         assert_eq!(v.total, Key::ALL.len());
         assert_eq!(v.slot_mismatches, vec!["lang_set".to_string()]);
         assert_eq!(v.unknown_keys, vec!["pausd".to_string()]);
+    }
+
+    // -- LangPrefs --
+
+    #[test]
+    fn lang_prefs_set_get_persist_round_trip() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_langprefs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lang_prefs.json");
+
+        // Missing file -> empty prefs.
+        let mut prefs = LangPrefs::load(path.clone());
+        assert!(prefs.get("alice").is_none());
+
+        // Set persists; lookups are case-insensitive on username.
+        prefs.set("Alice", "PT");
+        assert_eq!(prefs.get("alice"), Some("pt"));
+        assert_eq!(prefs.get("ALICE"), Some("pt"));
+
+        // A fresh load reads the same pick back.
+        let reloaded = LangPrefs::load(path.clone());
+        assert_eq!(reloaded.get("alice"), Some("pt"));
+
+        // A corrupt file degrades to empty prefs, not a crash.
+        std::fs::write(&path, "not json").unwrap();
+        let broken = LangPrefs::load(path);
+        assert!(broken.get("alice").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
