@@ -6,8 +6,8 @@ use crate::config::{AdminMode, BotConfig};
 /// has this bit set. Kept local so this module has no FFI dependency.
 const USERTYPE_ADMIN: u32 = 0x02;
 
-/// Commands that require admin. Append here to gate more (e.g. a future "glang").
-pub const ADMIN_COMMANDS: &[&str] = &["q", "quit", "rs", "restart", "jc"];
+/// Commands that require admin. Append here to gate more.
+pub const ADMIN_COMMANDS: &[&str] = &["q", "quit", "rs", "restart", "jc", "glang"];
 
 /// True if `cmd` (already lowercased by the dispatcher) is admin-gated.
 pub fn is_admin_command(cmd: &str) -> bool {
@@ -107,10 +107,10 @@ mod tests {
 
     #[test]
     fn admin_commands_are_recognized() {
-        for c in ["q", "quit", "rs", "restart", "jc"] {
+        for c in ["q", "quit", "rs", "restart", "jc", "glang"] {
             assert!(is_admin_command(c), "{c} should be gated");
         }
-        for c in ["p", "n", "search", "h", "queue", "v"] {
+        for c in ["p", "n", "search", "h", "queue", "v", "lang"] {
             assert!(!is_admin_command(c), "{c} should be open");
         }
     }

@@ -1342,6 +1342,18 @@ async fn command_processor(
                 state.lock().active_service = service;
                 tracing::info!("Active service switched to {}", service.name());
             }
+
+            // Admin: change the server default language (glang). Updates the
+            // live i18n runtime and persists to config. Personal /lang picks
+            // are untouched by design. English confirmation (control surface).
+            BotCommand::SetDefaultLanguage { code, user_id } => {
+                i18n.set_default(&code);
+                config_store.update(|cfg| {
+                    cfg.default_language = code.clone();
+                });
+                tracing::info!("Default language set to {code}");
+                reply(user_id, &format!("Default language set to {code}"));
+            }
         }
     }
 }

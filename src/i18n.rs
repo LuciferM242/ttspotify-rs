@@ -489,6 +489,11 @@ impl I18n {
         *self.default_lang.lock() = code.to_lowercase();
     }
 
+    /// The current server default language code.
+    pub fn default_language(&self) -> String {
+        self.default_lang.lock().clone()
+    }
+
     pub fn is_available(&self, code: &str) -> bool {
         self.catalog.has_language(&code.to_lowercase())
     }

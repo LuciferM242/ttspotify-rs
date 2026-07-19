@@ -33,6 +33,8 @@ pub enum BotCommand {
     Quit { user_id: i32 },
     Restart { user_id: i32 },
     SetService { service: Service, user_id: i32 },
+    /// Admin: set the server-wide default language (glang). Persisted to config.
+    SetDefaultLanguage { code: String, user_id: i32 },
     /// Internal: pre-fetch radio recommendations for the given seed track
     RadioPreFetch { seed_uri: String },
     /// Internal: preload next track for gapless playback
@@ -643,6 +645,72 @@ impl CommandDispatcher {
                     ("version", env!("CARGO_PKG_VERSION").to_string()),
                 ]);
             }
+
+            // -- Language --
+            // The language-control surface deliberately replies in English
+            // (except the lang_set confirmation, which renders in the newly
+            // picked language): it is the recovery hatch for anyone stuck in
+            // a language they cannot read.
+            "lang" => {
+                let code = args.trim().to_lowercase();
+                if code.is_empty() {
+                    let listing = self
+                        .i18n
+                        .available()
+                        .into_iter()
+                        .map(|(code, name)| format!("  {code} - {name}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let current = self.i18n.lang_of(sender_id);
+                    self.reply(client, sender_id, &format!(
+                        "Available languages:\n{listing}\nYour language: {current}\nUse: lang <code>"
+                    ));
+                } else if self.i18n.is_available(&code) {
+                    self.i18n.set_pref(sender_id, username, &code);
+                    let name = self.i18n.language_name(&code);
+                    // Confirm in the just-picked language.
+                    let msg = self.i18n.tr_in(&code, Key::LangSet, &[("language", name)]);
+                    self.reply(client, sender_id, &msg);
+                } else {
+                    let codes = self
+                        .i18n
+                        .available()
+                        .into_iter()
+                        .map(|(code, _)| code)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.reply(client, sender_id, &format!(
+                        "Unknown language: {code}. Available: {codes}"
+                    ));
+                }
+            }
+            // Admin-only (gated above via ADMIN_COMMANDS): set the server
+            // default language. Personal picks are not touched.
+            "glang" => {
+                let code = args.trim().to_lowercase();
+                if code.is_empty() {
+                    self.reply(client, sender_id, &format!(
+                        "Default language: {}\nUse: glang <code>",
+                        self.i18n.default_language()
+                    ));
+                } else if self.i18n.is_available(&code) {
+                    self.send(BotCommand::SetDefaultLanguage {
+                        code,
+                        user_id: sender_id,
+                    });
+                } else {
+                    let codes = self
+                        .i18n
+                        .available()
+                        .into_iter()
+                        .map(|(code, _)| code)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.reply(client, sender_id, &format!(
+                        "Unknown language: {code}. Available: {codes}"
+                    ));
+                }
+            }
             "stats" => {
                 let uptime = self.start_time.elapsed();
                 let hours = uptime.as_secs() / 3600;
@@ -682,7 +750,7 @@ impl CommandDispatcher {
                     let topic = args.trim().to_lowercase();
                     // Hide gated topics from non-admins: fall to "Unknown command".
                     if !is_admin
-                        && matches!(topic.as_str(), "q" | "quit" | "rs" | "restart" | "jc")
+                        && matches!(topic.as_str(), "q" | "quit" | "rs" | "restart" | "jc" | "glang")
                     {
                         self.reply(
                             client,
@@ -708,6 +776,8 @@ impl CommandDispatcher {
                         "link" | "url" => "link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.",
                         "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
+                        "lang" => "lang [code]\nShow available languages, or set your own.\nYour choice is remembered by username.\nExample: lang de",
+                        "glang" => "glang <code>\nSet the server default language (admin).\nUsers who picked their own language with lang keep it.",
                         "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
                         "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
                         "sp" | "spotify" | "yt" | "youtube" => HELP_SERVICE,
@@ -769,6 +839,7 @@ fn help_text(active: Service, is_admin: bool) -> String {
          Bot:\n\
          \x20 link         Get URL for current track\n\
          \x20 stats        Show bot uptime and session stats\n\
+         \x20 lang         Show or set your language\n\
          \x20 cn <name>    Change nickname\n\
          \x20 gender       Set bot gender\n\
          \x20 info         Bot info\n",
@@ -776,6 +847,7 @@ fn help_text(active: Service, is_admin: bool) -> String {
     if is_admin {
         out.push_str(
             "\x20 jc <path>    Join channel\n\
+             \x20 glang        Set the server default language\n\
              \x20 rs           Restart\n\
              \x20 q            Quit\n",
         );
@@ -878,6 +950,7 @@ mod tests {
         assert!(admin.contains("Join channel"), "admin help should list jc");
         assert!(admin.contains("Restart\n"), "admin help should list rs/Restart");
         assert!(admin.contains("Quit"), "admin help should list q/Quit");
+        assert!(admin.contains("glang"), "admin help should list glang");
 
         // Non-admins must not even see that those commands exist.
         let plain = help_text(Service::Spotify, false);
@@ -885,10 +958,12 @@ mod tests {
         assert!(!plain.contains("Join channel"), "non-admin help must hide jc");
         assert!(!plain.contains("Restart\n"), "non-admin help must hide rs");
         assert!(!plain.contains("Quit"), "non-admin help must hide q");
+        assert!(!plain.contains("glang"), "non-admin help must hide glang");
 
         // Non-gated Bot lines stay visible for everyone.
         assert!(plain.contains("Change nickname"), "cn stays visible");
         assert!(plain.contains("Bot info"), "info stays visible");
+        assert!(plain.contains("lang "), "lang stays visible for everyone");
     }
 
     // -- classify_input --
