@@ -42,6 +42,8 @@ pub enum SpotifyRef {
 /// - https://open.spotify.com/track/ID?si=...
 /// - https://open.spotify.com/album/ID
 /// - https://open.spotify.com/playlist/ID
+/// - https://open.spotify.com/intl-de/track/ID (localized share links)
+/// - https://open.spotify.com/embed/track/ID
 pub fn parse_spotify_ref(input: &str) -> Option<SpotifyRef> {
     let input = input.trim();
 
@@ -60,9 +62,14 @@ pub fn parse_spotify_ref(input: &str) -> Option<SpotifyRef> {
         }
     }
 
-    // URL format: https://open.spotify.com/type/id(?params)
+    // URL format: https://open.spotify.com/[intl-xx/][embed/]type/id(?params)
+    // Non-English Spotify clients emit a locale segment (intl-de, intl-pt-br),
+    // and share/embed widgets prefix `embed/`; both must be skipped.
     static SPOTIFY_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"https?://open\.spotify\.com/(track|album|playlist)/([a-zA-Z0-9]+)").unwrap()
+        Regex::new(
+            r"https?://open\.spotify\.com/(?:intl-[a-z0-9-]+/)?(?:embed/)?(track|album|playlist)/([a-zA-Z0-9]+)",
+        )
+        .unwrap()
     });
 
     if let Some(caps) = SPOTIFY_URL_RE.captures(input) {
@@ -240,6 +247,36 @@ mod tests {
     fn parse_url_playlist() {
         match parse_spotify_ref("https://open.spotify.com/playlist/PLAYLISTID") {
             Some(SpotifyRef::Playlist(id)) => assert_eq!(id, "PLAYLISTID"),
+            other => panic!("expected Playlist, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_url_intl_locale_prefix() {
+        // Share links copied from a non-English Spotify client carry a locale
+        // segment (intl-de, intl-pt-br) before the type.
+        match parse_spotify_ref("https://open.spotify.com/intl-de/track/abc123?si=x") {
+            Some(SpotifyRef::Track(id)) => assert_eq!(id, "abc123"),
+            other => panic!("expected Track, got {other:?}"),
+        }
+        match parse_spotify_ref("https://open.spotify.com/intl-pt-br/album/xyz789") {
+            Some(SpotifyRef::Album(id)) => assert_eq!(id, "xyz789"),
+            other => panic!("expected Album, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_url_embed_prefix() {
+        match parse_spotify_ref("https://open.spotify.com/embed/track/abc123") {
+            Some(SpotifyRef::Track(id)) => assert_eq!(id, "abc123"),
+            other => panic!("expected Track, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_url_intl_and_embed_combined() {
+        match parse_spotify_ref("https://open.spotify.com/intl-fr/embed/playlist/plid") {
+            Some(SpotifyRef::Playlist(id)) => assert_eq!(id, "plid"),
             other => panic!("expected Playlist, got {other:?}"),
         }
     }
