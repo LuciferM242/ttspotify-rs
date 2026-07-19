@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 #[cfg(windows)]
 pub mod gui;
+pub mod i18n;
 pub mod logging;
 pub mod player;
 #[cfg(target_os = "linux")]

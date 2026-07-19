@@ -1,0 +1,14 @@
+# ttspotify translation file
+# Translate the text after each "=". You can move {words in braces} anywhere in
+# your sentence, but don't rename them or invent new ones. Delete a line to leave
+# that message in English. Lines starting with # are notes and are ignored.
+# Save your translation as <code>.lang (for example de.lang) in the lang folder
+# next to your config, then pick it in the bot with: lang <code>
+
+# The name of this language, in this language. Shown when someone selects it.
+language_name = English
+
+# ===== Language =====
+
+# Confirmation after the lang command succeeds. {language} = the language just picked.
+lang_set = Language set to {language}
