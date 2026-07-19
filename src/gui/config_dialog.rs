@@ -107,6 +107,18 @@ pub fn open_config_dialog(
         &config.youtube_cookies_file,
     );
 
+    // Default reply language: embedded English plus any <config_dir>/lang/*.lang
+    // translation files the owner has installed.
+    let language_codes = crate::i18n::installed_language_codes(&config_dir());
+    let language_choices: Vec<&str> = language_codes.iter().map(String::as_str).collect();
+    let default_lang_input = add_combo_field(
+        &server_panel,
+        &server_sizer,
+        "Default Language:",
+        &language_choices,
+        &config.default_language,
+    );
+
     // ---- Admin controls ----
     let admin_mode_choice = add_choice_field(
         &server_panel,
@@ -254,6 +266,12 @@ pub fn open_config_dialog(
         cfg.license_key = if lk.is_empty() { None } else { Some(lk) };
         cfg.admin_mode = index_to_admin_mode(admin_mode_choice.get_selection().unwrap_or(3));
         cfg.admins = crate::bot::auth::parse_admin_list(&admin_users_input.get_value());
+        let default_lang = default_lang_input.get_value().trim().to_lowercase();
+        cfg.default_language = if default_lang.is_empty() {
+            "en".to_string()
+        } else {
+            default_lang
+        };
 
         // Audio tab
         cfg.spotify_quality = quality_input.get_value();

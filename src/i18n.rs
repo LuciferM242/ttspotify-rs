@@ -260,6 +260,29 @@ impl Catalog {
     }
 }
 
+/// Language codes available on disk plus embedded English, sorted. Used by the
+/// config editor and setup wizard, which need the list without loading a full
+/// catalog (the bot itself uses `I18n::load`).
+pub fn installed_language_codes(config_dir: &Path) -> Vec<String> {
+    let mut codes = vec![ENGLISH.to_string()];
+    if let Ok(entries) = std::fs::read_dir(config_dir.join("lang")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("lang") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                let code = stem.to_lowercase();
+                if !codes.contains(&code) {
+                    codes.push(code);
+                }
+            }
+        }
+    }
+    codes.sort();
+    codes
+}
+
 /// Per-user language picks, keyed by lowercased TeamTalk username. Stored as
 /// machine-written JSON (`<config_dir>/lang_prefs.json`) — unlike `.lang`
 /// files, this is never hand-edited.

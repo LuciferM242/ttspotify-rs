@@ -149,6 +149,21 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     };
 
     println!();
+    println!("Language");
+    let lang_codes = crate::i18n::installed_language_codes(&config_dir());
+    let default_language = match ask(
+        &format!("Default language [{}]", lang_codes.join("/")),
+        "en",
+        false,
+    ) {
+        Some(s) => {
+            let code = s.trim().to_lowercase();
+            if code.is_empty() { "en".to_string() } else { code }
+        }
+        None => return Ok(()),
+    };
+
+    println!();
     println!("License (optional)");
     let license_name = match ask("License name", "", false) {
         Some(v) => v,
@@ -201,6 +216,7 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     config.channel_password = channel_password;
     config.admin_mode = admin_mode;
     config.admins = admins;
+    config.default_language = default_language;
     if !license_name.is_empty() {
         config.license_name = Some(license_name);
     }
