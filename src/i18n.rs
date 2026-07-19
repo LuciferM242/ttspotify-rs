@@ -320,6 +320,16 @@ impl LangPrefs {
         self.save();
     }
 
+    /// Remove a user's pick (they go back to following the server default).
+    /// Returns whether a pick existed. Persists on change.
+    pub fn remove(&mut self, username: &str) -> bool {
+        let existed = self.map.remove(&username.to_lowercase()).is_some();
+        if existed {
+            self.save();
+        }
+        existed
+    }
+
     fn save(&self) {
         let json = match serde_json::to_string_pretty(&self.map) {
             Ok(json) => json,
@@ -505,6 +515,15 @@ impl I18n {
         let code = code.to_lowercase();
         self.prefs.lock().set(username, &code);
         self.session.lock().insert(user_id, code);
+    }
+
+    /// Drop a user's pick so they follow the server default again. Updates
+    /// their session immediately. Returns whether a pick existed.
+    pub fn clear_pref(&self, user_id: i32, username: &str) -> bool {
+        let existed = self.prefs.lock().remove(username);
+        let default = self.default_lang.lock().clone();
+        self.session.lock().insert(user_id, default);
+        existed
     }
 
     /// Change the server default (glang). Personal picks are untouched.
@@ -817,6 +836,26 @@ mod tests {
         let codes: Vec<String> = i18n.available().into_iter().map(|(c, _)| c).collect();
         assert_eq!(codes, vec!["de".to_string(), "en".to_string()]);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn runtime_clear_pref_removes_pick_and_follows_default() {
+        let dir = runtime_dir("clear");
+        {
+            let i18n = I18n::load(&dir, "en");
+            i18n.seed(1, "alice");
+            i18n.set_pref(1, "alice", "de");
+            assert_eq!(i18n.lang_of(1), "de");
+            // Clear: pick removed, session follows the server default at once.
+            assert!(i18n.clear_pref(1, "alice"));
+            assert_eq!(i18n.lang_of(1), "en");
+            assert!(!i18n.clear_pref(1, "alice")); // nothing left to remove
+        }
+        // The removal persisted: a fresh runtime no longer knows the pick.
+        let i18n = I18n::load(&dir, "en");
+        i18n.seed(7, "alice");
+        assert_eq!(i18n.lang_of(7), "en");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

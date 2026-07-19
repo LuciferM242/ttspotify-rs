@@ -663,7 +663,16 @@ impl CommandDispatcher {
                         .join("\n");
                     let current = self.i18n.lang_of(sender_id);
                     self.reply(client, sender_id, &format!(
-                        "Available languages:\n{listing}\nYour language: {current}\nUse: lang <code>"
+                        "Available languages:\n{listing}\nYour language: {current}\n\
+                         Use: lang <code>, or lang clear to follow the server default"
+                    ));
+                } else if code == "clear" {
+                    // Remove the personal pick from the prefs list: the user
+                    // follows the server default again (and future glang changes).
+                    self.i18n.clear_pref(sender_id, username);
+                    self.reply(client, sender_id, &format!(
+                        "Language preference cleared. You now follow the server default ({})",
+                        self.i18n.default_language()
                     ));
                 } else if self.i18n.is_available(&code) {
                     self.i18n.set_pref(sender_id, username, &code);
@@ -776,7 +785,7 @@ impl CommandDispatcher {
                         "link" | "url" => "link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.",
                         "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
                         "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
-                        "lang" => "lang [code]\nShow available languages, or set your own.\nYour choice is remembered by username.\nExample: lang de",
+                        "lang" => "lang [code]\nShow available languages, or set your own.\nYour choice is remembered by username.\nlang clear removes your choice (follow the server default).\nExample: lang de",
                         "glang" => "glang <code>\nSet the server default language (admin).\nUsers who picked their own language with lang keep it.",
                         "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
                         "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
