@@ -23,11 +23,16 @@
   only your TeamTalk server admins can use `q`, `rs`, and `jc`. If you ran the
   bot from a non-admin account and relied on those over private message, add
   your username to the admin list (or switch to "Everyone") after upgrading.
+- After a successful update, newly added settings are written into your existing
+  config files automatically, so you no longer have to start each bot for them
+  to appear.
 - Headless Spotify login now warns that the browser's "site can't be reached"
   page after authorizing is expected, so remote/VPS users no longer mistake it
   for a failure and know to copy the address-bar URL back to the bot.
 
 ### Fixed
+- Empty or invalid `.json` files in the config folder are no longer mistaken for
+  bot configs; only files with a real host and username are loaded.
 - Linux: `--install-service` on systems without systemd (Alpine, Void, etc.)
   no longer writes a dead unit file and claims success; it now explains that
   systemd is required and points to running the binary directly or via another
