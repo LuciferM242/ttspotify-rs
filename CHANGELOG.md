@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.1] - 2026-07-19
 ### Fixed
 - Linux: a bot running as a systemd service no longer crashes (and gets
   restarted over and over, appearing to log in and out of the TeamTalk server
