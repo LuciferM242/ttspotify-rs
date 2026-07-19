@@ -173,8 +173,9 @@ them.
 
 ## Languages
 
-Bot replies can be translated. English is built in; other languages are plain
-text files you drop into the `lang` folder next to your config
+Bot replies can be translated. English, Spanish, Portuguese, and Russian are
+built in; add other languages (or adjust the built-in ones) with plain text
+files you drop into the `lang` folder next to your config
 (`data/lang/` on Windows, `~/.config/ttspotify/lang/` on Linux).
 
 To translate:

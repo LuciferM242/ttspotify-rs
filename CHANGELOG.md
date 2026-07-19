@@ -2,12 +2,14 @@
 
 ## [Unreleased]
 ### Added
-- Translations: the bot's replies can now be shown in other languages. Drop a
-  `<code>.lang` file (a simple text file: copy the built-in English template and
-  translate line by line) into the `lang` folder next to your config. Users pick
-  their own language with `lang <code>` (remembered by username); admins set the
-  server default with `glang <code>`. Anything not translated falls back to
-  English, so partial translations are fine. Help text stays English for now.
+- Translations: the bot's replies can now be shown in other languages. Spanish,
+  Portuguese, and Russian are built in; add or adjust any language by dropping a
+  `<code>.lang` file (a simple text file: copy the `lang/en.lang` template the
+  bot writes on startup and translate line by line) into the `lang` folder next
+  to your config. Users pick their own language with `lang <code>` (remembered
+  by username, `lang clear` to reset); admins set the server default with
+  `glang <code>`. Anything not translated falls back to English, so partial
+  translations are fine. Help text stays English for now.
 - A "Default Language" option in the config editor and setup wizard.
 - Admin permissions: the `q` (quit), `rs` (restart), and `jc` (join channel)
   commands can now be limited to admins. Pick who counts as an admin in the
