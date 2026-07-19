@@ -153,7 +153,9 @@ impl SpotifyAuth {
         println!("Spotify Authentication");
         if self.headless {
             println!("Open the URL below in a browser and authorize the app.");
-            println!("After authorizing, copy the URL from the address bar and paste it below.");
+            println!("The page will then show an error like 'This site can't be reached'");
+            println!("or 'site not found' -- THIS IS NORMAL. Do not close it.");
+            println!("Copy the full URL from the browser's address bar and paste it below.");
         } else {
             println!("A browser window will open. Log in to Spotify and authorize the app.");
             println!("If no browser opens, visit the URL printed below.");
