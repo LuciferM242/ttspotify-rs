@@ -86,6 +86,20 @@ pub fn list_configs() -> Vec<(String, PathBuf)> {
     configs
 }
 
+/// How the bot decides who may run admin-gated commands.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AdminMode {
+    /// No gating; every user may run every command (opt-out / legacy behavior).
+    Everyone,
+    /// Only TeamTalk server admins (account marked admin on the server).
+    TtRights,
+    /// Only usernames in the `admins` list.
+    List,
+    /// A TeamTalk server admin OR a username in the `admins` list.
+    #[default]
+    Both,
+}
+
 fn default_radio_delay() -> f32 { 10.0 }
 fn default_norm_type() -> String { "auto".to_string() }
 fn default_norm_method() -> String { "dynamic".to_string() }
@@ -115,6 +129,10 @@ pub struct BotConfig {
     pub channel_password: String,
     #[serde(rename = "botGender")]
     pub bot_gender: String,
+    #[serde(default, rename = "adminMode")]
+    pub admin_mode: AdminMode,
+    #[serde(default)]
+    pub admins: Vec<String>,
 
     // TeamTalk license (optional, overridden by compile-time TT_LICENSE_NAME/TT_LICENSE_KEY)
     #[serde(default, rename = "licenseName", skip_serializing_if = "Option::is_none")]
@@ -192,6 +210,8 @@ impl Default for BotConfig {
             channel_name: "/".to_string(),
             channel_password: String::new(),
             bot_gender: "neutral".to_string(),
+            admin_mode: AdminMode::default(),
+            admins: Vec::new(),
             license_name: None,
             license_key: None,
 
@@ -579,6 +599,31 @@ mod tests {
         assert_eq!(reloaded.volume, 42);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn admin_mode_defaults_to_both_when_absent() {
+        // A config JSON missing the admin fields must load with safe defaults.
+        let json = r#"{
+            "host": "localhost", "tcpPort": 10333, "udpPort": 10333,
+            "botName": "Spotify", "username": "", "password": "",
+            "ChannelName": "/", "ChannelPassword": "", "botGender": "neutral",
+            "spotifyQuality": "VERY_HIGH", "spotifyEnableNormalization": true
+        }"#;
+        let cfg: BotConfig = serde_json::from_str(json).expect("config should deserialize");
+        assert_eq!(cfg.admin_mode, AdminMode::Both);
+        assert!(cfg.admins.is_empty());
+    }
+
+    #[test]
+    fn admin_mode_round_trips() {
+        let mut cfg = BotConfig::default();
+        cfg.admin_mode = AdminMode::List;
+        cfg.admins = vec!["alice".to_string(), "bob".to_string()];
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: BotConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.admin_mode, AdminMode::List);
+        assert_eq!(back.admins, vec!["alice".to_string(), "bob".to_string()]);
     }
 
     #[test]
