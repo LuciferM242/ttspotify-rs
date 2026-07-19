@@ -126,6 +126,29 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     };
 
     println!();
+    println!("Admin Permissions");
+    let admin_mode = match ask("Admin mode [everyone/ttrights/list/both]", "both", false) {
+        Some(s) => match s.trim().to_lowercase().as_str() {
+            "everyone" => crate::config::AdminMode::Everyone,
+            "ttrights" => crate::config::AdminMode::TtRights,
+            "list" => crate::config::AdminMode::List,
+            _ => crate::config::AdminMode::Both,
+        },
+        None => return Ok(()),
+    };
+    let admins = if matches!(
+        admin_mode,
+        crate::config::AdminMode::List | crate::config::AdminMode::Both
+    ) {
+        match ask("Admin usernames (comma separated)", "", false) {
+            Some(s) => crate::bot::auth::parse_admin_list(&s),
+            None => return Ok(()),
+        }
+    } else {
+        Vec::new()
+    };
+
+    println!();
     println!("License (optional)");
     let license_name = match ask("License name", "", false) {
         Some(v) => v,
@@ -176,6 +199,8 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
     config.bot_name = bot_name;
     config.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
     config.channel_password = channel_password;
+    config.admin_mode = admin_mode;
+    config.admins = admins;
     if !license_name.is_empty() {
         config.license_name = Some(license_name);
     }
