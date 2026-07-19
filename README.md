@@ -51,25 +51,45 @@ SDK links against (without it the bot fails with `Init failed`):
 sudo apt install -y libpulse0
 ```
 
-Extract the archive and put the binary on your `PATH`:
+Extract the archive:
 
 ```bash
 tar -xzf tt-spotify-bot-linux-x86_64.tar.gz
+```
+
+Put the binary on your `PATH`:
+
+```bash
 sudo install -m755 tt-spotify-bot /usr/local/bin/ttspotify
 ```
 
 Run it — on first launch (no config yet) it walks you through the **setup wizard**, then connects:
 
 ```bash
-ttspotify                      # first run: launches the setup wizard
-ttspotify --setup-yt           # install YouTube tools (yt-dlp, bgutil-pot)
-ttspotify --update-tools       # update the YouTube tools later
+ttspotify
 ```
 
-Optional systemd service:
+To install the YouTube tools (yt-dlp, bgutil-pot):
+
+```bash
+ttspotify --setup-yt
+```
+
+To update the YouTube tools later:
+
+```bash
+ttspotify --update-tools
+```
+
+Optional systemd service — install it once:
 
 ```bash
 ttspotify --install-service
+```
+
+then enable an instance per config:
+
+```bash
 systemctl --user enable --now ttspotify@myserver
 ```
 
@@ -81,7 +101,13 @@ supported. Same steps as x86_64, using the aarch64 archive:
 
 ```bash
 sudo apt install -y libpulse0
+```
+
+```bash
 tar -xzf tt-spotify-bot-linux-aarch64.tar.gz
+```
+
+```bash
 sudo install -m755 tt-spotify-bot /usr/local/bin/ttspotify
 ```
 
@@ -98,6 +124,9 @@ Multiple instances are supported out of the box — one per config file, each wi
 
 ```bash
 systemctl --user enable --now ttspotify@server1
+```
+
+```bash
 systemctl --user enable --now ttspotify@server2
 ```
 
@@ -124,6 +153,43 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 | `spotifyMaxVolume` | volume cap, 0–100 |
 | `defaultService` | `Spotify` or `YouTube` on startup |
 | `youtubeCookiesFile` | path to your YouTube `cookies.txt` (optional) |
+| `adminMode` | who may use admin commands: `Everyone`, `TtRights`, `List`, or `Both` (default) |
+| `admins` | usernames treated as admins (used by `List` / `Both`) |
+| `defaultLanguage` | language code for bot replies, e.g. `en` (default) or `pt` |
+
+## Admin permissions
+
+The `q` (quit), `rs` (restart), `jc` (join channel), and `glang` (default
+language) commands can be limited to admins. Pick who counts as an admin in the
+config editor (Windows) or setup wizard (Linux):
+
+- **Everyone** — no restrictions; any user can run every command.
+- **TeamTalk server admins** — accounts your TeamTalk server marks as admin.
+- **Username list** — only the usernames you list in `admins`.
+- **Both** (default) — a server admin *or* a listed username.
+
+Non-admins don't see the admin commands in help and get no response if they try
+them.
+
+## Languages
+
+Bot replies can be translated. English is built in; other languages are plain
+text files you drop into the `lang` folder next to your config
+(`data/lang/` on Windows, `~/.config/ttspotify/lang/` on Linux).
+
+To translate:
+
+1. Start the bot once — it writes `lang/en.lang`, the commented English
+   template.
+2. Copy it, translate the text after each `=`, and save as `<code>.lang`
+   (for example `pt.lang`). You can move the `{words in braces}` anywhere in
+   your sentence, but don't rename them. Skip or delete any line to leave that
+   message in English — partial translations are fine.
+3. Restart the bot. The startup log shows how many messages each file covers.
+
+Users pick their own language with `lang <code>` (remembered by username);
+`lang clear` goes back to the server default. Admins set the server-wide
+default with `glang <code>`. Help text is currently English only.
 
 ## Commands
 
@@ -146,16 +212,24 @@ Send these to the bot in a **private message** — it only responds to PMs, not 
 | `sf [N]` / `sb [N]` | Seek forward / backward N seconds (default 10) |
 | `search <query>` | Search, then type a number to pick (`a` to cancel) |
 | `radio [on\|off]` | Toggle Spotify recommendations (Spotify only) |
+| `liked` | Play your Spotify Liked Songs (alias: `fav`, Spotify only) |
 | `sp` / `yt` | Switch between Spotify and YouTube |
 | `link` | URL of the current track |
-| `jc <path>` | Join a channel |
+| `lang [code]` | Show available languages, or set yours (`lang clear` to reset) |
 | `cn <name>` | Change the bot's nickname |
 | `gender` | Set the bot's gender |
 | `stats` | Session stats |
 | `info` | Bot info |
+| `h` / `h <command>` | Help, or detailed help for one command |
+
+Admin-only (see [Admin permissions](#admin-permissions)):
+
+| Command | Description |
+|---|---|
+| `jc <path>` | Join a channel |
+| `glang <code>` | Set the server default language |
 | `rs` | Restart the bot |
 | `q` | Quit the bot |
-| `h` / `h <command>` | Help, or detailed help for one command |
 
 ## Building from source
 
@@ -165,18 +239,30 @@ workload, plus CMake, Ninja, and LLVM.
 
 On Windows you must install the [Visual Studio C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 yourself first (the script only checks for them). The helper scripts install the
-rest — Rust, CMake, Ninja, and LLVM:
+rest — Rust, CMake, Ninja, and LLVM.
+
+Linux (x86_64 and aarch64):
 
 ```bash
-./scripts/setup.sh                                  # Linux (x86_64 and aarch64)
-powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows
+./scripts/setup.sh
 ```
 
-Then:
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+Then build the binary for your platform:
 
 ```bash
-cargo build --release        # builds the binary for your platform
-cargo test --lib             # run the unit tests
+cargo build --release
+```
+
+and run the unit tests:
+
+```bash
+cargo test --lib
 ```
 
 The TeamTalk SDK and YouTube tools are fetched at runtime — nothing proprietary is bundled or committed.
