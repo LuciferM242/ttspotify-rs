@@ -112,6 +112,41 @@ fn list_configs_in(dir: &Path) -> Vec<(String, PathBuf)> {
     configs
 }
 
+/// After an update, add any newly-added keys (with defaults) to every real config
+/// in `dir`, preserving existing values. Idempotent: only rewrites a file whose
+/// serialized form differs from what is on disk. Broken/incomplete files (rejected
+/// by `load_valid_config`) are left untouched. Returns the number of files rewritten.
+fn top_up_configs_in(dir: &Path) -> usize {
+    let mut updated = 0;
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(cfg) = load_valid_config(&path) else { continue };
+        let Ok(current) = std::fs::read_to_string(&path) else { continue };
+        let Ok(canonical) = serde_json::to_string_pretty(&cfg) else { continue };
+        if current.trim() == canonical.trim() {
+            continue;
+        }
+        match cfg.save(&path) {
+            Ok(()) => {
+                updated += 1;
+                tracing::info!("Topped up config with new keys: {}", path.display());
+            }
+            Err(e) => tracing::warn!("Could not top up config {}: {e}", path.display()),
+        }
+    }
+    updated
+}
+
+/// Top up every config in the default config dir with any newly-added keys.
+/// Best-effort; per-file errors are logged and skipped, never propagated.
+pub fn top_up_configs() {
+    let _ = top_up_configs_in(&config_dir());
+}
+
 /// How the bot decides who may run admin-gated commands.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AdminMode {
@@ -673,6 +708,39 @@ mod tests {
 
         let listed: Vec<String> = list_configs_in(p).into_iter().map(|(name, _)| name).collect();
         assert_eq!(listed, vec!["good".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn top_up_adds_missing_keys_and_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_topup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.as_path();
+        // A valid config written WITHOUT the admin keys (simulating a pre-update file).
+        let path = p.join("srv.json");
+        std::fs::write(&path, r#"{"host":"h","username":"u"}"#).unwrap();
+        // Junk that must be left untouched.
+        let junk = p.join("junk.json");
+        std::fs::write(&junk, "garbage").unwrap();
+        let junk_before = std::fs::read_to_string(&junk).unwrap();
+
+        // First pass tops up the valid config.
+        assert_eq!(top_up_configs_in(p), 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("adminMode"));
+        assert!(text.contains("admins"));
+        // Existing values preserved.
+        let cfg: BotConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(cfg.host, "h");
+        assert_eq!(cfg.username, "u");
+        assert_eq!(cfg.admin_mode, AdminMode::Both);
+
+        // Second pass is a no-op (idempotent).
+        assert_eq!(top_up_configs_in(p), 0);
+        // Junk untouched.
+        assert_eq!(std::fs::read_to_string(&junk).unwrap(), junk_before);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

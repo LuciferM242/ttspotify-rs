@@ -135,6 +135,11 @@ pub async fn download_and_apply(
     }
     self_replace::self_replace(&tmp).map_err(|e| UpdateError::Io(e.to_string()))?;
     let _ = std::fs::remove_file(&tmp);
+
+    // Post-update: stamp any newly-added config keys into every config on disk,
+    // so they are present without having to run each bot. Best-effort; a top-up
+    // problem must never fail an otherwise-successful update.
+    crate::config::top_up_configs();
     Ok(())
 }
 
