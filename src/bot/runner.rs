@@ -212,8 +212,15 @@ pub async fn run_bot(
         }
     };
 
-    let (player, event_rx) = SpotifyPlayer::new(session.clone(), &config, audio_tx.clone());
-    let metadata = SpotifyMetadata::new(session.clone());
+    // Wrap the (possibly-connected) session in a shared holder so the recovery
+    // routine can swap in a freshly-rebuilt session after a session death. The
+    // player is rebuilt on recovery; the metadata client reads the holder live.
+    let session_holder = Arc::new(parking_lot::Mutex::new(session));
+    let (player, event_rx) = {
+        let s = session_holder.lock().clone();
+        SpotifyPlayer::new(s, &config, audio_tx.clone())
+    };
+    let metadata = SpotifyMetadata::new(session_holder.clone());
     let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new(&config)?);
     let youtube_player = crate::youtube::player::YouTubePlayer::new(
         audio_tx,
@@ -248,7 +255,7 @@ pub async fn run_bot(
         metadata,
         youtube_metadata,
         youtube_player,
-        session,
+        session: session_holder.clone(),
         auth,
         spotify_connected,
         state: state.clone(),
@@ -580,7 +587,7 @@ struct CmdContext {
     metadata: SpotifyMetadata,
     youtube_metadata: Arc<crate::youtube::metadata::YouTubeMetadata>,
     youtube_player: crate::youtube::player::YouTubePlayer,
-    session: librespot_core::session::Session,
+    session: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
     auth: crate::spotify::auth::SpotifyAuth,
     spotify_connected: bool,
     state: SharedState,
@@ -644,7 +651,8 @@ async fn command_processor(
         ($expr:expr) => {{
             let result = $expr.await;
             if result.is_err() {
-                if try_reconnect_session(&session).await {
+                let s = session.lock().clone();
+                if try_reconnect_session(&s).await {
                     $expr.await
                 } else {
                     result
@@ -679,7 +687,10 @@ async fn command_processor(
                 Ok(())
             } else {
                 send_event(RunnerEvent::Authenticating);
-                let r = auth.connect_existing(&session).await;
+                // Snapshot the session out of the holder (drop the lock before
+                // awaiting; never hold a parking_lot guard across an await).
+                let s = session.lock().clone();
+                let r = auth.connect_existing(&s).await;
                 if r.is_ok() {
                     spotify_connected = true;
                 }

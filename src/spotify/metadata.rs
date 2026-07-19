@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use librespot_core::session::Session;
 use librespot_core::spotify_uri::SpotifyUri;
 use librespot_metadata::Metadata;
+use parking_lot::Mutex;
 
 use crate::error::BotError;
 use crate::spotify::types::{SpotifyRef, SpotifyTrack, parse_spotify_ref};
@@ -19,14 +22,25 @@ pub struct ResolvedTracks {
 /// before handing the rest to the background loader.
 pub const BULK_FIRST_BATCH: usize = 50;
 
+/// Metadata client sharing the runner's swappable session holder.
+///
+/// The session lives behind a shared `Arc<Mutex<Session>>` (the same holder the
+/// recovery routine swaps on a session rebuild), so after a recovery every
+/// metadata call transparently uses the new session — no reconstruction needed.
+/// Cloning shares the holder.
 #[derive(Clone)]
 pub struct SpotifyMetadata {
-    session: Session,
+    session: Arc<Mutex<Session>>,
 }
 
 impl SpotifyMetadata {
-    pub fn new(session: Session) -> Self {
+    pub fn new(session: Arc<Mutex<Session>>) -> Self {
         Self { session }
+    }
+
+    /// Snapshot the current session (cheap `Arc`-backed clone) for a request.
+    fn session(&self) -> Session {
+        self.session.lock().clone()
     }
 
     // ---- helpers ----
@@ -45,7 +59,7 @@ impl SpotifyMetadata {
 
     /// Fetch a Track from Spotify and convert to SpotifyTrack.
     async fn fetch_track(&self, uri: &SpotifyUri) -> Result<SpotifyTrack, BotError> {
-        let track = librespot_metadata::Track::get(&self.session, uri).await
+        let track = librespot_metadata::Track::get(&self.session(), uri).await
             .map_err(|e| BotError::Playback(format!("Failed to fetch track metadata: {e}")))?;
         Ok(Self::track_to_spotify(&track, uri))
     }
@@ -59,7 +73,7 @@ impl SpotifyMetadata {
 
     /// Fetch all tracks from an album via librespot-metadata.
     pub async fn get_album_tracks_meta(&self, uri: &SpotifyUri) -> Result<Vec<SpotifyTrack>, BotError> {
-        let album = librespot_metadata::Album::get(&self.session, uri).await
+        let album = librespot_metadata::Album::get(&self.session(), uri).await
             .map_err(|e| BotError::Playback(format!("Failed to fetch album metadata: {e}")))?;
 
         let album_name = album.name.clone();
@@ -92,7 +106,7 @@ impl SpotifyMetadata {
 
     /// All track URIs of a playlist (metadata is fetched in batches later).
     pub async fn get_playlist_track_uris(&self, uri: &SpotifyUri) -> Result<Vec<SpotifyUri>, BotError> {
-        let playlist = librespot_metadata::Playlist::get(&self.session, uri).await
+        let playlist = librespot_metadata::Playlist::get(&self.session(), uri).await
             .map_err(|e| BotError::Playback(format!("Failed to fetch playlist metadata: {e}")))?;
         Ok(playlist.tracks().cloned().collect())
     }
@@ -100,8 +114,8 @@ impl SpotifyMetadata {
     /// URIs of the user's Liked Songs, newest first, via the same spclient
     /// context endpoint Connect devices use for `spotify:user:<id>:collection`.
     pub async fn get_liked_track_uris(&self) -> Result<Vec<SpotifyUri>, BotError> {
-        let ctx_uri = format!("spotify:user:{}:collection", self.session.username());
-        let ctx = self.session.spclient().get_context(&ctx_uri).await
+        let ctx_uri = format!("spotify:user:{}:collection", self.session().username());
+        let ctx = self.session().spclient().get_context(&ctx_uri).await
             .map_err(|e| BotError::Playback(format!("Liked songs fetch failed: {e}")))?;
 
         let mut uris = Vec::new();
@@ -146,7 +160,7 @@ impl SpotifyMetadata {
         let uri_str = seed_track_uri.to_uri()
             .map_err(|e| BotError::Playback(format!("Invalid seed URI: {e}")))?;
 
-        let response = self.session.spclient()
+        let response = self.session().spclient()
             .get_apollo_station("stations", &uri_str, Some(limit), vec![], true)
             .await
             .map_err(|e| BotError::Playback(format!("Radio fetch failed: {e}")))?;
@@ -195,7 +209,7 @@ impl SpotifyMetadata {
     /// Search tracks via Spotify's internal spclient (no Web API token needed).
     pub async fn search_tracks(&self, query: &str, limit: u8) -> Result<Vec<SpotifyTrack>, BotError> {
         let search_uri = search_context_uri(query);
-        let ctx = self.session.spclient().get_context(&search_uri).await
+        let ctx = self.session().spclient().get_context(&search_uri).await
             .map_err(|e| BotError::Playback(format!("Search failed: {e}")))?;
 
         let mut tracks = Vec::new();
