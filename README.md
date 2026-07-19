@@ -126,9 +126,10 @@ Multiple instances are supported out of the box — one per config file, each wi
 ttspotify --setup server1
 ```
 
-If the systemd service is installed, the wizard ends by offering to enable and
-start `ttspotify@server1` for you — say yes and the bot is up. You can also
-manage instances yourself at any time, one per config:
+On systemd systems the wizard ends by offering to enable and start
+`ttspotify@server1` for you — say yes and the bot is up (if the service isn't
+installed yet, it offers to install it first). You can also manage instances
+yourself at any time, one per config:
 
 ```bash
 systemctl --user enable --now ttspotify@server1

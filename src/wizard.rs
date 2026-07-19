@@ -51,7 +51,15 @@ fn ask_int(prompt: &str, default: i32) -> Option<i32> {
 }
 
 #[allow(clippy::field_reassign_with_default)] // building config field-by-field from wizard input reads clearer
-pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
+/// Run the interactive setup wizard.
+///
+/// `offer_service` should be true only for the standalone `--setup` flow.
+/// The first-run wizard inside `BotConfig::load` must pass false: that path
+/// continues into running the bot in the foreground, and starting a systemd
+/// instance there too would run the same config twice.
+pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), BotError> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = offer_service;
     println!();
     println!("TTSpotify Configuration Setup");
     println!();
@@ -302,14 +310,34 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
         }
     }
 
-    // If the systemd service is installed, offer to bring this bot up right
-    // away — otherwise adding a server ends with the config on disk but
-    // nothing running until the user remembers the systemctl command.
+    // Offer systemd wiring so adding a server doesn't end with a config on
+    // disk but nothing running. Only in the standalone --setup flow (see
+    // `offer_service`), and only when actually booted under systemd — OpenRC/
+    // runit/s6 users just get the run-it-directly hint below.
     #[cfg(target_os = "linux")]
-    if crate::service::service_installed() {
+    if offer_service && crate::service::systemd_booted() {
         println!();
         println!("Systemd Service");
-        crate::service::offer_enable_instance(&name);
+        if crate::service::service_installed() {
+            crate::service::offer_enable_instance(&name);
+        } else {
+            let install = ask(
+                "Systemd service not installed. Install it now? (y/N)",
+                "n",
+                false,
+            );
+            if matches!(
+                install.as_deref(),
+                Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
+            ) {
+                // install_service prints its own guidance and offers to
+                // enable/start every config, including the one just created.
+                if let Err(e) = crate::service::install_service() {
+                    println!("  Service install failed: {e}");
+                    println!("  You can retry later with: tt-spotify-bot --install-service");
+                }
+            }
+        }
     }
 
     println!();

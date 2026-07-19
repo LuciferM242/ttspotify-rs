@@ -341,7 +341,10 @@ impl BotConfig {
             if std::io::stdin().read_line(&mut input).is_ok()
                 && matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
             {
-                crate::wizard::run_wizard(None)?;
+                // offer_service = false: this path continues into running the
+                // bot in the foreground; also starting a systemd instance
+                // would run the same config twice.
+                crate::wizard::run_wizard(None, false)?;
                 // Re-check if a config was created in the default config dir
                 let configs = list_configs();
                 if let Some((_, created_path)) = configs.first() {

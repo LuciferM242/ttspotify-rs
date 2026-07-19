@@ -19,6 +19,12 @@ fn systemd_dir() -> PathBuf {
 
 const SERVICE_NAME: &str = "ttspotify@.service";
 
+/// True when the system was booted under systemd (the same check
+/// `sd_booted()` performs). Without it `systemctl` is absent.
+pub fn systemd_booted() -> bool {
+    std::path::Path::new("/run/systemd/system").exists()
+}
+
 /// True if the ttspotify@ systemd user unit file is installed.
 pub fn service_installed() -> bool {
     systemd_dir().join(SERVICE_NAME).exists()
@@ -76,10 +82,9 @@ fn prompt_yes_no(message: &str) -> bool {
 }
 
 pub fn install_service() -> Result<(), BotError> {
-    // `/run/systemd/system` exists only when booted under systemd (this is what
-    // sd_booted() checks). Without it, `systemctl` is absent and installing a
-    // unit file would print a false success, so bail with real alternatives.
-    if !std::path::Path::new("/run/systemd/system").exists() {
+    // Without systemd, `systemctl` is absent and installing a unit file would
+    // print a false success, so bail with real alternatives.
+    if !systemd_booted() {
         println!("systemd not detected. This installer needs systemd.");
         println!("Run the binary directly, or supervise it with your");
         println!("init system (OpenRC, runit, s6).");
