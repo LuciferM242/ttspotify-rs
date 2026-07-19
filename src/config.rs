@@ -118,12 +118,11 @@ fn list_configs_in(dir: &Path) -> Vec<(String, PathBuf)> {
 /// by `load_valid_config`) are left untouched. Returns the number of files rewritten.
 fn top_up_configs_in(dir: &Path) -> usize {
     let mut updated = 0;
-    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
+    // Only ever touch files that `list_configs_in` deems real bot configs: this
+    // applies the name skip-list (credentials/settings/cookies/sessions) AND the
+    // host+username validation, so an auth/session artifact that happens to carry
+    // a "host"/"username" key is never misparsed as a config and overwritten.
+    for (_name, path) in list_configs_in(dir) {
         let Some(cfg) = load_valid_config(&path) else { continue };
         let Ok(current) = std::fs::read_to_string(&path) else { continue };
         let Ok(canonical) = serde_json::to_string_pretty(&cfg) else { continue };
@@ -741,6 +740,32 @@ mod tests {
         assert_eq!(top_up_configs_in(p), 0);
         // Junk untouched.
         assert_eq!(std::fs::read_to_string(&junk).unwrap(), junk_before);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn top_up_never_touches_skip_listed_files() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_topupskip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.as_path();
+        // A skip-listed auth artifact that happens to carry host+username (plus a
+        // real credential key). It must NEVER be parsed as a config and rewritten,
+        // or the credential key would be silently dropped.
+        let cred = p.join("credentials.json");
+        std::fs::write(&cred, r#"{"host":"h","username":"u","refresh_token":"secret"}"#).unwrap();
+        let cred_before = std::fs::read_to_string(&cred).unwrap();
+        // settings.json likewise must be left alone.
+        let settings = p.join("settings.json");
+        std::fs::write(&settings, r#"{"host":"h","username":"u","check_updates_on_startup":true}"#).unwrap();
+        let settings_before = std::fs::read_to_string(&settings).unwrap();
+
+        let updated = top_up_configs_in(p);
+
+        assert_eq!(updated, 0, "no bot configs present, nothing should be rewritten");
+        assert_eq!(std::fs::read_to_string(&cred).unwrap(), cred_before, "credentials.json must be untouched");
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), settings_before, "settings.json must be untouched");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
