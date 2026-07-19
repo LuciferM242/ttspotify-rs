@@ -131,7 +131,7 @@ pub fn open_config_dialog(
     let list_uses_names = |idx: u32| idx == 2 || idx == 3; // List or Both
     admin_users_input.enable(list_uses_names(admin_mode_to_index(config.admin_mode)));
     admin_mode_choice.on_selection_changed(move |_| {
-        let idx = admin_mode_choice.get_selection().unwrap_or(0);
+        let idx = admin_mode_choice.get_selection().unwrap_or(3);
         admin_users_input.enable(list_uses_names(idx));
     });
 

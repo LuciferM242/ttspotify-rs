@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 ### Added
+- Admin permissions: the `q` (quit), `rs` (restart), and `jc` (join channel)
+  commands can now be limited to admins. Pick who counts as an admin in the
+  config editor or the setup wizard: everyone, your TeamTalk server's admins, a
+  username list, or both. Non-admins don't see these commands in help and get no
+  response if they try them.
 - New `liked` command (alias `fav`): queues your Spotify Liked Songs.
 - Big playlists and Liked Songs now start playing after the first 50 tracks;
   the rest load quietly in the background instead of making you wait.
@@ -14,6 +19,10 @@
   asks when lingering isn't already on.
 
 ### Changed
+- Admin commands default to "Both" mode: on a fresh config or after upgrading,
+  only your TeamTalk server admins can use `q`, `rs`, and `jc`. If you ran the
+  bot from a non-admin account and relied on those over private message, add
+  your username to the admin list (or switch to "Everyone") after upgrading.
 - Headless Spotify login now warns that the browser's "site can't be reached"
   page after authorizing is expected, so remote/VPS users no longer mistake it
   for a failure and know to copy the address-bar URL back to the bot.
