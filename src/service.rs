@@ -19,6 +19,32 @@ fn systemd_dir() -> PathBuf {
 
 const SERVICE_NAME: &str = "ttspotify@.service";
 
+/// Current login name, for loginctl calls. Prefers $USER, falls back to `id -un`.
+fn current_user() -> String {
+    if let Ok(u) = std::env::var("USER") {
+        if !u.is_empty() {
+            return u;
+        }
+    }
+    Command::new("id")
+        .arg("-un")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether systemd lingering is enabled for `user`. Lingering keeps the user's
+/// systemd instance (and thus `--user` services) running after logout; without
+/// it a headless bot dies when the operator disconnects.
+fn linger_enabled(user: &str) -> bool {
+    Command::new("loginctl")
+        .args(["show-user", user, "--property=Linger"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Linger=yes")
+        .unwrap_or(false)
+}
+
 fn prompt_yes_no(message: &str) -> bool {
     print!("{message} [y/N] ");
     io::stdout().flush().ok();
@@ -30,6 +56,16 @@ fn prompt_yes_no(message: &str) -> bool {
 }
 
 pub fn install_service() -> Result<(), BotError> {
+    // `/run/systemd/system` exists only when booted under systemd (this is what
+    // sd_booted() checks). Without it, `systemctl` is absent and installing a
+    // unit file would print a false success, so bail with real alternatives.
+    if !std::path::Path::new("/run/systemd/system").exists() {
+        println!("systemd not detected. This installer needs systemd.");
+        println!("Run the binary directly, or supervise it with your");
+        println!("init system (OpenRC, runit, s6).");
+        return Ok(());
+    }
+
     let exe_path = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("Cannot determine executable path: {e}")))?;
     let config_base = config_dir();
@@ -81,6 +117,30 @@ WantedBy=default.target
     println!("  systemctl --user start ttspotify@myserver");
     println!("  systemctl --user enable ttspotify@myserver");
     println!("  journalctl --user -u ttspotify@myserver -f");
+
+    // Ensure the user's systemd instance survives logout before we start
+    // anything: `--user` services stop when the last session ends unless
+    // lingering is on, which would silently kill a headless bot after the
+    // operator disconnects. Only prompt when it isn't already enabled.
+    let user = current_user();
+    if !user.is_empty() && !linger_enabled(&user) {
+        println!();
+        println!("Lingering is off, so the bot would stop when you log out.");
+        if prompt_yes_no("Enable linger so it keeps running after logout?") {
+            let ok = Command::new("loginctl")
+                .args(["enable-linger", &user])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                println!("Linger enabled.");
+            } else {
+                println!("Could not enable linger. Run manually: loginctl enable-linger {user}");
+            }
+        } else {
+            println!("Skipped. Enable later with: loginctl enable-linger {user}");
+        }
+    }
 
     // Offer to enable/start existing configs
     let configs = list_configs();
