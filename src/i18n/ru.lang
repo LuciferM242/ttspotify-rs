@@ -1,0 +1,98 @@
+# ttspotify - Russian translation (complete)
+# Polnyi russkii perevod. Slova v {figurnykh skobkakh} ne menyaite;
+# ikh mozhno peremeshchat v lyuboe mesto frazy.
+
+language_name = Русский
+
+# Язык
+
+lang_set = Язык установлен: {language}
+
+# Воспроизведение
+
+searching = Поиск...
+loading_track = Загрузка трека...
+resuming = воспроизведение
+paused = Пауза
+nothing_to_play = Нечего воспроизводить. Используйте: p <запрос>
+restarting_track = Трек начат заново
+loading_liked = Загрузка любимых треков...
+nothing_playing = Ничего не играет
+current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
+search_cancelled = Поиск отменён
+
+# Громкость и перемотка
+
+volume_set = Громкость: {percent}%
+volume_show = Громкость: {percent}% (макс: {max})
+volume_range = Громкость должна быть 0-{max}. Получено: {got}
+seek_forward = Перемотка вперёд на {seconds} с
+seek_backward = Перемотка назад на {seconds} с
+seek_usage = Использование: sf [секунды] / sb [секунды]
+
+# Очередь
+
+queue_cleared = Очередь очищена
+index_starts_at_one = Нумерация начинается с 1
+no_track_at_position = Нет трека на позиции {position}
+removed = Удалено: {name}
+queue_rm_usage = Использование: queue rm <номер>
+
+# Режимы
+
+mode_repeat_track = Повтор трека включён
+mode_repeat_queue = Повтор очереди включён
+mode_shuffle = Перемешивание включено
+mode_off = Все режимы выключены
+mode_usage = {modes}\nИспользование: mode [r|rq|s|off]
+
+# Поиск и выбор
+
+search_usage = Использование: search <запрос>
+search_results_header = Результаты поиска:
+search_results_footer = Введите номер для воспроизведения или a для отмены
+pick_usage = Использование: pick <номер>
+pick_too_low = Номер должен быть 1 или больше
+
+# Радио
+
+radio_already_on = Радио уже включено
+radio_enabled = Радио включено
+radio_already_off = Радио уже выключено
+radio_disabled = Радио выключено
+radio_status_on = Радио: ВКЛ
+radio_status_off = Радио: ВЫКЛ
+
+# Сервис
+
+already_on_service = Уже используется {service}
+switched_service = Переключено на {service}
+
+# Бот
+
+nickname = Ник: {name}
+gender_set = Пол: {gender}
+gender_usage = Использование: gender [male|female|neutral]
+info = TeamTalk Spotify Bot (Rust) v{version}
+stats = Время работы: {uptime}\nВоспроизведено треков: {tracks}\nОчередь: {queue} треков\nГромкость: {volume}%
+
+# Сообщения плеера
+
+spotify_unavailable = Spotify недоступен: {error}
+no_results = Ничего не найдено
+now_playing = Сейчас играет: {track}
+now_playing_queued = Сейчас играет: {track} (+{count} в очереди{more})
+more_loading = , остальное загружается
+queued_many = В очередь добавлено треков: {count}{upcoming}{more}
+queued_one = В очереди: {track}{upcoming}{more}
+already_queued_loading_rest = Уже в очереди, загружается остальное
+already_in_queue = Уже в очереди
+search_failed = Ошибка поиска: {error}
+radio_fetching = Радио: поиск рекомендаций...
+radio_playing = Радио: {track}
+radio_no_recs = Радио: рекомендации не найдены
+radio_failed = Ошибка радио: {error}
+end_of_queue = Конец очереди
+invalid_pick = Неверный выбор или нет результатов поиска
+channel_not_found = Канал не найден: {path}
+failed_to_start = Не удалось запустить трек: {track}

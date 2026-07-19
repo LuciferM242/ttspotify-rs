@@ -24,6 +24,16 @@ const LANGUAGE_NAME_KEY: &str = "language_name";
 
 const EMBEDDED_EN: &str = include_str!("i18n/en.lang");
 
+/// Translations bundled into the binary, so they work identically for release
+/// downloads and source builds with no files to install. A same-code file in
+/// `<config_dir>/lang/` overrides these per key. English is NOT in this list:
+/// it is the authoritative fallback and cannot be overridden.
+const EMBEDDED_LANGS: &[(&str, &str)] = &[
+    ("es", include_str!("i18n/es.lang")),
+    ("pt", include_str!("i18n/pt.lang")),
+    ("ru", include_str!("i18n/ru.lang")),
+];
+
 /// Defines `Key`, `Key::id()`, and `Key::ALL` from a single list so the enum,
 /// the `.lang` file ids, and the completeness check can never drift apart.
 macro_rules! keys {
@@ -217,9 +227,20 @@ impl Catalog {
         Catalog { langs }
     }
 
-    /// Register a runtime language (code is lowercased).
+    /// Register a runtime language (code is lowercased), replacing any
+    /// existing map for that code.
     pub fn add_language(&mut self, code: &str, entries: HashMap<String, String>) {
         self.langs.insert(code.to_lowercase(), entries);
+    }
+
+    /// Merge entries into a language: given keys override, everything else is
+    /// kept. Used for `<config_dir>/lang/` files so a partial file can patch
+    /// individual messages of a bundled translation (a new code just inserts).
+    pub fn merge_language(&mut self, code: &str, entries: HashMap<String, String>) {
+        self.langs
+            .entry(code.to_lowercase())
+            .or_default()
+            .extend(entries);
     }
 
     fn template(&self, lang: &str, id: &str) -> Option<&str> {
@@ -278,11 +299,15 @@ fn export_english_template(lang_dir: &Path) {
     }
 }
 
-/// Language codes available on disk plus embedded English, sorted. Used by the
-/// config editor and setup wizard, which need the list without loading a full
-/// catalog (the bot itself uses `I18n::load`).
+/// Language codes available: embedded (English + bundled translations) plus
+/// any on-disk `.lang` files, sorted. Used by the config editor and setup
+/// wizard, which need the list without loading a full catalog (the bot itself
+/// uses `I18n::load`).
 pub fn installed_language_codes(config_dir: &Path) -> Vec<String> {
     let mut codes = vec![ENGLISH.to_string()];
+    for (code, _) in EMBEDDED_LANGS {
+        codes.push((*code).to_string());
+    }
     if let Ok(entries) = std::fs::read_dir(config_dir.join("lang")) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -443,6 +468,10 @@ impl I18n {
     /// file degrades, it never fails startup.
     pub fn load(config_dir: &Path, default_language: &str) -> I18n {
         let mut catalog = Catalog::new_embedded();
+        // Bundled translations first; files below override them per key.
+        for (code, text) in EMBEDDED_LANGS {
+            catalog.add_language(code, parse_lang(text));
+        }
         let lang_dir = config_dir.join("lang");
         export_english_template(&lang_dir);
         if let Ok(entries) = std::fs::read_dir(&lang_dir) {
@@ -462,7 +491,9 @@ impl I18n {
                 }
                 match std::fs::read_to_string(&path) {
                     Ok(text) => {
-                        catalog.add_language(&code, parse_lang(&text));
+                        // Merge, not replace: a partial file patches individual
+                        // messages of a bundled translation instead of wiping it.
+                        catalog.merge_language(&code, parse_lang(&text));
                         let v = validate(&catalog, &code);
                         tracing::info!(
                             "Loaded translation {}: {}/{} messages",
@@ -847,15 +878,80 @@ mod tests {
             "Language set to English"
         );
 
-        // Availability and names.
+        // Availability and names. Embedded bundles (es/pt/ru) are always
+        // present alongside English and the on-disk de file.
         assert!(i18n.is_available("de"));
         assert!(i18n.is_available("EN"));
         assert!(!i18n.is_available("xx"));
         assert_eq!(i18n.language_name("de"), "Deutsch");
         let codes: Vec<String> = i18n.available().into_iter().map(|(c, _)| c).collect();
-        assert_eq!(codes, vec!["de".to_string(), "en".to_string()]);
+        assert_eq!(
+            codes,
+            vec!["de", "en", "es", "pt", "ru"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_translations_work_without_any_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_i18n_embed_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No lang files at all: bundled Portuguese still translates.
+        let i18n = I18n::load(&dir, "en");
+        assert!(i18n.is_available("pt"));
+        assert!(i18n.is_available("es"));
+        assert!(i18n.is_available("ru"));
+        assert_eq!(
+            i18n.tr_in("pt", Key::Paused, &[]),
+            "Pausado"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lang_file_overrides_embedded_translation_per_key() {
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_i18n_override_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lang")).unwrap();
+        // A one-line pt.lang: overrides that key, keeps the rest of the
+        // bundled Portuguese (merge, not replace).
+        std::fs::write(dir.join("lang").join("pt.lang"), "paused = Em pausa\n").unwrap();
+        let i18n = I18n::load(&dir, "en");
+        assert_eq!(i18n.tr_in("pt", Key::Paused, &[]), "Em pausa"); // overridden
+        assert_eq!(i18n.tr_in("pt", Key::Resuming, &[]), "Retomando"); // still bundled
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_translations_have_valid_keys_and_slots() {
+        // Guards bundled translations (and future community PRs to them)
+        // against typo'd keys or broken {placeholders}.
+        let mut c = Catalog::new_embedded();
+        for (code, text) in EMBEDDED_LANGS {
+            c.add_language(code, parse_lang(text));
+            let v = validate(&c, code);
+            assert!(
+                v.slot_mismatches.is_empty(),
+                "{code}.lang has placeholder mismatches: {:?}",
+                v.slot_mismatches
+            );
+            assert!(
+                v.unknown_keys.is_empty(),
+                "{code}.lang has unknown keys: {:?}",
+                v.unknown_keys
+            );
+        }
     }
 
     #[test]

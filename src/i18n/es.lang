@@ -1,0 +1,98 @@
+# ttspotify - Spanish translation (complete)
+# Traduccion espanola completa. Mantenga las {palabras entre llaves} tal cual;
+# puede moverlas a cualquier posicion de la frase.
+
+language_name = Español
+
+# Idioma
+
+lang_set = Idioma establecido en {language}
+
+# Reproducción
+
+searching = Buscando...
+loading_track = Cargando pista...
+resuming = Reanudando
+paused = Pausado
+nothing_to_play = Nada que reproducir. Usa: p <búsqueda>
+restarting_track = Reiniciando la pista
+loading_liked = Cargando tus canciones favoritas...
+nothing_playing = Nada en reproducción
+current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
+search_cancelled = Búsqueda cancelada
+
+# Volumen y posición
+
+volume_set = Volumen: {percent}%
+volume_show = Volumen: {percent}% (máx: {max})
+volume_range = El volumen debe ser 0-{max}. Recibido: {got}
+seek_forward = Avanzando {seconds}s
+seek_backward = Retrocediendo {seconds}s
+seek_usage = Uso: sf [segundos] / sb [segundos]
+
+# Cola
+
+queue_cleared = Cola vaciada
+index_starts_at_one = La posición empieza en 1
+no_track_at_position = No hay pista en la posición {position}
+removed = Eliminado: {name}
+queue_rm_usage = Uso: queue rm <número>
+
+# Modos
+
+mode_repeat_track = Repetir pista activado
+mode_repeat_queue = Repetir cola activado
+mode_shuffle = Modo aleatorio activado
+mode_off = Todos los modos desactivados
+mode_usage = {modes}\nUso: mode [r|rq|s|off]
+
+# Búsqueda y selección
+
+search_usage = Uso: search <búsqueda>
+search_results_header = Resultados de la búsqueda:
+search_results_footer = Escribe un número para reproducir, o a para cancelar
+pick_usage = Uso: pick <número>
+pick_too_low = El número debe ser 1 o mayor
+
+# Radio
+
+radio_already_on = La radio ya está encendida
+radio_enabled = Radio encendida
+radio_already_off = La radio ya está apagada
+radio_disabled = Radio apagada
+radio_status_on = Radio: ENCENDIDA
+radio_status_off = Radio: APAGADA
+
+# Servicio
+
+already_on_service = Ya estás en {service}
+switched_service = Cambiado a {service}
+
+# Bot
+
+nickname = Apodo: {name}
+gender_set = Género: {gender}
+gender_usage = Uso: gender [male|female|neutral]
+info = TeamTalk Spotify Bot (Rust) v{version}
+stats = Tiempo activo: {uptime}\nPistas reproducidas: {tracks}\nCola: {queue} pistas\nVolumen: {volume}%
+
+# Mensajes del reproductor
+
+spotify_unavailable = Spotify no disponible: {error}
+no_results = No se encontraron resultados
+now_playing = Reproduciendo: {track}
+now_playing_queued = Reproduciendo: {track} (+{count} en cola{more})
+more_loading = , cargando más
+queued_many = {count} pistas añadidas a la cola{upcoming}{more}
+queued_one = En cola: {track}{upcoming}{more}
+already_queued_loading_rest = Ya en cola, cargando el resto
+already_in_queue = Ya está en la cola
+search_failed = La búsqueda falló: {error}
+radio_fetching = Radio: buscando recomendaciones...
+radio_playing = Radio: {track}
+radio_no_recs = Radio: no se encontraron recomendaciones
+radio_failed = La radio falló: {error}
+end_of_queue = Fin de la cola
+invalid_pick = Selección inválida o sin resultados de búsqueda
+channel_not_found = Canal no encontrado: {path}
+failed_to_start = Error al iniciar la pista: {track}
