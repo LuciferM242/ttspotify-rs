@@ -32,6 +32,14 @@ pub fn oauth_is_feasible(headless: bool, stdin_is_terminal: bool) -> bool {
     !headless || stdin_is_terminal
 }
 
+/// Whether the DISPLAY/WAYLAND_DISPLAY values indicate a usable display
+/// server. Empty strings count as absent — some service environments set
+/// `DISPLAY=""`, which is not a display.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn has_display(display: Option<&str>, wayland_display: Option<&str>) -> bool {
+    display.is_some_and(|v| !v.is_empty()) || wayland_display.is_some_and(|v| !v.is_empty())
+}
+
 /// Detect if we're running in a headless environment (no display server).
 fn detect_headless() -> bool {
     // Explicit override via env var
@@ -42,9 +50,9 @@ fn detect_headless() -> bool {
     // On Linux, check for display server
     #[cfg(target_os = "linux")]
     {
-        let has_display = std::env::var("DISPLAY").is_ok()
-            || std::env::var("WAYLAND_DISPLAY").is_ok();
-        !has_display
+        let display = std::env::var("DISPLAY").ok();
+        let wayland = std::env::var("WAYLAND_DISPLAY").ok();
+        !has_display(display.as_deref(), wayland.as_deref())
     }
 
     // Windows/macOS always have GUI capability
@@ -237,5 +245,21 @@ mod tests {
     fn oauth_infeasible_headless_without_terminal() {
         // systemd service: no display, stdin is /dev/null. OAuth can only fail.
         assert!(!oauth_is_feasible(true, false));
+    }
+
+    #[test]
+    fn display_env_present_and_nonempty_counts_as_display() {
+        assert!(super::has_display(Some(":0"), None));
+        assert!(super::has_display(None, Some("wayland-0")));
+        assert!(super::has_display(Some(":0"), Some("wayland-0")));
+    }
+
+    #[test]
+    fn empty_or_missing_display_env_is_headless() {
+        // Some service environments set DISPLAY="" — that is not a display.
+        assert!(!super::has_display(None, None));
+        assert!(!super::has_display(Some(""), None));
+        assert!(!super::has_display(None, Some("")));
+        assert!(!super::has_display(Some(""), Some("")));
     }
 }
