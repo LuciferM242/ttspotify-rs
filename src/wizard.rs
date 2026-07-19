@@ -302,6 +302,16 @@ pub fn run_wizard(config_name: Option<&str>) -> Result<(), BotError> {
         }
     }
 
+    // If the systemd service is installed, offer to bring this bot up right
+    // away — otherwise adding a server ends with the config on disk but
+    // nothing running until the user remembers the systemctl command.
+    #[cfg(target_os = "linux")]
+    if crate::service::service_installed() {
+        println!();
+        println!("Systemd Service");
+        crate::service::offer_enable_instance(&name);
+    }
+
     println!();
     println!("  Run the bot with: tt-spotify-bot --config {}", config_path.display());
     println!();

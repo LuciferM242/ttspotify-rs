@@ -19,6 +19,26 @@ fn systemd_dir() -> PathBuf {
 
 const SERVICE_NAME: &str = "ttspotify@.service";
 
+/// True if the ttspotify@ systemd user unit file is installed.
+pub fn service_installed() -> bool {
+    systemd_dir().join(SERVICE_NAME).exists()
+}
+
+/// Offer (y/N prompt) to enable and start `ttspotify@<name>` now. Used by the
+/// setup wizard right after a config is created, and by `--install-service`
+/// for each existing config.
+pub fn offer_enable_instance(name: &str) {
+    if prompt_yes_no(&format!("Enable and start ttspotify@{name} now?")) {
+        let _ = Command::new("systemctl")
+            .args(["--user", "enable", &format!("ttspotify@{name}")])
+            .status();
+        let _ = Command::new("systemctl")
+            .args(["--user", "start", &format!("ttspotify@{name}")])
+            .status();
+        println!("  ttspotify@{name} enabled and started.");
+    }
+}
+
 /// Current login name, for loginctl calls. Prefers $USER, falls back to `id -un`.
 fn current_user() -> String {
     if let Ok(u) = std::env::var("USER") {
@@ -145,15 +165,7 @@ WantedBy=default.target
     // Offer to enable/start existing configs
     let configs = list_configs();
     for (name, _) in configs {
-        if prompt_yes_no(&format!("Enable and start ttspotify@{name} now?")) {
-            let _ = Command::new("systemctl")
-                .args(["--user", "enable", &format!("ttspotify@{name}")])
-                .status();
-            let _ = Command::new("systemctl")
-                .args(["--user", "start", &format!("ttspotify@{name}")])
-                .status();
-            println!("  ttspotify@{name} enabled and started.");
-        }
+        offer_enable_instance(&name);
     }
 
     Ok(())

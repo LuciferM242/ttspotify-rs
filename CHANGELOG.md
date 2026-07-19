@@ -26,6 +26,9 @@
 - Linux: `--install-service` now offers to enable systemd lingering so the
   bot keeps running after you log out (important on a headless VPS). It only
   asks when lingering isn't already on.
+- Linux: after the setup wizard creates a config, it now offers to enable and
+  start that bot's systemd instance right away (when the service is installed),
+  so adding a server no longer ends with a config on disk but nothing running.
 
 ### Changed
 - Admin commands default to "Both" mode: on a fresh config or after upgrading,
