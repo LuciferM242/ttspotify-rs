@@ -194,7 +194,7 @@ impl SpotifyMetadata {
 
     /// Search tracks via Spotify's internal spclient (no Web API token needed).
     pub async fn search_tracks(&self, query: &str, limit: u8) -> Result<Vec<SpotifyTrack>, BotError> {
-        let search_uri = format!("spotify:search:{}", query.replace(' ', "+"));
+        let search_uri = search_context_uri(query);
         let ctx = self.session.spclient().get_context(&search_uri).await
             .map_err(|e| BotError::Playback(format!("Search failed: {e}")))?;
 
@@ -277,3 +277,69 @@ impl SpotifyMetadata {
     }
 }
 
+
+/// Build a `spotify:search:` context URI from free-form query text.
+///
+/// Words are joined with `+` (the separator spclient expects), and everything
+/// outside URI-unreserved ASCII is percent-encoded — raw UTF-8 bytes (e.g.
+/// Cyrillic) or reserved ASCII like `#`/`?` in the URI make spclient reject
+/// the request with 400 Bad Request.
+fn search_context_uri(query: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+    // Encode all non-alphanumeric ASCII except the unreserved marks -_.~
+    // (never need encoding). Literal '+' IS encoded so it can't be misread
+    // as a word separator.
+    const QUERY_SET: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let encoded: Vec<String> = query
+        .split(' ')
+        .map(|word| utf8_percent_encode(word, QUERY_SET).to_string())
+        .collect();
+    format!("spotify:search:{}", encoded.join("+"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_context_uri;
+
+    #[test]
+    fn ascii_query_uses_plus_for_spaces() {
+        assert_eq!(search_context_uri("hello world"), "spotify:search:hello+world");
+    }
+
+    #[test]
+    fn cyrillic_query_is_percent_encoded() {
+        // Raw UTF-8 bytes in the URI made spclient reject Russian queries
+        // with 400 Bad Request; they must be percent-encoded.
+        assert_eq!(
+            search_context_uri("кино"),
+            "spotify:search:%D0%BA%D0%B8%D0%BD%D0%BE"
+        );
+    }
+
+    #[test]
+    fn mixed_query_encodes_non_ascii_words_and_keeps_plus_separators() {
+        assert_eq!(
+            search_context_uri("гр кино"),
+            "spotify:search:%D0%B3%D1%80+%D0%BA%D0%B8%D0%BD%D0%BE"
+        );
+    }
+
+    #[test]
+    fn uri_breaking_ascii_is_encoded() {
+        // '#', '?', '&', '/' and literal '+' would corrupt the URI or be
+        // misread as a space separator.
+        assert_eq!(search_context_uri("a#b"), "spotify:search:a%23b");
+        assert_eq!(search_context_uri("a?b"), "spotify:search:a%3Fb");
+        assert_eq!(search_context_uri("a+b"), "spotify:search:a%2Bb");
+        assert_eq!(search_context_uri("ac/dc"), "spotify:search:ac%2Fdc");
+    }
+
+    #[test]
+    fn unreserved_ascii_stays_readable() {
+        assert_eq!(search_context_uri("a-b_c.d~e"), "spotify:search:a-b_c.d~e");
+    }
+}

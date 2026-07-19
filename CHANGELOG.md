@@ -2,6 +2,10 @@
 
 ## [0.6.1] - 2026-07-19
 ### Fixed
+- Spotify search now works with non-Latin queries (Russian, and any other
+  non-ASCII text). Searching in Cyrillic previously failed with "invalid
+  argument, 400 Bad Request" because the query text wasn't encoded properly
+  before being sent to Spotify.
 - Linux: a bot running as a systemd service no longer crashes (and gets
   restarted over and over, appearing to log in and out of the TeamTalk server
   nonstop) when Spotify credentials are missing or rejected. A service has no
