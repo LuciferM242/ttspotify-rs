@@ -120,7 +120,13 @@ Multiple instances are supported out of the box — one per config file, each wi
 
 **Windows:** the tray manages them all. Right-click → **Add Server** once per bot; every config shows up in the tray menu with its own start / stop / restart / logs.
 
-**Linux:** use the systemd template — one config per bot, enabled independently:
+**Linux:** create each bot's config with the wizard, giving it a name:
+
+```bash
+ttspotify --setup server1
+```
+
+then use the systemd template — one instance per config, enabled independently:
 
 ```bash
 systemctl --user enable --now ttspotify@server1
@@ -130,7 +136,10 @@ systemctl --user enable --now ttspotify@server1
 systemctl --user enable --now ttspotify@server2
 ```
 
-Each instance reads `~/.config/ttspotify/<name>.json`.
+Each instance reads `~/.config/ttspotify/<name>.json`. Running `ttspotify`
+without `--config` picks the first config alphabetically; pass
+`--config ~/.config/ttspotify/<name>.json` to run a specific one by hand.
+See `ttspotify --help` for all command-line options.
 
 ## Configuration
 
