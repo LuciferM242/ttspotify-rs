@@ -8,12 +8,12 @@
 # The name of this language, in this language. Shown when someone selects it.
 language_name = English
 
-# ===== Language =====
+# Language
 
 # Confirmation after the lang command succeeds. {language} = the language just picked.
 lang_set = Language set to {language}
 
-# ===== Playback =====
+# Playback
 
 # Shown while the bot looks up what the user asked to play.
 searching = Searching...
@@ -46,7 +46,7 @@ current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
 # Shown when an in-progress search is cancelled.
 search_cancelled = Search cancelled
 
-# ===== Volume and seek =====
+# Volume and seek
 
 # Shown when the volume is changed. {percent} = new volume, 0-100.
 volume_set = Volume: {percent}%
@@ -66,7 +66,7 @@ seek_backward = Seeking backward {seconds}s
 # Shown when the seek command is used incorrectly.
 seek_usage = Usage: sf [seconds] / sb [seconds]
 
-# ===== Queue =====
+# Queue
 
 # Shown when the queue is cleared.
 queue_cleared = Queue cleared
@@ -83,7 +83,7 @@ removed = Removed: {name}
 # Shown when queue rm is used incorrectly.
 queue_rm_usage = Usage: queue rm <number>
 
-# ===== Modes =====
+# Modes
 
 # Shown when repeat-track mode turns on.
 mode_repeat_track = Repeat track enabled
@@ -100,7 +100,7 @@ mode_off = All modes disabled
 # Shown when the mode command is used without a valid option. {modes} = the current mode status.
 mode_usage = {modes}\nUsage: mode [r|rq|s|off]
 
-# ===== Search and pick =====
+# Search and pick
 
 # Shown when search is used without a query and no results are waiting.
 search_usage = Usage: search <query>
@@ -117,7 +117,7 @@ pick_usage = Usage: pick <number>
 # Shown when pick is given 0 or less.
 pick_too_low = Pick number must be 1 or higher
 
-# ===== Radio =====
+# Radio
 
 # Shown when radio is turned on but was already on.
 radio_already_on = Radio is already on
@@ -137,7 +137,7 @@ radio_status_on = Radio: ON
 # Shown when the user asks for radio status and it is off.
 radio_status_off = Radio: OFF
 
-# ===== Service switching =====
+# Service switching
 
 # Shown when switching to the service that is already active. {service} = Spotify or YouTube.
 already_on_service = Already on {service}
@@ -145,7 +145,7 @@ already_on_service = Already on {service}
 # Shown when the active service changes. {service} = Spotify or YouTube.
 switched_service = Switched to {service}
 
-# ===== Bot management =====
+# Bot management
 
 # Shown when the bot's nickname changes. {name} = the new nickname.
 nickname = Nickname: {name}
@@ -163,7 +163,7 @@ info = TeamTalk Spotify Bot (Rust) v{version}
 # {queue} = queue length, {volume} = current volume.
 stats = Uptime: {uptime}\nTracks played: {tracks}\nQueue: {queue} tracks\nVolume: {volume}%
 
-# ===== Player messages =====
+# Player messages
 
 # Shown when Spotify could not be reached. {error} = a short error description.
 spotify_unavailable = Spotify unavailable: {error}

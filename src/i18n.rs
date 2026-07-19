@@ -260,6 +260,24 @@ impl Catalog {
     }
 }
 
+/// Write the embedded English template to `<lang_dir>/en.lang` so translators
+/// have a commented, always-current file to copy (the loader ignores an
+/// en.lang file — the embedded English stays authoritative, so overwriting is
+/// safe and keeps the template in sync after updates). Best-effort: failure is
+/// logged, never fatal.
+fn export_english_template(lang_dir: &Path) {
+    let path = lang_dir.join("en.lang");
+    // Skip the write when the on-disk copy is already current.
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == EMBEDDED_EN) {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(lang_dir)
+        .and_then(|()| std::fs::write(&path, EMBEDDED_EN))
+    {
+        tracing::warn!("Could not write English template {}: {e}", path.display());
+    }
+}
+
 /// Language codes available on disk plus embedded English, sorted. Used by the
 /// config editor and setup wizard, which need the list without loading a full
 /// catalog (the bot itself uses `I18n::load`).
@@ -426,6 +444,7 @@ impl I18n {
     pub fn load(config_dir: &Path, default_language: &str) -> I18n {
         let mut catalog = Catalog::new_embedded();
         let lang_dir = config_dir.join("lang");
+        export_english_template(&lang_dir);
         if let Ok(entries) = std::fs::read_dir(&lang_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -836,6 +855,18 @@ mod tests {
         let codes: Vec<String> = i18n.available().into_iter().map(|(c, _)| c).collect();
         assert_eq!(codes, vec!["de".to_string(), "en".to_string()]);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_exports_english_template_to_lang_dir() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_i18n_tpl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No lang dir yet: load creates it and writes the template.
+        let _ = I18n::load(&dir, "en");
+        let exported = std::fs::read_to_string(dir.join("lang").join("en.lang")).unwrap();
+        assert_eq!(exported, EMBEDDED_EN);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
