@@ -223,6 +223,7 @@ pub async fn run_bot(
         cmd_tx,
         max_volume: config.max_volume,
         start_time: std::time::Instant::now(),
+        auth: crate::bot::auth::AdminAuth::from_config(&config),
     };
 
     tracing::info!("Bot is ready! Listening for commands...");
@@ -340,7 +341,12 @@ pub async fn run_bot(
                             let sender_id = text_msg.from_id.0;
                             let my_id = event_client.my_id().0;
                             if sender_id != my_id && !text_msg.text.is_empty()
-                                && !dispatcher.dispatch(&event_client, &text_msg.text, sender_id) {
+                                && !dispatcher.dispatch(
+                                    &event_client,
+                                    &text_msg.text,
+                                    sender_id,
+                                    &text_msg.from_username,
+                                ) {
                                     break false;
                                 }
                         }

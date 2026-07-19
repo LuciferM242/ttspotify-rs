@@ -232,6 +232,7 @@ pub struct CommandDispatcher {
     pub cmd_tx: UnboundedSender<BotCommand>,
     pub max_volume: u8,
     pub start_time: std::time::Instant,
+    pub auth: crate::bot::auth::AdminAuth,
 }
 
 impl CommandDispatcher {
@@ -245,8 +246,19 @@ impl CommandDispatcher {
         send_reply(client, user_id, text);
     }
 
+    /// Whether the caller may use admin-gated commands. Resolves the sender's
+    /// TeamTalk user_type from the client cache (lazy; only callers that need
+    /// it call this). Falls back to non-admin (0) if the user is not cached.
+    fn is_caller_admin(&self, client: &Client, sender_id: i32, username: &str) -> bool {
+        let user_type = client
+            .get_user(::teamtalk::types::UserId(sender_id))
+            .map(|u| u.user_type)
+            .unwrap_or(0);
+        self.auth.is_admin(username, user_type)
+    }
+
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
-    pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32) -> bool {
+    pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32, username: &str) -> bool {
         let (cmd, args) = match classify_input(text) {
             Input::Empty => return true,
             Input::Cancel => {
@@ -269,6 +281,16 @@ impl CommandDispatcher {
             Input::Command { name, args } => (name, args),
         };
         let args = args.as_str();
+
+        // Admin gate: gated commands require an admin. A non-admin gets a SILENT
+        // no-op (no reply) so the command's existence is never revealed, matching
+        // the repo's service-private silent no-op convention. Every other command
+        // falls through untouched.
+        if crate::bot::auth::is_admin_command(&cmd)
+            && !self.is_caller_admin(client, sender_id, username)
+        {
+            return true;
+        }
 
         tracing::info!("Command from user {sender_id}: {cmd} {args}");
 
