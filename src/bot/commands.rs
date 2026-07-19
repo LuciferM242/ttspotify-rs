@@ -623,11 +623,23 @@ impl CommandDispatcher {
             }
             "h" | "help" => {
                 let active = self.state.lock().active_service;
+                let is_admin = self.is_caller_admin(client, sender_id, username);
                 if args.is_empty() {
-                    let text = help_text(active);
+                    let text = help_text(active, is_admin);
                     self.reply(client, sender_id, &text);
                 } else {
                     let topic = args.trim().to_lowercase();
+                    // Hide gated topics from non-admins: fall to "Unknown command".
+                    if !is_admin
+                        && matches!(topic.as_str(), "q" | "quit" | "rs" | "restart" | "jc")
+                    {
+                        self.reply(
+                            client,
+                            sender_id,
+                            "Unknown command. Type h for the command list.",
+                        );
+                        return true;
+                    }
                     let detail: &str = match topic.as_str() {
                         "p" | "play" => HELP_PLAY,
                         "s" | "stop" => "s / stop\nStop playback and clear the queue.",
@@ -665,7 +677,7 @@ impl CommandDispatcher {
 
 /// Build help text for the currently active service.
 /// Spotify-only sections (radio) are omitted on YouTube.
-fn help_text(active: Service) -> String {
+fn help_text(active: Service, is_admin: bool) -> String {
     let mut out = String::from(
         "Playback:\n\
          \x20 p <query>      Search and play a track, playlist, or album\n\
@@ -706,13 +718,19 @@ fn help_text(active: Service) -> String {
          Bot:\n\
          \x20 link         Get URL for current track\n\
          \x20 stats        Show bot uptime and session stats\n\
-         \x20 jc <path>    Join channel\n\
          \x20 cn <name>    Change nickname\n\
          \x20 gender       Set bot gender\n\
-         \x20 info         Bot info\n\
-         \x20 rs           Restart\n\
-         \x20 q            Quit\n\
-         \n\
+         \x20 info         Bot info\n",
+    );
+    if is_admin {
+        out.push_str(
+            "\x20 jc <path>    Join channel\n\
+             \x20 rs           Restart\n\
+             \x20 q            Quit\n",
+        );
+    }
+    out.push_str(
+        "\n\
          Active service: ",
     );
     out.push_str(active.name());
@@ -797,6 +815,29 @@ mod tests {
 
     fn cmd(name: &str, args: &str) -> Input {
         Input::Command { name: name.to_string(), args: args.to_string() }
+    }
+
+    // -- help_text admin gating --
+
+    #[test]
+    fn help_hides_admin_commands_from_non_admins() {
+        // Admins see the gated jc/rs/q lines.
+        let admin = help_text(Service::Spotify, true);
+        assert!(admin.contains("jc <path>"), "admin help should list jc");
+        assert!(admin.contains("Join channel"), "admin help should list jc");
+        assert!(admin.contains("Restart\n"), "admin help should list rs/Restart");
+        assert!(admin.contains("Quit"), "admin help should list q/Quit");
+
+        // Non-admins must not even see that those commands exist.
+        let plain = help_text(Service::Spotify, false);
+        assert!(!plain.contains("jc <path>"), "non-admin help must hide jc");
+        assert!(!plain.contains("Join channel"), "non-admin help must hide jc");
+        assert!(!plain.contains("Restart\n"), "non-admin help must hide rs");
+        assert!(!plain.contains("Quit"), "non-admin help must hide q");
+
+        // Non-gated Bot lines stay visible for everyone.
+        assert!(plain.contains("Change nickname"), "cn stays visible");
+        assert!(plain.contains("Bot info"), "info stays visible");
     }
 
     // -- classify_input --
