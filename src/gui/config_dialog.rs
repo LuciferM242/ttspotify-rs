@@ -14,6 +14,26 @@ use wxdragon::prelude::*;
 
 use crate::config::{config_dir, BotConfig};
 
+fn admin_mode_to_index(mode: crate::config::AdminMode) -> u32 {
+    use crate::config::AdminMode::*;
+    match mode {
+        Everyone => 0,
+        TtRights => 1,
+        List => 2,
+        Both => 3,
+    }
+}
+
+fn index_to_admin_mode(idx: u32) -> crate::config::AdminMode {
+    use crate::config::AdminMode::*;
+    match idx {
+        0 => Everyone,
+        1 => TtRights,
+        2 => List,
+        _ => Both, // index 3 and any unexpected value default to the safe Both
+    }
+}
+
 /// Open the config editor window.
 ///
 /// - `config`: Current config values (default for new, loaded for edit).
@@ -86,6 +106,34 @@ pub fn open_config_dialog(
         "YT Cookies File:",
         &config.youtube_cookies_file,
     );
+
+    // ---- Admin controls ----
+    let admin_mode_choice = add_choice_field(
+        &server_panel,
+        &server_sizer,
+        "Admin Mode:",
+        &[
+            "Everyone - no restrictions, any user can run every command",
+            "TeamTalk server admins - admins defined in your TeamTalk server's user accounts",
+            "Username list - only the usernames you enter below",
+            "Both - TeamTalk server admins or the username list below",
+        ],
+    );
+    let admin_users_input = add_multiline_field(
+        &server_panel,
+        &server_sizer,
+        "Admin usernames (comma or newline separated):",
+        &config.admins.join(", "),
+    );
+
+    // Load current admin mode and enable the username field only for List/Both.
+    admin_mode_choice.set_selection(admin_mode_to_index(config.admin_mode));
+    let list_uses_names = |idx: u32| idx == 2 || idx == 3; // List or Both
+    admin_users_input.enable(list_uses_names(admin_mode_to_index(config.admin_mode)));
+    admin_mode_choice.on_selection_changed(move |_| {
+        let idx = admin_mode_choice.get_selection().unwrap_or(0);
+        admin_users_input.enable(list_uses_names(idx));
+    });
 
     server_sizer.add_growable_col(1, 1);
     server_panel.set_sizer(server_sizer, true);
@@ -204,6 +252,8 @@ pub fn open_config_dialog(
         cfg.license_name = if ln.is_empty() { None } else { Some(ln) };
         let lk = license_key_input.get_value();
         cfg.license_key = if lk.is_empty() { None } else { Some(lk) };
+        cfg.admin_mode = index_to_admin_mode(admin_mode_choice.get_selection().unwrap_or(3));
+        cfg.admins = crate::bot::auth::parse_admin_list(&admin_users_input.get_value());
 
         // Audio tab
         cfg.spotify_quality = quality_input.get_value();
@@ -371,6 +421,31 @@ fn add_checkbox(parent: &Panel, sizer: &FlexGridSizer, label: &str, value: bool)
     input.set_name(label);
     sizer.add(&spacer, 0, SizerFlag::AlignCenterVertical, 0);
     sizer.add(&input, 0, SizerFlag::AlignCenterVertical, 0);
+    input
+}
+
+fn add_choice_field(parent: &Panel, sizer: &FlexGridSizer, label: &str, choices: &[&str]) -> Choice {
+    let lbl = StaticText::builder(parent).with_label(label).build();
+    let input = Choice::builder(parent).build();
+    for c in choices {
+        input.append(c);
+    }
+    input.set_name(label);
+    sizer.add(&lbl, 0, SizerFlag::AlignCenterVertical | SizerFlag::AlignRight, 0);
+    sizer.add(&input, 1, SizerFlag::Expand, 0);
+    input
+}
+
+fn add_multiline_field(parent: &Panel, sizer: &FlexGridSizer, label: &str, value: &str) -> TextCtrl {
+    let lbl = StaticText::builder(parent).with_label(label).build();
+    let input = TextCtrl::builder(parent)
+        .with_style(TextCtrlStyle::MultiLine)
+        .with_size(Size::new(-1, 60))
+        .build();
+    input.set_value(value);
+    input.set_name(label);
+    sizer.add(&lbl, 0, SizerFlag::Top | SizerFlag::AlignRight, 0);
+    sizer.add(&input, 1, SizerFlag::Expand, 0);
     input
 }
 
