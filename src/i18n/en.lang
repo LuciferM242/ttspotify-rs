@@ -12,3 +12,153 @@ language_name = English
 
 # Confirmation after the lang command succeeds. {language} = the language just picked.
 lang_set = Language set to {language}
+
+# ===== Playback =====
+
+# Shown while the bot looks up what the user asked to play.
+searching = Searching...
+
+# Shown when play/pause is pressed while a track is still loading.
+loading_track = Loading track...
+
+# Shown when paused playback resumes.
+resuming = Resuming
+
+# Shown when playback is paused.
+paused = Paused
+
+# Shown when there is nothing to play or resume.
+nothing_to_play = Nothing to play. Use: p <query>
+
+# Shown when the current track restarts from the beginning.
+restarting_track = Restarting track
+
+# Shown while the user's Spotify Liked Songs are being loaded.
+loading_liked = Loading liked songs...
+
+# Shown when there is no current track (current / link commands).
+nothing_playing = Nothing playing
+
+# The now-playing status line. {track} = title, {index}/{total} = queue position,
+# {position}/{duration} = time, {modes} = active playback modes.
+current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
+
+# Shown when an in-progress search is cancelled.
+search_cancelled = Search cancelled
+
+# ===== Volume and seek =====
+
+# Shown when the volume is changed. {percent} = new volume, 0-100.
+volume_set = Volume: {percent}%
+
+# Shown when the user asks for the current volume. {percent} = current, {max} = allowed maximum.
+volume_show = Volume: {percent}% (max: {max})
+
+# Shown when a requested volume is above the allowed maximum. {max} = maximum, {got} = what they asked for.
+volume_range = Volume must be 0-{max}. Got: {got}
+
+# Shown when seeking forwards. {seconds} = how far.
+seek_forward = Seeking forward {seconds}s
+
+# Shown when seeking backwards. {seconds} = how far.
+seek_backward = Seeking backward {seconds}s
+
+# Shown when the seek command is used incorrectly.
+seek_usage = Usage: sf [seconds] / sb [seconds]
+
+# ===== Queue =====
+
+# Shown when the queue is cleared.
+queue_cleared = Queue cleared
+
+# Shown when queue rm is given position 0 (positions start at 1).
+index_starts_at_one = Index starts at 1
+
+# Shown when queue rm points past the end of the queue. {position} = the number given.
+no_track_at_position = No track at position {position}
+
+# Shown when a track is removed from the queue. {name} = the track title.
+removed = Removed: {name}
+
+# Shown when queue rm is used incorrectly.
+queue_rm_usage = Usage: queue rm <number>
+
+# ===== Modes =====
+
+# Shown when repeat-track mode turns on.
+mode_repeat_track = Repeat track enabled
+
+# Shown when repeat-queue mode turns on.
+mode_repeat_queue = Repeat queue enabled
+
+# Shown when shuffle mode turns on.
+mode_shuffle = Shuffle enabled
+
+# Shown when all playback modes turn off.
+mode_off = All modes disabled
+
+# Shown when the mode command is used without a valid option. {modes} = the current mode status.
+mode_usage = {modes}\nUsage: mode [r|rq|s|off]
+
+# ===== Search and pick =====
+
+# Shown when search is used without a query and no results are waiting.
+search_usage = Usage: search <query>
+
+# First line above the numbered search results.
+search_results_header = Search results:
+
+# Last line under the numbered search results.
+search_results_footer = Type a number to play, or a to cancel
+
+# Shown when pick is used incorrectly.
+pick_usage = Usage: pick <number>
+
+# Shown when pick is given 0 or less.
+pick_too_low = Pick number must be 1 or higher
+
+# ===== Radio =====
+
+# Shown when radio is turned on but was already on.
+radio_already_on = Radio is already on
+
+# Shown when radio turns on.
+radio_enabled = Radio enabled
+
+# Shown when radio is turned off but was already off.
+radio_already_off = Radio is already off
+
+# Shown when radio turns off.
+radio_disabled = Radio disabled
+
+# Shown when the user asks for radio status and it is on.
+radio_status_on = Radio: ON
+
+# Shown when the user asks for radio status and it is off.
+radio_status_off = Radio: OFF
+
+# ===== Service switching =====
+
+# Shown when switching to the service that is already active. {service} = Spotify or YouTube.
+already_on_service = Already on {service}
+
+# Shown when the active service changes. {service} = Spotify or YouTube.
+switched_service = Switched to {service}
+
+# ===== Bot management =====
+
+# Shown when the bot's nickname changes. {name} = the new nickname.
+nickname = Nickname: {name}
+
+# Shown when the bot's gender changes. {gender} = male, female or neutral.
+gender_set = Gender: {gender}
+
+# Shown when the gender command is used incorrectly.
+gender_usage = Usage: gender [male|female|neutral]
+
+# The info command. {version} = the bot's version number.
+info = TeamTalk Spotify Bot (Rust) v{version}
+
+# The stats command. {uptime} = time running, {tracks} = tracks played,
+# {queue} = queue length, {volume} = current volume.
+stats = Uptime: {uptime}\nTracks played: {tracks}\nQueue: {queue} tracks\nVolume: {volume}%

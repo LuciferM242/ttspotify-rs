@@ -51,7 +51,60 @@ macro_rules! keys {
 }
 
 keys! {
+    // Language
     LangSet => "lang_set",
+    // Playback
+    Searching => "searching",
+    LoadingTrack => "loading_track",
+    Resuming => "resuming",
+    Paused => "paused",
+    NothingToPlay => "nothing_to_play",
+    RestartingTrack => "restarting_track",
+    LoadingLiked => "loading_liked",
+    NothingPlaying => "nothing_playing",
+    CurrentTrack => "current_track",
+    SearchCancelled => "search_cancelled",
+    // Volume and seek
+    VolumeSet => "volume_set",
+    VolumeShow => "volume_show",
+    VolumeRange => "volume_range",
+    SeekForward => "seek_forward",
+    SeekBackward => "seek_backward",
+    SeekUsage => "seek_usage",
+    // Queue
+    QueueCleared => "queue_cleared",
+    IndexStartsAtOne => "index_starts_at_one",
+    NoTrackAtPosition => "no_track_at_position",
+    Removed => "removed",
+    QueueRmUsage => "queue_rm_usage",
+    // Modes
+    ModeRepeatTrack => "mode_repeat_track",
+    ModeRepeatQueue => "mode_repeat_queue",
+    ModeShuffle => "mode_shuffle",
+    ModeOff => "mode_off",
+    ModeUsage => "mode_usage",
+    // Search and pick
+    SearchUsage => "search_usage",
+    SearchResultsHeader => "search_results_header",
+    SearchResultsFooter => "search_results_footer",
+    PickUsage => "pick_usage",
+    PickTooLow => "pick_too_low",
+    // Radio
+    RadioAlreadyOn => "radio_already_on",
+    RadioEnabled => "radio_enabled",
+    RadioAlreadyOff => "radio_already_off",
+    RadioDisabled => "radio_disabled",
+    RadioStatusOn => "radio_status_on",
+    RadioStatusOff => "radio_status_off",
+    // Service switching
+    AlreadyOnService => "already_on_service",
+    SwitchedService => "switched_service",
+    // Bot management
+    Nickname => "nickname",
+    GenderSet => "gender_set",
+    GenderUsage => "gender_usage",
+    Info => "info",
+    Stats => "stats",
 }
 
 /// Parse `.lang` file text into a key -> template map.

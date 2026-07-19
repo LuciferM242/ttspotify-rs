@@ -6,6 +6,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use teamtalk::Client;
 
 use crate::bot::state::{PlaybackStatus, SharedState};
+use crate::i18n::{I18n, Key};
 use crate::services::Service;
 
 /// Commands sent from the bot thread to the async command processor.
@@ -214,14 +215,19 @@ pub fn user_error(e: impl std::fmt::Display) -> String {
     }
 }
 
-/// Render a search-results numbered listing with the standard footer.
-pub fn format_search_results(tracks: &[crate::track::Track]) -> String {
-    let mut msg = String::from("Search results:\n");
+/// Render a search-results numbered listing. Header and footer are passed in
+/// (translated by the caller) so this stays a pure formatter.
+pub fn format_search_results(
+    tracks: &[crate::track::Track],
+    header: &str,
+    footer: &str,
+) -> String {
+    let mut msg = format!("{header}\n");
     for (i, track) in tracks.iter().enumerate() {
         let _ = writeln!(msg, "  {}: {} [{}]",
             i + 1, track.display_name(), track.duration_display());
     }
-    msg.push_str("Type a number to play, or a to cancel");
+    msg.push_str(footer);
     msg
 }
 
@@ -233,6 +239,7 @@ pub struct CommandDispatcher {
     pub max_volume: u8,
     pub start_time: std::time::Instant,
     pub auth: crate::bot::auth::AdminAuth,
+    pub i18n: Arc<I18n>,
 }
 
 impl CommandDispatcher {
@@ -244,6 +251,13 @@ impl CommandDispatcher {
 
     fn reply(&self, client: &Client, user_id: i32, text: &str) {
         send_reply(client, user_id, text);
+    }
+
+    /// Reply with a translated message, resolved for the target user's
+    /// language (seeded at dispatch). Help and the language-control surface
+    /// keep using plain `reply` (always English) per the i18n design.
+    fn reply_t(&self, client: &Client, user_id: i32, key: Key, args: &[(&str, String)]) {
+        self.reply(client, user_id, &self.i18n.tr(user_id, key, args));
     }
 
     /// Whether the caller may use admin-gated commands. Resolves the sender's
@@ -259,12 +273,18 @@ impl CommandDispatcher {
 
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
     pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32, username: &str) -> bool {
+        // Resolve and cache the sender's language first: every reply in this
+        // dispatch and in the async command processor reads the cache by id.
+        self.i18n.seed(sender_id, username);
+
         let (cmd, args) = match classify_input(text) {
             Input::Empty => return true,
             Input::Cancel => {
                 let mut state = self.state.lock();
-                if state.remove_search_results(sender_id) {
-                    self.reply(client, sender_id, "Search cancelled");
+                let removed = state.remove_search_results(sender_id);
+                drop(state);
+                if removed {
+                    self.reply_t(client, sender_id, Key::SearchCancelled, &[]);
                 }
                 return true;
             }
@@ -300,18 +320,25 @@ impl CommandDispatcher {
             match vol {
                 VolumeParse::Set(v) => {
                     if v > self.max_volume as u16 {
-                        self.reply(client, sender_id,
-                            &format!("Volume must be 0-{}. Got: {v}", self.max_volume));
+                        self.reply_t(client, sender_id, Key::VolumeRange, &[
+                            ("max", self.max_volume.to_string()),
+                            ("got", v.to_string()),
+                        ]);
                     } else {
                         let capped = (v as u8).min(self.max_volume);
                         self.volume.store(capped, Ordering::Relaxed);
                         self.send(BotCommand::SetVolume { percent: capped, user_id: sender_id });
-                        self.reply(client, sender_id, &format!("Volume: {capped}%"));
+                        self.reply_t(client, sender_id, Key::VolumeSet, &[
+                            ("percent", capped.to_string()),
+                        ]);
                     }
                 }
                 VolumeParse::Show => {
                     let vol = self.volume.load(Ordering::Relaxed);
-                    self.reply(client, sender_id, &format!("Volume: {vol}% (max: {})", self.max_volume));
+                    self.reply_t(client, sender_id, Key::VolumeShow, &[
+                        ("percent", vol.to_string()),
+                        ("max", self.max_volume.to_string()),
+                    ]);
                 }
             }
             return true;
@@ -320,11 +347,13 @@ impl CommandDispatcher {
             match seek {
                 SeekParse::Seconds(secs) => {
                     self.send(BotCommand::Seek { offset_ms: secs * 1000, user_id: sender_id });
-                    let dir_word = if secs >= 0 { "forward" } else { "backward" };
-                    self.reply(client, sender_id, &format!("Seeking {dir_word} {}s", secs.abs()));
+                    let key = if secs >= 0 { Key::SeekForward } else { Key::SeekBackward };
+                    self.reply_t(client, sender_id, key, &[
+                        ("seconds", secs.abs().to_string()),
+                    ]);
                 }
                 SeekParse::Usage => {
-                    self.reply(client, sender_id, "Usage: sf [seconds] / sb [seconds]");
+                    self.reply_t(client, sender_id, Key::SeekUsage, &[]);
                 }
             }
             return true;
@@ -339,23 +368,23 @@ impl CommandDispatcher {
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
-                    self.reply(client, sender_id, "Searching...");
+                    self.reply_t(client, sender_id, Key::Searching, &[]);
                 } else {
                     let status = self.state.lock().status;
                     match status {
                         PlaybackStatus::Loading => {
-                            self.reply(client, sender_id, "Loading track...");
+                            self.reply_t(client, sender_id, Key::LoadingTrack, &[]);
                         }
                         PlaybackStatus::Paused => {
                             self.send(BotCommand::Play { user_id: sender_id });
-                            self.reply(client, sender_id, "Resuming");
+                            self.reply_t(client, sender_id, Key::Resuming, &[]);
                         }
                         PlaybackStatus::Playing => {
                             self.send(BotCommand::Pause { user_id: sender_id });
-                            self.reply(client, sender_id, "Paused");
+                            self.reply_t(client, sender_id, Key::Paused, &[]);
                         }
                         PlaybackStatus::Idle => {
-                            self.reply(client, sender_id, "Nothing to play. Use: p <query>");
+                            self.reply_t(client, sender_id, Key::NothingToPlay, &[]);
                         }
                     }
                 }
@@ -373,7 +402,7 @@ impl CommandDispatcher {
             // negative offset clamps to position 0 (works for both services).
             "replay" | "rp" => {
                 self.send(BotCommand::Seek { offset_ms: -86_400_000, user_id: sender_id });
-                self.reply(client, sender_id, "Restarting track");
+                self.reply_t(client, sender_id, Key::RestartingTrack, &[]);
             }
             // Spotify-only: queue the user's Liked Songs. Silently no-ops on
             // YouTube (service-private, same convention as radio).
@@ -384,7 +413,7 @@ impl CommandDispatcher {
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
-                    self.reply(client, sender_id, "Loading liked songs...");
+                    self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
                 }
             }
 
@@ -396,18 +425,19 @@ impl CommandDispatcher {
                     let pos = format!("{}:{:02}", pos_secs / 60, pos_secs % 60);
                     let total = state.queue.len();
                     let idx = state.current_index.map(|i| i + 1).unwrap_or(0);
-                    let msg = format!(
-                        "{} [{}/{}] ({}/{})\n{}",
-                        entry.track.display_name(),
-                        idx, total,
-                        pos,
-                        entry.track.duration_display(),
-                        state.mode_display()
-                    );
+                    let args = [
+                        ("track", entry.track.display_name()),
+                        ("index", idx.to_string()),
+                        ("total", total.to_string()),
+                        ("position", pos),
+                        ("duration", entry.track.duration_display()),
+                        ("modes", state.mode_display()),
+                    ];
                     drop(state);
-                    self.reply(client, sender_id, &msg);
+                    self.reply_t(client, sender_id, Key::CurrentTrack, &args);
                 } else {
-                    self.reply(client, sender_id, "Nothing playing");
+                    drop(state);
+                    self.reply_t(client, sender_id, Key::NothingPlaying, &[]);
                 }
             }
 
@@ -415,28 +445,31 @@ impl CommandDispatcher {
             "queue" => {
                 if args.starts_with("clear") {
                     self.send(BotCommand::QueueClear { user_id: sender_id });
-                    self.reply(client, sender_id, "Queue cleared");
+                    self.reply_t(client, sender_id, Key::QueueCleared, &[]);
                 } else if let Some(rest) = args.strip_prefix("rm") {
                     let rest = rest.trim();
                     if let Ok(n) = rest.parse::<usize>() {
                         if n == 0 {
-                            self.reply(client, sender_id, "Index starts at 1");
+                            self.reply_t(client, sender_id, Key::IndexStartsAtOne, &[]);
                         } else {
                             // Offset from current position (rm 1 = next upcoming track)
                             let state = self.state.lock();
                             let base = state.current_index.map(|i| i + 1).unwrap_or(0);
                             let abs_idx = base + n - 1;
                             if abs_idx >= state.queue.len() {
-                                self.reply(client, sender_id, &format!("No track at position {n}"));
+                                drop(state);
+                                self.reply_t(client, sender_id, Key::NoTrackAtPosition, &[
+                                    ("position", n.to_string()),
+                                ]);
                             } else {
                                 let name = state.queue[abs_idx].track.display_name();
                                 drop(state);
                                 self.send(BotCommand::QueueRemove { index: abs_idx, user_id: sender_id });
-                                self.reply(client, sender_id, &format!("Removed: {name}"));
+                                self.reply_t(client, sender_id, Key::Removed, &[("name", name)]);
                             }
                         }
                     } else {
-                        self.reply(client, sender_id, "Usage: queue rm <number>");
+                        self.reply_t(client, sender_id, Key::QueueRmUsage, &[]);
                     }
                 } else {
                     let state = self.state.lock();
@@ -451,25 +484,25 @@ impl CommandDispatcher {
                 match args.trim() {
                     "r" | "repeat" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatTrack, user_id: sender_id });
-                        self.reply(client, sender_id, "Repeat track enabled");
+                        self.reply_t(client, sender_id, Key::ModeRepeatTrack, &[]);
                     }
                     "rq" | "repeat_queue" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatQueue, user_id: sender_id });
-                        self.reply(client, sender_id, "Repeat queue enabled");
+                        self.reply_t(client, sender_id, Key::ModeRepeatQueue, &[]);
                     }
                     "s" | "shuffle" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::Shuffle, user_id: sender_id });
-                        self.reply(client, sender_id, "Shuffle enabled");
+                        self.reply_t(client, sender_id, Key::ModeShuffle, &[]);
                     }
                     "off" | "o" | "none" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::Off, user_id: sender_id });
-                        self.reply(client, sender_id, "All modes disabled");
+                        self.reply_t(client, sender_id, Key::ModeOff, &[]);
                     }
                     _ => {
                         let state = self.state.lock();
                         let display = state.mode_display();
                         drop(state);
-                        self.reply(client, sender_id, &format!("{display}\nUsage: mode [r|rq|s|off]"));
+                        self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
                     }
                 }
             }
@@ -484,22 +517,24 @@ impl CommandDispatcher {
                         query: args.to_string(),
                         user_id: sender_id,
                     });
-                    self.reply(client, sender_id, "Searching...");
+                    self.reply_t(client, sender_id, Key::Searching, &[]);
                 } else {
                     // Re-display active search results if available
+                    let header = self.i18n.tr(sender_id, Key::SearchResultsHeader, &[]);
+                    let footer = self.i18n.tr(sender_id, Key::SearchResultsFooter, &[]);
                     let msg = self.state.lock()
                         .get_search_results(sender_id)
-                        .map(|results| format_search_results(results));
+                        .map(|results| format_search_results(results, &header, &footer));
                     match msg {
                         Some(m) => self.reply(client, sender_id, &m),
-                        None => self.reply(client, sender_id, "Usage: search <query>"),
+                        None => self.reply_t(client, sender_id, Key::SearchUsage, &[]),
                     }
                 }
             }
             "pick" => {
                 let trimmed = args.trim();
                 if trimmed.is_empty() {
-                    self.reply(client, sender_id, "Usage: pick <number>");
+                    self.reply_t(client, sender_id, Key::PickUsage, &[]);
                 } else if let Ok(n) = trimmed.parse::<usize>() {
                     if n > 0 {
                         self.send(BotCommand::SearchPick {
@@ -508,10 +543,10 @@ impl CommandDispatcher {
                             user_name: format!("User#{sender_id}"),
                         });
                     } else {
-                        self.reply(client, sender_id, "Pick number must be 1 or higher");
+                        self.reply_t(client, sender_id, Key::PickTooLow, &[]);
                     }
                 } else {
-                    self.reply(client, sender_id, "Usage: pick <number>");
+                    self.reply_t(client, sender_id, Key::PickUsage, &[]);
                 }
             }
 
@@ -523,21 +558,25 @@ impl CommandDispatcher {
                 let arg = args.trim().to_lowercase();
                 if arg.starts_with("on") {
                     if self.state.lock().radio_enabled {
-                        self.reply(client, sender_id, "Radio is already on");
+                        self.reply_t(client, sender_id, Key::RadioAlreadyOn, &[]);
                     } else {
                         self.send(BotCommand::RadioToggle { enable: true, user_id: sender_id });
-                        self.reply(client, sender_id, "Radio enabled");
+                        self.reply_t(client, sender_id, Key::RadioEnabled, &[]);
                     }
                 } else if arg.starts_with("off") {
                     if !self.state.lock().radio_enabled {
-                        self.reply(client, sender_id, "Radio is already off");
+                        self.reply_t(client, sender_id, Key::RadioAlreadyOff, &[]);
                     } else {
                         self.send(BotCommand::RadioToggle { enable: false, user_id: sender_id });
-                        self.reply(client, sender_id, "Radio disabled");
+                        self.reply_t(client, sender_id, Key::RadioDisabled, &[]);
                     }
                 } else {
-                    let status = if self.state.lock().radio_enabled { "ON" } else { "OFF" };
-                    self.reply(client, sender_id, &format!("Radio: {status}"));
+                    let key = if self.state.lock().radio_enabled {
+                        Key::RadioStatusOn
+                    } else {
+                        Key::RadioStatusOff
+                    };
+                    self.reply_t(client, sender_id, key, &[]);
                 }
             }
 
@@ -546,25 +585,33 @@ impl CommandDispatcher {
                 let url = self.state.lock().current().map(|e| e.track.web_url());
                 match url {
                     Some(u) => self.reply(client, sender_id, &u),
-                    None => self.reply(client, sender_id, "Nothing playing"),
+                    None => self.reply_t(client, sender_id, Key::NothingPlaying, &[]),
                 }
             }
 
             // -- Service switching --
             "sp" | "spotify" => {
                 if self.state.lock().active_service == Service::Spotify {
-                    self.reply(client, sender_id, "Already on Spotify");
+                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
+                        ("service", "Spotify".to_string()),
+                    ]);
                 } else {
                     self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
-                    self.reply(client, sender_id, "Switched to Spotify");
+                    self.reply_t(client, sender_id, Key::SwitchedService, &[
+                        ("service", "Spotify".to_string()),
+                    ]);
                 }
             }
             "yt" | "youtube" => {
                 if self.state.lock().active_service == Service::YouTube {
-                    self.reply(client, sender_id, "Already on YouTube");
+                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
+                        ("service", "YouTube".to_string()),
+                    ]);
                 } else {
                     self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
-                    self.reply(client, sender_id, "Switched to YouTube");
+                    self.reply_t(client, sender_id, Key::SwitchedService, &[
+                        ("service", "YouTube".to_string()),
+                    ]);
                 }
             }
 
@@ -577,23 +624,24 @@ impl CommandDispatcher {
             "cn" => {
                 if !args.is_empty() {
                     self.send(BotCommand::ChangeNick { name: args.to_string(), user_id: sender_id });
-                    self.reply(client, sender_id, &format!("Nickname: {args}"));
+                    self.reply_t(client, sender_id, Key::Nickname, &[
+                        ("name", args.to_string()),
+                    ]);
                 }
             }
             "gender" => {
                 let g = args.trim().to_lowercase();
                 if crate::config::is_valid_gender(&g) {
                     self.send(BotCommand::SetGender { gender: g.clone(), user_id: sender_id });
-                    self.reply(client, sender_id, &format!("Gender: {g}"));
+                    self.reply_t(client, sender_id, Key::GenderSet, &[("gender", g)]);
                 } else {
-                    self.reply(client, sender_id, "Usage: gender [male|female|neutral]");
+                    self.reply_t(client, sender_id, Key::GenderUsage, &[]);
                 }
             }
             "info" | "about" => {
-                self.reply(client, sender_id, &format!(
-                    "TeamTalk Spotify Bot (Rust) v{}",
-                    env!("CARGO_PKG_VERSION")
-                ));
+                self.reply_t(client, sender_id, Key::Info, &[
+                    ("version", env!("CARGO_PKG_VERSION").to_string()),
+                ]);
             }
             "stats" => {
                 let uptime = self.start_time.elapsed();
@@ -609,9 +657,12 @@ impl CommandDispatcher {
                 } else {
                     format!("{mins}m")
                 };
-                self.reply(client, sender_id, &format!(
-                    "Uptime: {uptime_str}\nTracks played: {tracks}\nQueue: {queue_len} tracks\nVolume: {vol}%"
-                ));
+                self.reply_t(client, sender_id, Key::Stats, &[
+                    ("uptime", uptime_str),
+                    ("tracks", tracks.to_string()),
+                    ("queue", queue_len.to_string()),
+                    ("volume", vol.to_string()),
+                ]);
             }
             "q" | "quit" => {
                 self.send(BotCommand::Quit { user_id: sender_id });

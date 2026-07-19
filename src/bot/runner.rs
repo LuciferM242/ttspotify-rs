@@ -217,6 +217,14 @@ pub async fn run_bot(
         player_event_loop(event_rx, event_state, event_cmd_tx).await;
     });
 
+    // Shared i18n runtime: embedded English + any <config_dir>/lang/*.lang
+    // files, and per-user language prefs. Shared by the dispatcher (which
+    // seeds the per-user language at dispatch) and the command processor.
+    let i18n = std::sync::Arc::new(crate::i18n::I18n::load(
+        &crate::config::config_dir(),
+        &config.default_language,
+    ));
+
     let dispatcher = crate::bot::commands::CommandDispatcher {
         state: state.clone(),
         volume: volume.clone(),
@@ -224,6 +232,7 @@ pub async fn run_bot(
         max_volume: config.max_volume,
         start_time: std::time::Instant::now(),
         auth: crate::bot::auth::AdminAuth::from_config(&config),
+        i18n: i18n.clone(),
     };
 
     tracing::info!("Bot is ready! Listening for commands...");
@@ -1120,7 +1129,11 @@ async fn command_processor(
                 };
                 match result {
                     Ok(tracks) => {
-                        reply(user_id, &crate::bot::commands::format_search_results(&tracks));
+                        reply(user_id, &crate::bot::commands::format_search_results(
+                            &tracks,
+                            "Search results:",
+                            "Type a number to play, or a to cancel",
+                        ));
                         state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
