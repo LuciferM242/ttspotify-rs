@@ -222,6 +222,19 @@ impl PlayerState {
         self.bulk_load_generation += 1;
     }
 
+    /// Drop everything after the current track (or the whole queue when
+    /// nothing is playing). Also invalidates any in-flight background bulk
+    /// loader — otherwise it would keep re-filling the queue the user just
+    /// cleared.
+    pub fn clear_upcoming(&mut self) {
+        if let Some(idx) = self.current_index {
+            self.queue.truncate(idx + 1);
+        } else {
+            self.queue.clear();
+        }
+        self.bulk_load_generation += 1;
+    }
+
     /// Start a new bulk load: invalidates any in-flight background loader and
     /// returns the generation the new loader must carry.
     pub fn begin_bulk_load(&mut self) -> u64 {
@@ -334,6 +347,31 @@ mod tests {
         let mut state = PlayerState::new();
         let g = state.begin_bulk_load();
         state.clear();
+        assert_ne!(state.bulk_load_generation, g);
+    }
+
+    #[test]
+    fn clear_upcoming_keeps_current_and_invalidates_bulk_loader() {
+        let mut state = PlayerState::new();
+        state.enqueue_all(vec![track("a"), track("b"), track("c")], "u".to_string(), false);
+        state.current_index = Some(0);
+        let g = state.begin_bulk_load();
+        state.clear_upcoming();
+        // Current track stays, upcoming dropped, in-flight loader invalidated.
+        assert_eq!(state.queue.len(), 1);
+        assert_eq!(state.current_index, Some(0));
+        assert_ne!(state.bulk_load_generation, g);
+    }
+
+    #[test]
+    fn clear_upcoming_with_no_current_empties_queue_and_invalidates_loader() {
+        let mut state = PlayerState::new();
+        state.enqueue_all(vec![track("a"), track("b")], "u".to_string(), false);
+        // Played past the end of the queue: entries remain but none is current.
+        state.current_index = None;
+        let g = state.begin_bulk_load();
+        state.clear_upcoming();
+        assert!(state.queue.is_empty());
         assert_ne!(state.bulk_load_generation, g);
     }
 

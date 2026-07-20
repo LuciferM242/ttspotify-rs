@@ -1422,12 +1422,7 @@ async fn command_processor(
             }
 
             BotCommand::QueueClear { user_id: _ } => {
-                let mut s = state.lock();
-                if let Some(idx) = s.current_index {
-                    s.queue.truncate(idx + 1);
-                } else {
-                    s.queue.clear();
-                }
+                state.lock().clear_upcoming();
             }
 
             BotCommand::QueueRemove { index, user_id: _ } => {
