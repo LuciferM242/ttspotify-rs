@@ -71,6 +71,12 @@ fn load_valid_config(path: &Path) -> Option<BotConfig> {
     Some(cfg)
 }
 
+/// Process exit code for "config missing or unreadable" (sysexits EX_CONFIG).
+/// The systemd unit lists it in RestartPreventExitStatus: restarting can't fix
+/// a missing config, and a 2s crash-restart loop hammers the TeamTalk server
+/// with logins.
+pub const EXIT_CONFIG_ERROR: i32 = 78;
+
 /// List config files in the config directory, skipping non-bot files.
 pub fn list_configs() -> Vec<(String, PathBuf)> {
     list_configs_in(&config_dir())
@@ -331,30 +337,36 @@ impl BotConfig {
 
     /// Load config for startup. If the file is missing, offer the interactive
     /// setup wizard (blocks on stdin — startup only, never from a worker task).
+    /// Non-interactive contexts (systemd: stdin is /dev/null) skip the prompt
+    /// and fail immediately with a clear error, so a missing config becomes a
+    /// clean exit instead of a hung or crash-looping service.
     pub fn load(path: &str) -> Result<Self, BotError> {
+        use std::io::IsTerminal;
         let path_ref = Path::new(path);
         if !path_ref.exists() {
             eprintln!("Config file not found: {}", path_ref.display());
-            eprint!("Would you like to run the setup wizard? [y/N] ");
-            use std::io::Write;
-            std::io::stderr().flush().ok();
-            let mut input = String::new();
-            if std::io::stdin().read_line(&mut input).is_ok()
-                && matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-            {
-                // offer_service = false: this path continues into running the
-                // bot in the foreground; also starting a systemd instance
-                // would run the same config twice.
-                crate::wizard::run_wizard(None, false)?;
-                // Re-check if a config was created in the default config dir
-                let configs = list_configs();
-                if let Some((_, created_path)) = configs.first() {
-                    let mut config = Self::parse_file(created_path)
-                        .map_err(|e| BotError::Config(format!("Failed to load created config: {e}")))?;
-                    for warning in config.validate() {
-                        tracing::warn!("Config: {warning}");
+            if std::io::stdin().is_terminal() {
+                eprint!("Would you like to run the setup wizard? [y/N] ");
+                use std::io::Write;
+                std::io::stderr().flush().ok();
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_ok()
+                    && matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+                {
+                    // offer_service = false: this path continues into running the
+                    // bot in the foreground; also starting a systemd instance
+                    // would run the same config twice.
+                    crate::wizard::run_wizard(None, false)?;
+                    // Re-check if a config was created in the default config dir
+                    let configs = list_configs();
+                    if let Some((_, created_path)) = configs.first() {
+                        let mut config = Self::parse_file(created_path)
+                            .map_err(|e| BotError::Config(format!("Failed to load created config: {e}")))?;
+                        for warning in config.validate() {
+                            tracing::warn!("Config: {warning}");
+                        }
+                        return Ok(config);
                     }
-                    return Ok(config);
                 }
             }
             return Err(BotError::Config(format!(

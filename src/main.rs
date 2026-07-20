@@ -171,7 +171,16 @@ async fn main() -> Result<(), BotError> {
     // default is used on a fresh process start.
     let last_channel = std::sync::Arc::new(parking_lot::Mutex::new(None));
     loop {
-        let config = BotConfig::load(&config_path)?;
+        // A missing/broken config exits with EXIT_CONFIG_ERROR so the systemd
+        // unit's RestartPreventExitStatus stops the service instead of
+        // crash-restarting into the same missing file every 2 seconds.
+        let config = match BotConfig::load(&config_path) {
+            Ok(config) => config,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
+            }
+        };
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         match tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None, last_channel.clone()).await? {

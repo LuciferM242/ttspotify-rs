@@ -108,23 +108,7 @@ pub fn install_service() -> Result<(), BotError> {
         "%i"
     );
 
-    let unit = format!(
-        r#"[Unit]
-Description=TTSpotify Bot (%i)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart={exec_start}
-Restart=on-failure
-RestartForceExitStatus=42
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-"#
-    );
+    let unit = unit_file_contents(&exec_start);
 
     std::fs::write(&service_path, unit)?;
 
@@ -174,6 +158,31 @@ WantedBy=default.target
     }
 
     Ok(())
+}
+
+/// Render the `ttspotify@.service` user unit. A missing/broken config exits
+/// with EXIT_CONFIG_ERROR; RestartPreventExitStatus keeps systemd from
+/// crash-restarting into the same missing file every 2 seconds (which logs the
+/// bot in and out of the TeamTalk server nonstop).
+fn unit_file_contents(exec_start: &str) -> String {
+    format!(
+        r#"[Unit]
+Description=TTSpotify Bot (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+Restart=on-failure
+RestartPreventExitStatus={config_exit}
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+"#,
+        config_exit = crate::config::EXIT_CONFIG_ERROR,
+    )
 }
 
 /// Parse `systemctl --user list-units 'ttspotify@*' --state=running --plain
@@ -251,7 +260,22 @@ pub fn uninstall_service() -> Result<(), BotError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_running_units;
+    use super::{parse_running_units, unit_file_contents};
+
+    #[test]
+    fn unit_file_does_not_restart_on_config_error() {
+        let unit = unit_file_contents("\"/opt/bot\" --config \"/home/u/.config/ttspotify/%i.json\"");
+        // Exit code 78 (EX_CONFIG) means "config missing/broken": restarting
+        // can't help and would hammer the TeamTalk server with logins.
+        assert!(unit.contains(&format!(
+            "RestartPreventExitStatus={}",
+            crate::config::EXIT_CONFIG_ERROR
+        )));
+        // The old directive referenced an exit code nothing ever emits.
+        assert!(!unit.contains("RestartForceExitStatus"));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("ExecStart=\"/opt/bot\""));
+    }
 
     #[test]
     fn parses_unit_names_from_first_column() {
