@@ -236,22 +236,24 @@ impl AudioPipeline {
                 continue;
             }
 
-            // In-place stream restart (channel move). Same sequence a manual
-            // pause/play performs — end the stream in the SDK, drop everything
-            // buffered, refill the jitter gate — but position counters carry
-            // on: the SDK accepts a continuing sample_index after a flush.
+            // In-place stream restart (channel move): end the stream in the
+            // SDK, then carry on with the SAME stream_id, sample_index and —
+            // unlike pause/play — the same buffered PCM. The garble the flush
+            // cures lives in the SDK's per-channel stream state, not in our
+            // buffered samples; dropping them (the first version of this fix)
+            // skipped the several seconds of read-ahead the decoder had built
+            // up on every move. Only what the SDK itself had queued but not
+            // yet sent is lost.
             // Checked AFTER the pause branch (which `continue`s) so a move
             // that happens while paused leaves the flag set and the flush
             // runs when playback resumes — flushing mid-pause would be
             // consumed with nothing to restart.
             if self.stream_flush_flag.swap(false, Ordering::Relaxed) {
-                while self.audio_rx.try_recv().is_ok() {}
                 crate::tt::audio_inject::flush_audio(&self.client);
-                self.framer.clear();
                 self.prebuffer.rearm();
                 self.next_block_time = None;
                 tracing::info!(
-                    "Audio stream flushed after channel move (stream_id={} continues)",
+                    "Audio stream flushed after channel move (stream_id={} continues, buffer kept)",
                     self.stream_id
                 );
             }
