@@ -1,7 +1,13 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- YouTube Shorts links are now recognized and play like normal videos.
+
 ### Changed
+- Big YouTube playlists now start playing after the first page and load the
+  rest quietly in the background, like Spotify playlists already did, instead
+  of making you wait for the whole list.
 - Installing YouTube support now downloads the latest yt-dlp (still verified
   against its published SHA-256 checksum) instead of a fixed bundled version.
   A fresh install is already current, so it no longer has to re-download the
@@ -22,6 +28,31 @@
   playback carries on without you having to do anything.
 - Windows: the tray "Update tools" action and opening a log or config file
   from the tray menu no longer briefly flash a black console window.
+- A queue of broken YouTube tracks (or one broken track with repeat on) no
+  longer skips forever at full speed; after three failures in a row the bot
+  stops and goes idle, like it already did for Spotify.
+- Linux: a systemd service started with a config name that doesn't exist no
+  longer crash-restarts every 2 seconds (logging in and out of the TeamTalk
+  server nonstop); it now stops with a clear error. Re-run --install-service
+  once to update the unit file.
+- Linux: config names with spaces or special characters now work as systemd
+  service instances.
+- "queue clear" now also stops a big playlist that is still loading in the
+  background; previously it kept re-filling the queue you just cleared.
+- A successful update from the tray now shuts running bots down cleanly
+  before restarting the app, instead of cutting them off mid-session.
+- A failed update no longer leaves a leftover .update.tmp file next to the
+  program.
+- The rustypipe cache file is now kept in the config folder instead of
+  whatever folder the bot was started from.
+- Skipping a track in the same instant it ends naturally no longer jumps two
+  tracks forward.
+- Seeking a paused YouTube track now takes effect immediately instead of
+  waiting until you press play.
+- Tray: clicking Start right after Stop now restarts the bot instead of
+  silently doing nothing.
+- Searching with double spaces or tabs no longer breaks Spotify searches.
+- The "yt-dlp not found" error now names the real flag (--setup-yt).
 
 ## [0.6.1] - 2026-07-19
 ### Fixed
