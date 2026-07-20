@@ -3432,7 +3432,7 @@ dependencies = [
 [[package]]
 name = "teamtalk"
 version = "6.0.0"
-source = "git+https://github.com/LuciferM242/TeamTalkRust.git?branch=arm64-linux#eb7cad2c390623fd2a60f5b2bdc10696a6096721"
+source = "git+https://github.com/LuciferM242/TeamTalkRust.git?branch=sdk-dir-env#a0dbf47e79a7a3efc46f2aa62769c715a2e060a7"
 dependencies = [
  "bitflags 2.11.1",
  "rand 0.10.1",

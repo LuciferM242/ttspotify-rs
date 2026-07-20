@@ -21,12 +21,14 @@ use tt_spotify_bot::error::BotError;
 /// and never silently auto-update to a newer SDK. Bump this to move versions.
 const PINNED_TEAMTALK_SDK_VERSION: &str = "v5.19a";
 
-/// Pin the TeamTalk SDK version unless the user explicitly overrode it. Call
-/// once, first thing in `main`, before any TeamTalk client is created.
+/// Pin the TeamTalk SDK version unless the user explicitly overrode it, and
+/// pin the SDK directory to the config dir (migrating any old CWD/home copy).
+/// Call once, first thing in `main`, before any TeamTalk client is created.
 fn pin_teamtalk_sdk_version() {
     if std::env::var_os("TEAMTALK_SDK_VERSION").is_none() {
         std::env::set_var("TEAMTALK_SDK_VERSION", PINNED_TEAMTALK_SDK_VERSION);
     }
+    tt_spotify_bot::tt::sdk::pin_sdk_dir();
 }
 
 #[cfg(not(windows))]
