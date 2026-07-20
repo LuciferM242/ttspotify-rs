@@ -8,6 +8,19 @@
 - Big YouTube playlists now start playing after the first page and load the
   rest quietly in the background, like Spotify playlists already did, instead
   of making you wait for the whole list.
+- Linux: fresh YouTube tool installs now go to ~/.local/share/ttspotify/lib
+  instead of a lib folder next to the program, so installing the bot to a
+  system location like /usr/local/bin no longer breaks tool updates. Existing
+  installs keep using their current folder.
+
+### Security
+- Linux: services installed with --install-service now run sandboxed - the
+  bot can only write to its own folders (config, logs, YouTube tools and
+  caches); the rest of the system is read-only to it, and it can never gain
+  extra privileges. Re-run --install-service once to get the new protections;
+  the service file explains how to allow a custom config folder. On the first
+  start after that, the bot re-downloads the TeamTalk SDK into its config
+  folder.
 - Installing YouTube support now downloads the latest yt-dlp (still verified
   against its published SHA-256 checksum) instead of a fixed bundled version.
   A fresh install is already current, so it no longer has to re-download the
