@@ -74,6 +74,40 @@ fn startup_auth_plan(
     }
 }
 
+/// Counts consecutive track-start failures so a queue of broken tracks (or a
+/// broken repeat-mode track) stops instead of auto-skipping forever. Spotify
+/// failures surface synchronously from start_track; YouTube loads are
+/// fire-and-forget and report back later via TrackEnded { error }, so YouTube
+/// starts must NOT reset the streak — only a clean track end (or a successful
+/// Spotify start) does.
+struct StartFailureBrake {
+    consec: u32,
+    cap: u32,
+}
+
+impl StartFailureBrake {
+    fn new(cap: u32) -> Self {
+        Self { consec: 0, cap }
+    }
+
+    /// A track started (Spotify) or finished (any service) cleanly.
+    fn on_success(&mut self) {
+        self.consec = 0;
+    }
+
+    /// A track failed to start or errored out. Returns true when the streak
+    /// hit the cap: caller must stop playback and go idle (streak resets).
+    fn on_failure(&mut self) -> bool {
+        self.consec += 1;
+        if self.consec >= self.cap {
+            self.consec = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Whether a self channel-change requires flushing the injected audio stream.
 /// Moving to a different channel restarts the SDK's voice stream for the new
 /// channel's codec; audio blocks straddling that transition leave the encoder
@@ -1044,30 +1078,43 @@ async fn command_processor(
     // Count consecutive track-start failures so a queue full of dead entries
     // (e.g. unresolvable URIs) doesn't loop forever auto-skipping.
     const MAX_CONSECUTIVE_START_FAILURES: u32 = 3;
-    let mut consec_start_failures: u32 = 0;
+    let mut start_brake = StartFailureBrake::new(MAX_CONSECUTIVE_START_FAILURES);
+
+    // Shared "too many failures in a row" bail-out: stop everything, clear the
+    // queue and go idle so a broken queue (or broken repeat-mode track) can't
+    // auto-skip forever.
+    macro_rules! brake_stop {
+        () => {{
+            stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
+            {
+                let mut s = state.lock();
+                s.clear();
+                s.position_ms = 0;
+            }
+            set_status("Idle");
+            send_event(RunnerEvent::Idle);
+        }};
+    }
 
     // Start a track; on failure report to the requester and auto-skip to the
     // next entry, unless too many have failed in a row (then stop and go idle).
     // Expands to a bool: true = now playing, false = failed (caller skips its
     // "Now playing" replies).
+    // NOTE: a YouTube start_track returning true only means the load was
+    // dispatched; failures come back later as TrackEnded { error }. The brake
+    // must NOT be reset on a dispatched YouTube load or a failing repeat-mode
+    // track would reset it every cycle and skip-storm forever.
     macro_rules! start_or_skip {
         ($service:expr, $uri:expr, $user_id:expr, $name:expr) => {{
             if start_track($service, $uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
-                consec_start_failures = 0;
+                if $service == crate::services::Service::Spotify {
+                    start_brake.on_success();
+                }
                 true
             } else {
-                consec_start_failures += 1;
                 reply_t($user_id, Key::FailedToStart, &[("track", $name.to_string())]);
-                if consec_start_failures >= MAX_CONSECUTIVE_START_FAILURES {
-                    consec_start_failures = 0;
-                    stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
-                    {
-                        let mut s = state.lock();
-                        s.clear();
-                        s.position_ms = 0;
-                    }
-                    set_status("Idle");
-                    send_event(RunnerEvent::Idle);
+                if start_brake.on_failure() {
+                    brake_stop!();
                 } else {
                     let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
                 }
@@ -1540,6 +1587,20 @@ async fn command_processor(
                 }
                 if let Some(e) = error {
                     tracing::warn!("YouTube track ended with error: {e}");
+                    // A failed YouTube load surfaces here (start_track was
+                    // fire-and-forget); apply the same consecutive-failure
+                    // brake as synchronous start failures, otherwise a queue
+                    // of dead tracks — or one dead track on repeat — advances
+                    // in a tight endless loop.
+                    if start_brake.on_failure() {
+                        tracing::warn!(
+                            "{MAX_CONSECUTIVE_START_FAILURES} consecutive YouTube track failures, stopping playback"
+                        );
+                        brake_stop!();
+                        continue;
+                    }
+                } else {
+                    start_brake.on_success();
                 }
                 // Advance exactly like a natural end-of-track.
                 let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
@@ -1738,6 +1799,29 @@ mod tests {
         assert_eq!(startup_auth_plan(true, false, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(false, true, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(true, true, false), StartupAuthPlan::ConnectBestEffort);
+    }
+
+    // -- StartFailureBrake --
+
+    #[test]
+    fn brake_trips_after_cap_consecutive_failures() {
+        let mut brake = StartFailureBrake::new(3);
+        assert!(!brake.on_failure());
+        assert!(!brake.on_failure());
+        assert!(brake.on_failure());
+        // Tripping resets the streak.
+        assert!(!brake.on_failure());
+    }
+
+    #[test]
+    fn brake_resets_on_immediate_success() {
+        let mut brake = StartFailureBrake::new(3);
+        assert!(!brake.on_failure());
+        assert!(!brake.on_failure());
+        brake.on_success();
+        assert!(!brake.on_failure());
+        assert!(!brake.on_failure());
+        assert!(brake.on_failure());
     }
 
     // -- channel_move_needs_flush --
