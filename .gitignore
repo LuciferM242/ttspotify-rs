@@ -13,3 +13,6 @@ CLAUDE.md
 /TEAMTALK_DLL/
 /TeamTalkRust/
 /api/
+
+# rustypipe cache written next to the CWD when running from the repo
+rustypipe_cache.json

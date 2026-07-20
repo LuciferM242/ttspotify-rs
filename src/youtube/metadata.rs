@@ -31,8 +31,13 @@ pub struct YouTubeMetadata {
 
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
+        // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
+        // The default is the process working directory, which under systemd
+        // may be unwritable (silently losing the cache) and during development
+        // litters the repo root.
         let client = RustyPipe::builder()
             .no_botguard()
+            .storage_dir(crate::config::config_dir())
             .build()
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
         // Resolve bundled paths but don't require them — falling back to PATH
