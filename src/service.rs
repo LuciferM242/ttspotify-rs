@@ -30,18 +30,41 @@ pub fn service_installed() -> bool {
     systemd_dir().join(SERVICE_NAME).exists()
 }
 
+/// Escape a config name for use as a systemd template instance, matching
+/// `systemd-escape`: `/` becomes `-`, a leading `.` and every byte outside
+/// `[A-Za-z0-9:_.]` become `\xNN`. Without this, a config like
+/// `my server.json` yields an instance string systemctl can't address.
+fn systemd_escape_instance(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (i, b) in name.bytes().enumerate() {
+        let allowed = b.is_ascii_alphanumeric()
+            || b == b':'
+            || b == b'_'
+            || (b == b'.' && i != 0);
+        if b == b'/' {
+            out.push('-');
+        } else if allowed {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("\\x{b:02x}"));
+        }
+    }
+    out
+}
+
 /// Offer (y/N prompt) to enable and start `ttspotify@<name>` now. Used by the
 /// setup wizard right after a config is created, and by `--install-service`
 /// for each existing config.
 pub fn offer_enable_instance(name: &str) {
-    if prompt_yes_no(&format!("Enable and start ttspotify@{name} now?")) {
+    let instance = systemd_escape_instance(name);
+    if prompt_yes_no(&format!("Enable and start ttspotify@{instance} now?")) {
         let _ = Command::new("systemctl")
-            .args(["--user", "enable", &format!("ttspotify@{name}")])
+            .args(["--user", "enable", &format!("ttspotify@{instance}")])
             .status();
         let _ = Command::new("systemctl")
-            .args(["--user", "start", &format!("ttspotify@{name}")])
+            .args(["--user", "start", &format!("ttspotify@{instance}")])
             .status();
-        println!("  ttspotify@{name} enabled and started.");
+        println!("  ttspotify@{instance} enabled and started.");
     }
 }
 
@@ -100,12 +123,15 @@ pub fn install_service() -> Result<(), BotError> {
     std::fs::create_dir_all(&config_base)?;
 
     let service_path = systemd.join(SERVICE_NAME);
-    // Quote the binary and config paths so spaces in either don't break the unit.
+    // Quote the binary and config paths so spaces in either don't break the
+    // unit. %I (unescaped) rather than %i: instance names are systemd-escaped
+    // when starting (see systemd_escape_instance), and the config file on disk
+    // uses the original name.
     let exec_start = format!(
         "\"{}\" --config \"{}/{}.json\"",
         exe_path.display(),
         config_base.display(),
-        "%i"
+        "%I"
     );
 
     let unit = unit_file_contents(&exec_start);
@@ -275,6 +301,20 @@ mod tests {
         assert!(!unit.contains("RestartForceExitStatus"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("ExecStart=\"/opt/bot\""));
+    }
+
+    #[test]
+    fn escape_instance_passes_plain_names_through() {
+        assert_eq!(super::systemd_escape_instance("myserver"), "myserver");
+        assert_eq!(super::systemd_escape_instance("srv_2.home:x"), "srv_2.home:x");
+    }
+
+    #[test]
+    fn escape_instance_encodes_specials_like_systemd_escape() {
+        // Same output `systemd-escape` produces for these inputs.
+        assert_eq!(super::systemd_escape_instance("my server"), r"my\x20server");
+        assert_eq!(super::systemd_escape_instance("a/b"), "a-b");
+        assert_eq!(super::systemd_escape_instance(".hidden"), r"\x2ehidden");
     }
 
     #[test]
