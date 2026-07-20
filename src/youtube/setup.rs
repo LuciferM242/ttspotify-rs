@@ -50,6 +50,99 @@ fn pick_tools_dir(legacy: PathBuf, legacy_has_tools: bool, data_dir: Option<Path
     }
 }
 
+/// Everything our installer puts into the tools dir. Used by the migration to
+/// move exactly our items and nothing else.
+fn tool_item_names() -> [&'static str; 4] {
+    if cfg!(windows) {
+        ["yt-dlp.exe", "bgutil-pot.exe", "yt-dlp-plugins", BGUTIL_VERSION_FILE]
+    } else {
+        ["yt-dlp", "bgutil-pot", "yt-dlp-plugins", BGUTIL_VERSION_FILE]
+    }
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// One-time move of our tools from a legacy exe-side `lib/` into the new
+/// location. Runs only when the legacy dir is provably ours — the
+/// `.bgutil-version` sidecar is written by nothing but our installer.
+///
+/// Copy-verify-delete rather than rename: if anything fails mid-way the
+/// legacy dir is still complete and stays the active tools dir, so the bot
+/// can never end up with the tools split across two half-dirs. Files the
+/// installer didn't create are left alone; the legacy dir itself is removed
+/// only when the move emptied it. Returns whether a migration happened.
+pub fn migrate_tools_dir(legacy: &Path, target: &Path) -> bool {
+    if legacy == target || !legacy.join(BGUTIL_VERSION_FILE).is_file() {
+        return false;
+    }
+    // Copy phase: legacy stays intact until everything landed.
+    for name in tool_item_names() {
+        let src = legacy.join(name);
+        if !src.exists() {
+            continue;
+        }
+        let dest = target.join(name);
+        let copied = if src.is_dir() {
+            copy_dir_recursive(&src, &dest)
+        } else {
+            std::fs::create_dir_all(target).and_then(|()| std::fs::copy(&src, &dest).map(|_| ()))
+        };
+        if let Err(e) = copied {
+            tracing::warn!(
+                "YouTube tools migration aborted (copying {name}: {e}); staying in {}",
+                legacy.display()
+            );
+            return false;
+        }
+    }
+    // Delete phase: failures here leave harmless duplicates, never a split.
+    for name in tool_item_names() {
+        let src = legacy.join(name);
+        let removed = if src.is_dir() {
+            std::fs::remove_dir_all(&src)
+        } else if src.exists() {
+            std::fs::remove_file(&src)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = removed {
+            tracing::warn!("Could not remove migrated {name} from old tools dir: {e}");
+        }
+    }
+    // Only ours in there? Then the folder goes too. remove_dir refuses
+    // non-empty dirs, which is exactly the guard we want.
+    let _ = std::fs::remove_dir(legacy);
+    tracing::info!(
+        "Moved YouTube tools from {} to {}",
+        legacy.display(),
+        target.display()
+    );
+    true
+}
+
+/// Move a legacy exe-side tools install to the XDG data dir (Linux only; on
+/// Windows the exe-side dir remains the home). Call at startup before
+/// anything resolves tool paths.
+#[cfg(not(windows))]
+pub fn migrate_legacy_tools() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(exe_dir) = exe.parent() else { return };
+    let Some(data) = dirs::data_dir() else { return };
+    migrate_tools_dir(&exe_dir.join("lib"), &data.join("ttspotify").join("lib"));
+}
+
 /// Compute where the binaries should live.
 /// Windows: `<dir of current_exe>\lib` (unchanged; installs are per-user).
 /// Linux: exe-side `lib/` when it already holds the tools, else
@@ -540,6 +633,79 @@ pub fn which(exe_name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mig_tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ttspotify_toolmig_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn fake_legacy_install(legacy: &Path) {
+        std::fs::create_dir_all(legacy).unwrap();
+        for name in tool_item_names() {
+            if name == "yt-dlp-plugins" {
+                let plug = legacy.join(name).join("bgutil_ytdlp_pot_provider");
+                std::fs::create_dir_all(&plug).unwrap();
+                std::fs::write(plug.join("plugin.py"), "py").unwrap();
+            } else {
+                std::fs::write(legacy.join(name), name).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn migrates_marked_lib_and_removes_empty_legacy() {
+        let base = mig_tmp("full");
+        let legacy = base.join("lib");
+        fake_legacy_install(&legacy);
+        let target = base.join("data").join("ttspotify").join("lib");
+
+        assert!(migrate_tools_dir(&legacy, &target));
+        for name in tool_item_names() {
+            assert!(target.join(name).exists(), "missing {name} in target");
+            assert!(!legacy.join(name).exists(), "{name} left in legacy");
+        }
+        // Plugin contents survived the move.
+        assert!(target.join("yt-dlp-plugins").join("bgutil_ytdlp_pot_provider").join("plugin.py").is_file());
+        // Nothing of ours left: the folder itself goes too.
+        assert!(!legacy.exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn refuses_lib_without_our_marker() {
+        // No .bgutil-version sidecar: could be anyone's lib folder. Hands off.
+        let base = mig_tmp("unmarked");
+        let legacy = base.join("lib");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("yt-dlp"), "x").unwrap();
+        let target = base.join("data").join("lib");
+
+        assert!(!migrate_tools_dir(&legacy, &target));
+        assert!(legacy.join("yt-dlp").is_file());
+        assert!(!target.exists());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn keeps_legacy_dir_when_it_holds_foreign_files() {
+        let base = mig_tmp("foreign");
+        let legacy = base.join("lib");
+        fake_legacy_install(&legacy);
+        std::fs::write(legacy.join("users-own-notes.txt"), "keep me").unwrap();
+        let target = base.join("data").join("lib");
+
+        assert!(migrate_tools_dir(&legacy, &target));
+        // Our items moved, the stranger's file and its folder stay.
+        assert!(legacy.join("users-own-notes.txt").is_file());
+        assert!(!legacy.join(BGUTIL_VERSION_FILE).exists());
+        assert!(target.join(BGUTIL_VERSION_FILE).is_file());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn existing_exe_side_lib_with_tools_wins() {

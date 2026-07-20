@@ -81,6 +81,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), BotError> {
     pin_teamtalk_sdk_version();
+    // One-time move of an old exe-side tools install to the XDG data dir,
+    // before anything resolves tool paths.
+    tt_spotify_bot::youtube::setup::migrate_legacy_tools();
     tt_spotify_bot::logging::install_panic_hook();
     let args = Args::parse();
 

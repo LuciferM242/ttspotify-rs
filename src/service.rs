@@ -225,7 +225,8 @@ ProtectSystem=strict
 PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=-{config_dir}
-{tools_rw}ReadWritePaths=-%h/.cache
+{tools_rw}ReadWritePaths=-%h/.local/share/ttspotify
+ReadWritePaths=-%h/.cache
 
 [Install]
 WantedBy=default.target
@@ -358,7 +359,10 @@ mod tests {
             None,
         );
         assert!(unit.contains("ReadWritePaths=-/x"));
-        assert!(!unit.contains("local/share"));
+        // The XDG tools home stays whitelisted even when no tools dir was
+        // detected at install time — the startup migration may create it later.
+        assert!(unit.contains("ReadWritePaths=-%h/.local/share/ttspotify"));
+        assert!(!unit.contains("ReadWritePaths=-/home"));
     }
 
     #[test]
