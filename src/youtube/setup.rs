@@ -4,8 +4,10 @@
 //! into `<exe-dir>/lib/` so the bot can resolve them at runtime without the
 //! user installing anything by hand.
 //!
-//! Pinned versions live as constants below. Bump them periodically and ship
-//! a new release; users re-run `--setup-youtube` to update.
+//! yt-dlp installs the newest GitHub release (verified against that release's
+//! own SHA2-256SUMS), so a fresh install is already current — no second
+//! `--update` download on metered connections. bgutil stays pinned below;
+//! bump it periodically and ship a new release.
 
 use std::fs;
 use std::io::Write;
@@ -13,7 +15,6 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BotError;
 
-const YT_DLP_VERSION: &str = "2026.03.17";
 const BGUTIL_VERSION: &str = "v0.8.1";
 
 /// Filename for the sidecar that records which bgutil version is on disk.
@@ -117,8 +118,10 @@ pub async fn install(
         .build()
         .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
 
-    // 1. yt-dlp — verify against the release's SHA2-256SUMS manifest.
-    progress(&format!("Downloading yt-dlp {YT_DLP_VERSION}..."));
+    // 1. yt-dlp — install the newest release, verified against that release's
+    // SHA2-256SUMS manifest. The `latest` alias redirects to the current tag;
+    // fetching the asset and its manifest from the same alias keeps them paired.
+    progress("Downloading yt-dlp (latest)...");
     let yt_dlp_asset = if cfg!(windows) {
         "yt-dlp.exe"
     } else if cfg!(target_arch = "aarch64") {
@@ -127,11 +130,11 @@ pub async fn install(
         "yt-dlp_linux"
     };
     let yt_dlp_url = format!(
-        "https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/{yt_dlp_asset}"
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{yt_dlp_asset}"
     );
     let yt_dlp_hash = match fetch_text(
         &client,
-        &format!("https://github.com/yt-dlp/yt-dlp/releases/download/{YT_DLP_VERSION}/SHA2-256SUMS"),
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS",
     ).await {
         Ok(sums) => parse_sums_file(&sums, yt_dlp_asset),
         Err(e) => {
