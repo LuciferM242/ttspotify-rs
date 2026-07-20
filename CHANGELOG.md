@@ -2,77 +2,43 @@
 
 ## [Unreleased]
 ### Added
-- YouTube Shorts links are now recognized and play like normal videos.
+- YouTube Shorts links now play.
 
 ### Changed
-- Big YouTube playlists now start playing after the first page and load the
-  rest quietly in the background, like Spotify playlists already did, instead
-  of making you wait for the whole list.
-- Linux: fresh YouTube tool installs now go to ~/.local/share/ttspotify/lib
-  instead of a lib folder next to the program, so installing the bot to a
-  system location like /usr/local/bin no longer breaks tool updates. An
-  existing install is moved there automatically at startup (only when the
-  folder was created by the bot's own installer; anything else in it is left
-  alone).
-- The downloaded TeamTalk SDK now lives in one fixed place (the config
-  folder) instead of a copy appearing in whatever folder the bot was started
-  from. An old copy in the home folder or start folder is moved over
-  automatically; scattered extra copies from old manual runs can be deleted
-  by hand (folders named TEAMTALK_DLL).
+- Big YouTube playlists start playing right away and load the rest in the
+  background, like Spotify playlists already did.
+- Installing YouTube support now downloads the latest yt-dlp instead of a
+  version fixed at release time.
+- The tray "Update tools" window now says which yt-dlp version it updated
+  from and to.
+- Linux: the YouTube tools and the downloaded TeamTalk SDK now live in fixed
+  folders instead of wherever the bot was started from. Existing copies are
+  moved over automatically.
 
 ### Security
 - Linux: services installed with --install-service now run sandboxed - the
-  bot can only write to its own folders (config, logs, YouTube tools and
-  caches); the rest of the system is read-only to it, and it can never gain
-  extra privileges. Re-run --install-service once to get the new protections;
-  the service file explains how to allow a custom config folder. On the first
-  start after that, the bot re-downloads the TeamTalk SDK into its config
-  folder.
-- Installing YouTube support now downloads the latest yt-dlp (still verified
-  against its published SHA-256 checksum) instead of a fixed bundled version.
-  A fresh install is already current, so it no longer has to re-download the
-  whole binary the first time you run Update tools.
-- The tray "Update tools" window now reports which yt-dlp version it updated
-  from and to (or that it was already up to date), instead of just saying the
-  check finished.
+  bot can write only to its own folders, the rest of the system is read-only
+  to it. Re-run --install-service once to get this.
 
 ### Fixed
 - Audio no longer comes out garbled after the bot is moved to another channel.
-  Playback now restarts its stream cleanly on a channel change.
-- Removed a spurious startup warning about lang_prefs.json being an invalid
-  config file; it is the per-user language store, not a bot config.
-- Spotify playback now recovers on its own when its streaming session drops.
-  A dropped session previously left the bot unable to play until you restarted
-  it; the bot now notices the dead session and rebuilds it quietly in the
-  background (with backoff and a limit so it never hammers Spotify), and
-  playback carries on without you having to do anything.
-- Windows: the tray "Update tools" action and opening a log or config file
-  from the tray menu no longer briefly flash a black console window.
-- A queue of broken YouTube tracks (or one broken track with repeat on) no
-  longer skips forever at full speed; after three failures in a row the bot
-  stops and goes idle, like it already did for Spotify.
-- Linux: a systemd service started with a config name that doesn't exist no
-  longer crash-restarts every 2 seconds (logging in and out of the TeamTalk
-  server nonstop); it now stops with a clear error. Re-run --install-service
-  once to update the unit file.
-- Linux: config names with spaces or special characters now work as systemd
-  service instances.
-- "queue clear" now also stops a big playlist that is still loading in the
-  background; previously it kept re-filling the queue you just cleared.
-- A successful update from the tray now shuts running bots down cleanly
-  before restarting the app, instead of cutting them off mid-session.
-- A failed update no longer leaves a leftover .update.tmp file next to the
-  program.
-- The rustypipe cache file is now kept in the config folder instead of
-  whatever folder the bot was started from.
-- Skipping a track in the same instant it ends naturally no longer jumps two
-  tracks forward.
-- Seeking a paused YouTube track now takes effect immediately instead of
-  waiting until you press play.
-- Tray: clicking Start right after Stop now restarts the bot instead of
-  silently doing nothing.
-- Searching with double spaces or tabs no longer breaks Spotify searches.
-- The "yt-dlp not found" error now names the real flag (--setup-yt).
+- Spotify playback recovers on its own when its streaming session drops,
+  instead of staying broken until a restart.
+- Broken YouTube tracks stop after three failures in a row instead of
+  skipping forever (worst with repeat on).
+- Skipping a track in the same instant it ends no longer jumps two tracks.
+- Seeking a paused YouTube track now applies immediately, not on resume.
+- "queue clear" also stops a playlist that is still loading in the background.
+- Linux: a service started with a missing config name now stops with a clear
+  error instead of restarting every 2 seconds (re-run --install-service once).
+- Linux: config names with spaces or special characters work as service names.
+- Tray: updating no longer cuts running bots off mid-session, Start right
+  after Stop works, and no more brief black console window flashes.
+- A failed update no longer leaves a temp file next to the program.
+- Searches with extra spaces or tabs no longer fail on Spotify.
+- Small cleanups: cache files stay in the config folder, a stray startup
+  warning about lang_prefs.json is gone, and the "yt-dlp not found" error
+  names the right flag (--setup-yt).
 
 ## [0.6.1] - 2026-07-19
 ### Fixed
