@@ -134,6 +134,10 @@ pub struct AudioPipeline {
     reset_flag: Arc<AtomicBool>,
     timing_reset_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
+    /// Restart the injected stream in place (channel move): flush TeamTalk,
+    /// drop buffered PCM, re-arm the jitter gate — but keep `stream_id`,
+    /// `sample_index` and `pos_ms` so the playback position doesn't jump.
+    stream_flush_flag: Arc<AtomicBool>,
     shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     framer: Framer,
@@ -158,6 +162,7 @@ impl AudioPipeline {
         reset_flag: Arc<AtomicBool>,
         timing_reset_flag: Arc<AtomicBool>,
         pause_flag: Arc<AtomicBool>,
+        stream_flush_flag: Arc<AtomicBool>,
         shutdown_flag: Arc<AtomicBool>,
         pos_ms: Arc<AtomicU32>,
         config: &BotConfig,
@@ -173,6 +178,7 @@ impl AudioPipeline {
             reset_flag,
             timing_reset_flag,
             pause_flag,
+            stream_flush_flag,
             shutdown_flag,
             pos_ms,
             volume_controller,
@@ -219,6 +225,22 @@ impl AudioPipeline {
                 tracing::debug!("Audio pipeline timing reset (resume)");
             }
 
+            // In-place stream restart (channel move). Same sequence a manual
+            // pause/play performs — end the stream in the SDK, drop everything
+            // buffered, refill the jitter gate — but position counters carry
+            // on: the SDK accepts a continuing sample_index after a flush.
+            if self.stream_flush_flag.swap(false, Ordering::Relaxed) {
+                while self.audio_rx.try_recv().is_ok() {}
+                crate::tt::audio_inject::flush_audio(&self.client);
+                self.framer.clear();
+                self.prebuffer.rearm();
+                self.next_block_time = None;
+                tracing::info!(
+                    "Audio stream flushed after channel move (stream_id={} continues)",
+                    self.stream_id
+                );
+            }
+
             // When paused, drain all buffered audio and skip injection
             if self.pause_flag.load(Ordering::Relaxed) {
                 // Drain channel to prevent backpressure on the sink
@@ -263,8 +285,12 @@ impl AudioPipeline {
             }
 
             while self.framer.len() >= FRAME_SIZE {
-                // Check reset or pause mid-injection (for instant stop/pause)
-                if self.reset_flag.load(Ordering::Relaxed) || self.pause_flag.load(Ordering::Relaxed) {
+                // Check reset, pause or stream-flush mid-injection so a stop,
+                // pause or channel move interrupts a buffered backlog promptly.
+                if self.reset_flag.load(Ordering::Relaxed)
+                    || self.pause_flag.load(Ordering::Relaxed)
+                    || self.stream_flush_flag.load(Ordering::Relaxed)
+                {
                     break;
                 }
                 if !self.framer.pop_frame(&mut self.frame_buf) {

@@ -74,6 +74,19 @@ fn startup_auth_plan(
     }
 }
 
+/// Whether a self channel-change requires flushing the injected audio stream.
+/// Moving to a different channel restarts the SDK's voice stream for the new
+/// channel's codec; audio blocks straddling that transition leave the encoder
+/// in a garbled state until the stream is ended and restarted (the same thing
+/// a manual pause/play does). The initial join (no previous channel) and
+/// same-channel rejoins don't need it.
+fn channel_move_needs_flush(
+    prev: ::teamtalk::types::ChannelId,
+    new: ::teamtalk::types::ChannelId,
+) -> bool {
+    prev != ::teamtalk::types::ChannelId(0) && prev != new
+}
+
 /// Run a single bot instance. Returns when the bot exits.
 ///
 /// - `config`: Bot configuration.
@@ -145,12 +158,16 @@ pub async fn run_bot(
     let audio_reset = Arc::new(AtomicBool::new(false));
     let timing_reset = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::new(AtomicBool::new(false));
+    // Set on a self channel-move: the pipeline ends and restarts the injected
+    // stream (like a manual pause/play) without touching position counters.
+    let stream_flush = Arc::new(AtomicBool::new(false));
     // Realtime playback position (ms injected since last reset), written by the
     // pipeline and read by the YouTube player for accurate `c`/seek positions.
     let pipeline_pos_ms = Arc::new(AtomicU32::new(0));
     let pipeline_reset = audio_reset.clone();
     let pipeline_timing_reset = timing_reset.clone();
     let pipeline_pause = pause_flag.clone();
+    let pipeline_stream_flush = stream_flush.clone();
     // Internal teardown signal set on EVERY run_bot exit (including the
     // reconnect-exhausted Err path, which must not touch the shared `shutdown`
     // — that would stop the supervisor from retrying). Keeps the pipeline
@@ -166,6 +183,7 @@ pub async fn run_bot(
             pipeline_reset,
             pipeline_timing_reset,
             pipeline_pause,
+            pipeline_stream_flush,
             pipeline_shutdown,
             pipeline_pos,
             &pipeline_config,
@@ -360,6 +378,7 @@ pub async fn run_bot(
     let event_exit = exit_reason.clone();
     let event_event_tx = event_tx.clone();
     let event_last_channel = last_channel.clone();
+    let event_stream_flush = stream_flush.clone();
     // If the SDK's auto-reconnect can't restore the session within this window,
     // stop spinning and return an error so the supervisor (tray restart /
     // systemd Restart=) can recover with a fresh client instead of the bot
@@ -424,8 +443,20 @@ pub async fn run_bot(
                     ::teamtalk::Event::UserJoined => {
                         if let Some(user) = message.user() {
                             if user.id == event_client.my_id() && user.channel_id != ::teamtalk::types::ChannelId(0) {
-                                *last_channel_id.lock() = user.channel_id;
+                                let prev = {
+                                    let mut ch = last_channel_id.lock();
+                                    let prev = *ch;
+                                    *ch = user.channel_id;
+                                    prev
+                                };
                                 tracing::info!("Now in channel {}", user.channel_id.0);
+                                if channel_move_needs_flush(prev, user.channel_id) {
+                                    // The SDK restarted the voice stream for the
+                                    // new channel; restart injection cleanly or
+                                    // the audio comes out garbled until a manual
+                                    // pause/play.
+                                    event_stream_flush.store(true, Ordering::Relaxed);
+                                }
                                 // Remember the current channel (in memory only) so a
                                 // restart rejoins here instead of the configured
                                 // default. The config file is never modified.
@@ -1712,6 +1743,28 @@ mod tests {
         assert_eq!(startup_auth_plan(true, false, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(false, true, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(true, true, false), StartupAuthPlan::ConnectBestEffort);
+    }
+
+    // -- channel_move_needs_flush --
+
+    #[test]
+    fn initial_join_does_not_flush() {
+        use ::teamtalk::types::ChannelId;
+        // prev == 0 means we had no channel yet (first join after login).
+        assert!(!channel_move_needs_flush(ChannelId(0), ChannelId(5)));
+    }
+
+    #[test]
+    fn rejoining_same_channel_does_not_flush() {
+        use ::teamtalk::types::ChannelId;
+        assert!(!channel_move_needs_flush(ChannelId(3), ChannelId(3)));
+    }
+
+    #[test]
+    fn moving_between_channels_flushes() {
+        use ::teamtalk::types::ChannelId;
+        assert!(channel_move_needs_flush(ChannelId(1), ChannelId(5)));
+        assert!(channel_move_needs_flush(ChannelId(5), ChannelId(1)));
     }
 
     fn track(id: &str, duration_ms: u32) -> Track {
