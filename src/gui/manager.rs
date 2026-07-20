@@ -65,6 +65,27 @@ impl BotInstance {
     }
 }
 
+/// What `start` should do given the instance's current thread state.
+#[derive(Debug, PartialEq, Eq)]
+enum StartAction {
+    /// Thread alive, no stop signalled: a second start is a no-op.
+    AlreadyRunning,
+    /// No live thread: start normally.
+    Fresh,
+    /// Thread alive but stop already signalled (Stop clicked a moment ago):
+    /// wait for the old thread to exit, then start — otherwise the quick
+    /// Stop-then-Start sequence silently does nothing.
+    DeferAfterStop,
+}
+
+fn start_disposition(running: bool, stop_signalled: bool) -> StartAction {
+    match (running, stop_signalled) {
+        (false, _) => StartAction::Fresh,
+        (true, false) => StartAction::AlreadyRunning,
+        (true, true) => StartAction::DeferAfterStop,
+    }
+}
+
 /// Manages multiple bot instances from config files.
 pub struct BotManager {
     instances: HashMap<String, BotInstance>,
@@ -106,13 +127,30 @@ impl BotManager {
     }
 
     pub fn start(&mut self, name: &str) -> bool {
+        let (running, stop_signalled) = match self.instances.get(name) {
+            Some(inst) => (
+                inst.is_running(),
+                inst.shutdown
+                    .as_ref()
+                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)),
+            ),
+            None => return false,
+        };
+        match start_disposition(running, stop_signalled) {
+            StartAction::AlreadyRunning => return false,
+            StartAction::DeferAfterStop => {
+                // The old thread is still winding down from stop_nonblocking;
+                // hand off to the restart machinery, which waits for it to
+                // exit before starting fresh.
+                self.restart_nonblocking(name);
+                return true;
+            }
+            StartAction::Fresh => {}
+        }
         let inst = match self.instances.get_mut(name) {
             Some(i) => i,
             None => return false,
         };
-        if inst.is_running() {
-            return false;
-        }
 
         let config_path = inst.config_path.clone();
         let status = inst.status.clone();
@@ -434,4 +472,28 @@ fn run_bot_instance(
             break;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{start_disposition, StartAction};
+
+    #[test]
+    fn fresh_start_when_no_live_thread() {
+        assert_eq!(start_disposition(false, false), StartAction::Fresh);
+        // Stale stop flag from a finished thread doesn't matter.
+        assert_eq!(start_disposition(false, true), StartAction::Fresh);
+    }
+
+    #[test]
+    fn running_without_stop_is_a_noop() {
+        assert_eq!(start_disposition(true, false), StartAction::AlreadyRunning);
+    }
+
+    #[test]
+    fn start_after_stop_signal_defers_instead_of_noop() {
+        // Quick Stop-then-Start from the tray: thread alive but already told
+        // to stop. Must queue the start, not silently drop it.
+        assert_eq!(start_disposition(true, true), StartAction::DeferAfterStop);
+    }
 }
