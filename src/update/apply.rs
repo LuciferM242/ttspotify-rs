@@ -133,8 +133,12 @@ pub async fn download_and_apply(
         let perms = std::fs::Permissions::from_mode(0o755);
         let _ = std::fs::set_permissions(&tmp, perms);
     }
-    self_replace::self_replace(&tmp).map_err(|e| UpdateError::Io(e.to_string()))?;
+    // Remove the temp file whether or not the replace succeeded — an early
+    // `?` here used to strand tt-spotify-bot.update.tmp next to the exe when
+    // the swap failed (locked file, AV, permissions).
+    let replaced = self_replace::self_replace(&tmp).map_err(|e| UpdateError::Io(e.to_string()));
     let _ = std::fs::remove_file(&tmp);
+    replaced?;
 
     // Post-update: stamp any newly-added config keys into every config on disk,
     // so they are present without having to run each bot. Best-effort; a top-up
