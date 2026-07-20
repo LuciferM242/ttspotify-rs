@@ -252,6 +252,10 @@ async fn run_cli_update() -> Result<(), BotError> {
     match tt_spotify_bot::update::download_and_apply(&info, &progress, &cancel).await {
         Ok(()) => {
             println!("\nUpdated to {}.", info.tag);
+            // Offer the unit refresh BEFORE restarting bots so a restart
+            // picks up the rewritten (daemon-reloaded) unit.
+            #[cfg(target_os = "linux")]
+            tt_spotify_bot::service::offer_unit_refresh();
             #[cfg(target_os = "linux")]
             tt_spotify_bot::service::offer_restart_running_bots();
             #[cfg(not(target_os = "linux"))]
