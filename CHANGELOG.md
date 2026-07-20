@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- Audio no longer comes out garbled after the bot is moved to another channel.
+  Playback now restarts its stream cleanly on a channel change.
+- Removed a spurious startup warning about lang_prefs.json being an invalid
+  config file; it is the per-user language store, not a bot config.
+
 ## [0.6.1] - 2026-07-19
 ### Fixed
 - Spotify search now works with non-Latin queries (Russian, and any other
