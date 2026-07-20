@@ -14,15 +14,17 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Delay before each recovery attempt. Bounded and generously spaced so a dead
-/// or rate-limiting Spotify is never hammered (IP-block safety). The length of
-/// this array is the hard attempt cap.
+/// Delay before each recovery attempt. The first is deliberately short so a
+/// transient session blip (the common case) recovers in ~1s and is barely
+/// noticeable; the delays then grow so a genuinely dead or rate-limiting Spotify
+/// is never hammered (IP-block safety). The length of this array is the hard
+/// attempt cap.
 pub const RECOVERY_BACKOFF: [Duration; 5] = [
-    Duration::from_secs(2),
-    Duration::from_secs(5),
-    Duration::from_secs(15),
-    Duration::from_secs(45),
-    Duration::from_secs(90),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
 ];
 
 /// Maximum number of rebuild attempts before giving up. After this the bot stops
@@ -95,17 +97,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_schedule_matches_spec() {
+    fn backoff_schedule_is_fast_first_then_bounded() {
         assert_eq!(
             RECOVERY_BACKOFF,
             [
-                Duration::from_secs(2),
-                Duration::from_secs(5),
-                Duration::from_secs(15),
-                Duration::from_secs(45),
-                Duration::from_secs(90),
+                Duration::from_secs(1),
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+                Duration::from_secs(30),
+                Duration::from_secs(60),
             ]
         );
+        // First attempt is quick (transient blips recover ~invisibly)...
+        assert!(RECOVERY_BACKOFF[0] <= Duration::from_secs(1));
+        // ...and delays only grow (never hammer a dead Spotify).
+        for w in RECOVERY_BACKOFF.windows(2) {
+            assert!(w[1] > w[0], "backoff must be monotonically increasing");
+        }
     }
 
     #[test]
@@ -115,11 +123,11 @@ mod tests {
 
     #[test]
     fn delay_before_each_attempt_then_give_up() {
-        assert_eq!(delay_before_attempt(0), Some(Duration::from_secs(2)));
-        assert_eq!(delay_before_attempt(1), Some(Duration::from_secs(5)));
-        assert_eq!(delay_before_attempt(2), Some(Duration::from_secs(15)));
-        assert_eq!(delay_before_attempt(3), Some(Duration::from_secs(45)));
-        assert_eq!(delay_before_attempt(4), Some(Duration::from_secs(90)));
+        assert_eq!(delay_before_attempt(0), Some(Duration::from_secs(1)));
+        assert_eq!(delay_before_attempt(1), Some(Duration::from_secs(3)));
+        assert_eq!(delay_before_attempt(2), Some(Duration::from_secs(10)));
+        assert_eq!(delay_before_attempt(3), Some(Duration::from_secs(30)));
+        assert_eq!(delay_before_attempt(4), Some(Duration::from_secs(60)));
         // Attempt index 5 exceeds the cap -> give up.
         assert_eq!(delay_before_attempt(5), None);
         assert_eq!(delay_before_attempt(100), None);
@@ -157,6 +165,6 @@ mod tests {
             attempt += 1;
         }
         assert_eq!(delays.len(), MAX_ATTEMPTS);
-        assert_eq!(delays.last(), Some(&Duration::from_secs(90)));
+        assert_eq!(delays.last(), Some(&Duration::from_secs(60)));
     }
 }

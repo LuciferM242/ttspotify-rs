@@ -703,15 +703,19 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
     // idle Spotify session death never interrupts YouTube audio.
     let resume = {
         let s = rec.state.lock();
+        let was_paused = s.status == PlaybackStatus::Paused;
         s.current().and_then(|e| {
             if e.track.service() == crate::services::Service::Spotify {
-                Some((e.track.uri().to_string(), s.position_ms))
+                Some((e.track.uri().to_string(), s.position_ms, was_paused))
             } else {
                 None
             }
         })
     };
     let pause_pipeline = resume.is_some();
+    // If the user had the track paused when the session died, resume it paused
+    // rather than suddenly playing.
+    let resume_paused = resume.as_ref().map(|(_, _, p)| *p).unwrap_or(false);
     if pause_pipeline {
         rec.pause_flag.store(true, Ordering::Relaxed);
     }
@@ -738,15 +742,23 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
                     player_event_loop(event_rx, st, tx, sh, notify).await;
                 });
                 // Resume the interrupted track slightly before where it died.
-                if let Some((uri, pos_ms)) = &resume {
+                if let Some((uri, pos_ms, _)) = &resume {
                     if let Ok(parsed) = librespot_core::spotify_uri::SpotifyUri::from_uri(uri) {
                         rec.audio_reset.store(true, Ordering::Relaxed);
                         let seek = resume_seek_ms(*pos_ms);
                         rec.player.load_track_at(&parsed, seek);
-                        tracing::info!("Resumed {uri} at {seek}ms after recovery");
+                        if resume_paused {
+                            // Keep it paused: pause the freshly-loaded track and
+                            // leave the pipeline paused (don't unpause below).
+                            rec.player.pause();
+                        }
+                        tracing::info!(
+                            "Resumed {uri} at {seek}ms after recovery (paused={resume_paused})"
+                        );
                     }
                 }
-                if pause_pipeline {
+                // Unpause the pipeline only when actually resuming playback.
+                if pause_pipeline && !resume_paused {
                     rec.pause_flag.store(false, Ordering::Relaxed);
                 }
                 if let Some(tx) = &rec.event_tx {
