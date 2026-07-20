@@ -1,11 +1,27 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- Installing YouTube support now downloads the latest yt-dlp (still verified
+  against its published SHA-256 checksum) instead of a fixed bundled version.
+  A fresh install is already current, so it no longer has to re-download the
+  whole binary the first time you run Update tools.
+- The tray "Update tools" window now reports which yt-dlp version it updated
+  from and to (or that it was already up to date), instead of just saying the
+  check finished.
+
 ### Fixed
 - Audio no longer comes out garbled after the bot is moved to another channel.
   Playback now restarts its stream cleanly on a channel change.
 - Removed a spurious startup warning about lang_prefs.json being an invalid
   config file; it is the per-user language store, not a bot config.
+- Spotify playback now recovers on its own when its streaming session drops.
+  A dropped session previously left the bot unable to play until you restarted
+  it; the bot now notices the dead session and rebuilds it quietly in the
+  background (with backoff and a limit so it never hammers Spotify), and
+  playback carries on without you having to do anything.
+- Windows: the tray "Update tools" action and opening a log or config file
+  from the tray menu no longer briefly flash a black console window.
 
 ## [0.6.1] - 2026-07-19
 ### Fixed
