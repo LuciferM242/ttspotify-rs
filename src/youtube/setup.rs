@@ -34,14 +34,39 @@ pub struct YoutubeSetupPaths {
     pub plugin_dir: PathBuf,
 }
 
+/// Pick the directory the YouTube tools live in.
+/// An exe-side `lib/` that already holds tools wins, so existing installs and
+/// dev checkouts keep working. Otherwise use `<data_dir>/ttspotify/lib`, which
+/// stays user-writable when the binary itself is installed somewhere
+/// root-owned like /usr/local/bin.
+#[cfg_attr(windows, allow(dead_code))] // Linux-only policy; kept cross-platform for tests
+fn pick_tools_dir(legacy: PathBuf, legacy_has_tools: bool, data_dir: Option<PathBuf>) -> PathBuf {
+    if legacy_has_tools {
+        return legacy;
+    }
+    match data_dir {
+        Some(d) => d.join("ttspotify").join("lib"),
+        None => legacy,
+    }
+}
+
 /// Compute where the binaries should live.
-/// `<dir of current_exe>/lib/...`. On debug builds that's `target/debug/lib`.
+/// Windows: `<dir of current_exe>\lib` (unchanged; installs are per-user).
+/// Linux: exe-side `lib/` when it already holds the tools, else
+/// `~/.local/share/ttspotify/lib` (see `pick_tools_dir`).
 pub fn resolve_paths() -> Result<YoutubeSetupPaths, BotError> {
     let exe = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("current_exe failed: {e}")))?;
     let exe_dir = exe.parent()
         .ok_or_else(|| BotError::Config("current_exe has no parent".to_string()))?;
-    let lib_dir = exe_dir.join("lib");
+    let legacy_lib = exe_dir.join("lib");
+    #[cfg(windows)]
+    let lib_dir = legacy_lib;
+    #[cfg(not(windows))]
+    let lib_dir = {
+        let has_tools = legacy_lib.join("yt-dlp").is_file() || legacy_lib.join("bgutil-pot").is_file();
+        pick_tools_dir(legacy_lib, has_tools, dirs::data_dir())
+    };
     let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
         ("yt-dlp.exe", "bgutil-pot.exe")
     } else {
@@ -515,6 +540,29 @@ pub fn which(exe_name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_exe_side_lib_with_tools_wins() {
+        let legacy = PathBuf::from("/opt/bot/lib");
+        let picked = pick_tools_dir(legacy.clone(), true, Some(PathBuf::from("/home/u/.local/share")));
+        assert_eq!(picked, legacy);
+    }
+
+    #[test]
+    fn fresh_install_uses_xdg_data_dir() {
+        let picked = pick_tools_dir(
+            PathBuf::from("/usr/local/bin/lib"),
+            false,
+            Some(PathBuf::from("/home/u/.local/share")),
+        );
+        assert_eq!(picked, PathBuf::from("/home/u/.local/share/ttspotify/lib"));
+    }
+
+    #[test]
+    fn missing_data_dir_falls_back_to_exe_side_lib() {
+        let legacy = PathBuf::from("/opt/bot/lib");
+        assert_eq!(pick_tools_dir(legacy.clone(), false, None), legacy);
+    }
 
     #[test]
     fn resolve_paths_lands_in_lib_subdir() {
