@@ -8,7 +8,7 @@ license = "GPL-3.0-or-later"
 [dependencies]
 # TeamTalk SDK. Fork of BlindMaster24/TeamTalkRust; the `arm64-linux` branch
 # adds aarch64 SDK downloading (upstream only fetches win64 + x86_64).
-teamtalk = { git = "https://github.com/LuciferM242/TeamTalkRust.git", branch = "sdk-dir-env", features = ["logging"] }
+teamtalk = { git = "https://github.com/LuciferM242/TeamTalkRust.git", branch = "arm64-linux", features = ["logging"] }
 
 # Spotify (librespot - native Rust). default-features = false drops the default
 # native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
