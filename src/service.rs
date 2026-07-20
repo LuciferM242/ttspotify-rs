@@ -4,7 +4,7 @@
 //! multiple bot instances via `systemctl --user start ttspotify@myserver`.
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{config_dir, list_configs};
@@ -134,7 +134,8 @@ pub fn install_service() -> Result<(), BotError> {
         "%I"
     );
 
-    let unit = unit_file_contents(&exec_start);
+    let tools_dir = crate::youtube::setup::resolve_paths().ok().map(|p| p.lib_dir);
+    let unit = unit_file_contents(&exec_start, &config_base, tools_dir.as_deref());
 
     std::fs::write(&service_path, unit)?;
 
@@ -186,11 +187,22 @@ pub fn install_service() -> Result<(), BotError> {
     Ok(())
 }
 
-/// Render the `ttspotify@.service` user unit. A missing/broken config exits
-/// with EXIT_CONFIG_ERROR; RestartPreventExitStatus keeps systemd from
-/// crash-restarting into the same missing file every 2 seconds (which logs the
-/// bot in and out of the TeamTalk server nonstop).
-fn unit_file_contents(exec_start: &str) -> String {
+/// Render the `ttspotify@.service` user unit.
+///
+/// A missing/broken config exits with EXIT_CONFIG_ERROR;
+/// RestartPreventExitStatus keeps systemd from crash-restarting into the same
+/// missing file every 2 seconds (which logs the bot in and out of the
+/// TeamTalk server nonstop).
+///
+/// The sandbox block makes the filesystem read-only to the bot except its own
+/// dirs: the config dir (configs, logs, caches, and — via WorkingDirectory —
+/// the downloaded TeamTalk SDK), the YouTube tools dir, and ~/.cache (yt-dlp's
+/// own cache). The `-` prefix keeps a not-yet-created path from failing the
+/// unit.
+fn unit_file_contents(exec_start: &str, config_dir: &Path, tools_dir: Option<&Path>) -> String {
+    let tools_rw = tools_dir
+        .map(|d| format!("ReadWritePaths=-{}\n", d.display()))
+        .unwrap_or_default();
     format!(
         r#"[Unit]
 Description=TTSpotify Bot (%i)
@@ -199,14 +211,26 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+WorkingDirectory={config_dir}
 ExecStart={exec_start}
 Restart=on-failure
 RestartPreventExitStatus={config_exit}
 RestartSec=2
 
+# Sandbox: everything is read-only to the bot except the paths below.
+# Using a custom --config path in ExecStart? Add its folder as another
+# ReadWritePaths line. If the service fails to start on a kernel without
+# unprivileged user namespaces, delete this block.
+ProtectSystem=strict
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=-{config_dir}
+{tools_rw}ReadWritePaths=-%h/.cache
+
 [Install]
 WantedBy=default.target
 "#,
+        config_dir = config_dir.display(),
         config_exit = crate::config::EXIT_CONFIG_ERROR,
     )
 }
@@ -290,7 +314,11 @@ mod tests {
 
     #[test]
     fn unit_file_does_not_restart_on_config_error() {
-        let unit = unit_file_contents("\"/opt/bot\" --config \"/home/u/.config/ttspotify/%i.json\"");
+        let unit = unit_file_contents(
+            "\"/opt/bot\" --config \"/home/u/.config/ttspotify/%i.json\"",
+            std::path::Path::new("/home/u/.config/ttspotify"),
+            Some(std::path::Path::new("/home/u/.local/share/ttspotify/lib")),
+        );
         // Exit code 78 (EX_CONFIG) means "config missing/broken": restarting
         // can't help and would hammer the TeamTalk server with logins.
         assert!(unit.contains(&format!(
@@ -301,6 +329,36 @@ mod tests {
         assert!(!unit.contains("RestartForceExitStatus"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("ExecStart=\"/opt/bot\""));
+    }
+
+    #[test]
+    fn unit_file_sandboxes_with_writable_bot_dirs() {
+        let unit = unit_file_contents(
+            "\"/opt/bot\" --config \"/home/u/.config/ttspotify/%i.json\"",
+            std::path::Path::new("/home/u/.config/ttspotify"),
+            Some(std::path::Path::new("/home/u/.local/share/ttspotify/lib")),
+        );
+        assert!(unit.contains("ProtectSystem=strict"));
+        assert!(unit.contains("PrivateTmp=true"));
+        assert!(unit.contains("NoNewPrivileges=true"));
+        // `-` prefix: a listed path that doesn't exist yet must not fail the unit.
+        assert!(unit.contains("ReadWritePaths=-/home/u/.config/ttspotify"));
+        assert!(unit.contains("ReadWritePaths=-/home/u/.local/share/ttspotify/lib"));
+        assert!(unit.contains("ReadWritePaths=-%h/.cache"));
+        // SDK downloads land relative to the CWD; pin it to the config dir so
+        // they fall inside the writable set.
+        assert!(unit.contains("WorkingDirectory=/home/u/.config/ttspotify"));
+    }
+
+    #[test]
+    fn unit_file_without_tools_dir_omits_its_rw_line() {
+        let unit = unit_file_contents(
+            "\"/opt/bot\" --config \"/x/%i.json\"",
+            std::path::Path::new("/x"),
+            None,
+        );
+        assert!(unit.contains("ReadWritePaths=-/x"));
+        assert!(!unit.contains("local/share"));
     }
 
     #[test]
