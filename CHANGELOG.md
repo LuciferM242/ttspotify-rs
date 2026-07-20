@@ -10,8 +10,15 @@
   of making you wait for the whole list.
 - Linux: fresh YouTube tool installs now go to ~/.local/share/ttspotify/lib
   instead of a lib folder next to the program, so installing the bot to a
-  system location like /usr/local/bin no longer breaks tool updates. Existing
-  installs keep using their current folder.
+  system location like /usr/local/bin no longer breaks tool updates. An
+  existing install is moved there automatically at startup (only when the
+  folder was created by the bot's own installer; anything else in it is left
+  alone).
+- The downloaded TeamTalk SDK now lives in one fixed place (the config
+  folder) instead of a copy appearing in whatever folder the bot was started
+  from. An old copy in the home folder or start folder is moved over
+  automatically; scattered extra copies from old manual runs can be deleted
+  by hand (folders named TEAMTALK_DLL).
 
 ### Security
 - Linux: services installed with --install-service now run sandboxed - the
