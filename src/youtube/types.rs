@@ -25,8 +25,13 @@ impl YouTubeTrack {
 /// Parsed YouTube URL/ID kinds we know how to resolve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YouTubeRef {
-    /// 11-char video ID. Resolves to a single track via `music_details`.
+    /// 11-char video ID from an unambiguous URL form. Resolves to a single
+    /// track via `music_details`.
     Video(String),
+    /// Bare 11-char string that LOOKS like a video ID but might equally be an
+    /// 11-character search word (e.g. "helloworld1"). The resolver tries it as
+    /// an ID first and falls back to a search when the details fetch fails.
+    BareVideo(String),
     /// Playlist ID (PL..., RD..., LM, OLAK..., etc.). Resolves via
     /// `music_playlist`. Covers user playlists, mood mixes, daily mixes,
     /// "liked music" (LM, requires auth), artist radios.
@@ -40,9 +45,10 @@ pub enum YouTubeRef {
 pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
     let input = input.trim();
 
-    // Bare 11-char video ID (alphanum + - _).
+    // Bare 11-char video ID (alphanum + - _). Tagged BareVideo: could just as
+    // well be an 11-letter search word, so the resolver may fall back.
     if input.len() == 11 && input.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Some(YouTubeRef::Video(input.to_string()));
+        return Some(YouTubeRef::BareVideo(input.to_string()));
     }
 
     // Strip scheme + host so we can match against the path + query uniformly.
@@ -68,6 +74,14 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
             {
                 return Some(YouTubeRef::Video(id.to_string()));
             }
+        }
+    }
+
+    // Shorts: /shorts/<id>
+    if let Some(rest) = path_query.strip_prefix("shorts/") {
+        let id = rest.split(['?', '#', '/']).next().unwrap_or("");
+        if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Some(YouTubeRef::Video(id.to_string()));
         }
     }
 
@@ -128,7 +142,25 @@ mod tests {
 
     #[test]
     fn parse_bare_video_id() {
-        assert_eq!(parse_youtube_ref("dQw4w9WgXcQ"), Some(YouTubeRef::Video("dQw4w9WgXcQ".into())));
+        // Bare IDs are tagged separately: an 11-char search word is
+        // indistinguishable from an ID, so the resolver needs to know it may
+        // fall back to a search when the details fetch fails.
+        assert_eq!(
+            parse_youtube_ref("dQw4w9WgXcQ"),
+            Some(YouTubeRef::BareVideo("dQw4w9WgXcQ".into()))
+        );
+    }
+
+    #[test]
+    fn parse_shorts_url() {
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/shorts/dQw4w9WgXcQ"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
+        assert_eq!(
+            parse_youtube_ref("https://youtube.com/shorts/dQw4w9WgXcQ?feature=share"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
     }
 
     #[test]

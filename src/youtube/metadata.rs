@@ -80,6 +80,16 @@ impl YouTubeMetadata {
     pub async fn resolve(&self, query: &str, _search_limit: u8) -> Result<Vec<YouTubeTrack>, BotError> {
         match parse_youtube_ref(query) {
             Some(YouTubeRef::Video(id)) => self.fetch_video(&id).await.map(|t| vec![t]),
+            // A bare 11-char token is probably an ID but might be an
+            // 11-letter search word; if the ID lookup fails, search instead
+            // of surfacing "video fetch failed" for a legitimate query.
+            Some(YouTubeRef::BareVideo(id)) => match self.fetch_video(&id).await {
+                Ok(t) => Ok(vec![t]),
+                Err(e) => {
+                    tracing::debug!("Bare token '{id}' is not a video id ({e}); searching instead");
+                    self.search_tracks(query, 1).await
+                }
+            },
             Some(YouTubeRef::Playlist(id)) => self.fetch_playlist(&id).await,
             Some(YouTubeRef::Album(id)) => self.fetch_album(&id).await,
             // A free-form search returns just the top hit so play_and_queue
@@ -202,7 +212,7 @@ impl YouTubeMetadata {
             .spawn()
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => BotError::Playback(
-                    "yt-dlp not found. Run: tt-spotify-bot --setup-youtube".to_string()
+                    "yt-dlp not found. Run: tt-spotify-bot --setup-yt".to_string()
                 ),
                 _ => BotError::Playback(format!("yt-dlp spawn: {e}")),
             })
