@@ -536,7 +536,13 @@ fn open_file(path: &std::path::Path) {
         return;
     };
     let abs_path = std::fs::canonicalize(&target).unwrap_or(target);
+    // `start` (via cmd) keeps the shell "open" verb: default app, or the
+    // "Open with" picker when no association is set. CREATE_NO_WINDOW hides the
+    // cmd console that would otherwise flash before the target app appears.
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let _ = std::process::Command::new("cmd")
         .args(["/c", "start", "", &abs_path.display().to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn();
 }
