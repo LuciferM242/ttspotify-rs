@@ -308,8 +308,10 @@ fn search_context_uri(query: &str) -> String {
         .remove(b'_')
         .remove(b'.')
         .remove(b'~');
+    // split_whitespace: collapses runs and trims edges, so double spaces
+    // can't produce empty words ("a++b") or a dangling separator.
     let encoded: Vec<String> = query
-        .split(' ')
+        .split_whitespace()
         .map(|word| utf8_percent_encode(word, QUERY_SET).to_string())
         .collect();
     format!("spotify:search:{}", encoded.join("+"))
@@ -322,6 +324,14 @@ mod tests {
     #[test]
     fn ascii_query_uses_plus_for_spaces() {
         assert_eq!(search_context_uri("hello world"), "spotify:search:hello+world");
+    }
+
+    #[test]
+    fn repeated_and_edge_whitespace_collapses() {
+        // Double spaces produced "a++b" and leading/trailing spaces a
+        // dangling "+"; tabs weren't treated as separators at all.
+        assert_eq!(search_context_uri("  hello   world "), "spotify:search:hello+world");
+        assert_eq!(search_context_uri("hello\tworld"), "spotify:search:hello+world");
     }
 
     #[test]
