@@ -381,6 +381,13 @@ fn decode_and_stream(
             if ctrl.stopped.load(Ordering::Relaxed) {
                 return Ok(());
             }
+            // A seek issued while paused must apply now, not on resume — the
+            // runner has already reported the new position to the user. Drop
+            // to the seek block below; the next loop iteration re-enters this
+            // wait since we're still paused.
+            if ctrl.seek_requested.load(Ordering::Relaxed) {
+                break;
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
 
