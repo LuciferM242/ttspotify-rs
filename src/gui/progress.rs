@@ -106,8 +106,21 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
     }
 
     progress("Updating yt-dlp...");
-    match std::process::Command::new(&paths.yt_dlp).arg("--update").status() {
-        Ok(s) if s.success() => progress("yt-dlp update check complete."),
+    // Snapshot the version before updating so we can report from -> to. Probing
+    // --version (not parsing --update's prose) keeps this robust across yt-dlp
+    // release-message changes.
+    let before = setup::installed_tool_versions().yt_dlp;
+    // Suppress the console-window flash: this GUI process has no console, so a
+    // bare yt-dlp spawn pops a command window (same reason as spawn_ytdlp).
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut update_cmd = std::process::Command::new(&paths.yt_dlp);
+    update_cmd.arg("--update").creation_flags(CREATE_NO_WINDOW);
+    match update_cmd.status() {
+        Ok(s) if s.success() => {
+            let after = setup::installed_tool_versions().yt_dlp;
+            progress(&ytdlp_update_summary(before, after));
+        }
         Ok(s) => progress(&format!("yt-dlp --update exited with {s}")),
         Err(e) => progress(&format!("Could not run yt-dlp --update: {e}")),
     }
@@ -125,4 +138,47 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Build the user-facing line describing a yt-dlp `--update` outcome from the
+/// versions probed before and after. `None` means the version couldn't be read.
+fn ytdlp_update_summary(before: Option<String>, after: Option<String>) -> String {
+    match (before, after) {
+        (Some(b), Some(a)) if b != a => format!("yt-dlp updated: {b} -> {a}"),
+        (Some(_), Some(a)) => format!("yt-dlp already up to date ({a})"),
+        (None, Some(a)) => format!("yt-dlp is now at version {a}"),
+        (_, None) => "yt-dlp update check complete.".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ytdlp_update_summary;
+
+    #[test]
+    fn reports_from_to_when_version_changes() {
+        let s = ytdlp_update_summary(Some("2025.11.01".into()), Some("2025.12.08".into()));
+        assert_eq!(s, "yt-dlp updated: 2025.11.01 -> 2025.12.08");
+    }
+
+    #[test]
+    fn reports_up_to_date_when_unchanged() {
+        let s = ytdlp_update_summary(Some("2025.12.08".into()), Some("2025.12.08".into()));
+        assert_eq!(s, "yt-dlp already up to date (2025.12.08)");
+    }
+
+    #[test]
+    fn reports_current_version_when_before_unknown() {
+        let s = ytdlp_update_summary(None, Some("2025.12.08".into()));
+        assert_eq!(s, "yt-dlp is now at version 2025.12.08");
+    }
+
+    #[test]
+    fn falls_back_when_after_unknown() {
+        assert_eq!(
+            ytdlp_update_summary(Some("2025.11.01".into()), None),
+            "yt-dlp update check complete."
+        );
+        assert_eq!(ytdlp_update_summary(None, None), "yt-dlp update check complete.");
+    }
 }
