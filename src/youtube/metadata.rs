@@ -9,6 +9,24 @@ use crate::error::BotError;
 use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
 use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 
+/// Opaque continuation for a playlist whose first page has been returned but
+/// whose remaining pages are still on YouTube's side. Fed back into
+/// `fetch_more_playlist` by the background loader.
+pub struct YtPlaylistRest {
+    paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+}
+
+/// Result of `resolve_paged`.
+pub enum YtResolved {
+    /// Fully resolved (single track, album, search hit).
+    Tracks(Vec<YouTubeTrack>),
+    /// First playlist page; `rest` is Some when more pages exist.
+    PlaylistFirstPage {
+        tracks: Vec<YouTubeTrack>,
+        rest: Option<YtPlaylistRest>,
+    },
+}
+
 /// YouTube Music metadata service.
 ///
 /// Search and track metadata go through rustypipe (fast, native).
@@ -74,6 +92,16 @@ impl YouTubeMetadata {
         })
     }
 
+    /// Like `resolve`, but playlists return only their first page plus a
+    /// continuation so the caller can start playback immediately and pull the
+    /// remaining pages in the background (mirrors Spotify bulk loading).
+    pub async fn resolve_paged(&self, query: &str, search_limit: u8) -> Result<YtResolved, BotError> {
+        if let Some(YouTubeRef::Playlist(id)) = parse_youtube_ref(query) {
+            return self.fetch_playlist_first_page(&id).await;
+        }
+        self.resolve(query, search_limit).await.map(YtResolved::Tracks)
+    }
+
     /// Resolve a YouTube URL/ID/playlist/album/search query into a list of
     /// tracks. URLs and bare IDs become single-track or playlist/album
     /// fetches; anything else falls back to the top match for the search.
@@ -111,14 +139,57 @@ impl YouTubeMetadata {
             .music_playlist(playlist_id)
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
-        // Pull all pages, not just the first.
-        let _ = playlist.tracks.extend_all(&self.client.query()).await;
+        // Pull all pages, not just the first. A paging failure truncates the
+        // list; say so instead of silently returning a partial playlist.
+        if let Err(e) = playlist.tracks.extend_all(&self.client.query()).await {
+            tracing::warn!("YouTube playlist only partially loaded: {e}");
+        }
         let tracks: Vec<YouTubeTrack> = playlist.tracks.items.into_iter().map(track_item_to_track).collect();
         if tracks.is_empty() {
             Err(BotError::NoResults)
         } else {
             Ok(tracks)
         }
+    }
+
+    /// First page of a playlist plus a continuation for background loading.
+    async fn fetch_playlist_first_page(&self, playlist_id: &str) -> Result<YtResolved, BotError> {
+        let playlist = self.client.query()
+            .music_playlist(playlist_id)
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
+        let mut paginator = playlist.tracks;
+        // Drain the page out of the paginator: each later extend() appends
+        // only the next page, so fetch_more_playlist can drain again and get
+        // exactly the new tracks.
+        let tracks: Vec<YouTubeTrack> = std::mem::take(&mut paginator.items)
+            .into_iter()
+            .map(track_item_to_track)
+            .collect();
+        if tracks.is_empty() {
+            return Err(BotError::NoResults);
+        }
+        let rest = paginator.ctoken.is_some().then_some(YtPlaylistRest { paginator });
+        Ok(YtResolved::PlaylistFirstPage { tracks, rest })
+    }
+
+    /// Fetch the next page of a partially-loaded playlist. `Ok(None)` when the
+    /// playlist is exhausted.
+    pub async fn fetch_more_playlist(
+        &self,
+        rest: &mut YtPlaylistRest,
+    ) -> Result<Option<Vec<YouTubeTrack>>, BotError> {
+        let more = rest.paginator.extend(self.client.query())
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube playlist page fetch failed: {e}")))?;
+        if !more {
+            return Ok(None);
+        }
+        let tracks: Vec<YouTubeTrack> = std::mem::take(&mut rest.paginator.items)
+            .into_iter()
+            .map(track_item_to_track)
+            .collect();
+        Ok(Some(tracks))
     }
 
     async fn fetch_album(&self, album_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
