@@ -17,7 +17,10 @@ pub enum BotCommand {
     Play { user_id: i32 },
     Pause { user_id: i32 },
     Stop { user_id: i32 },
-    Next { user_id: i32 },
+    /// `after_track`: Some(uri) when sent automatically because that track
+    /// ended or failed — the handler drops it if the queue already moved past
+    /// that track (races with a manual `n`). None for a user-issued skip.
+    Next { user_id: i32, after_track: Option<String> },
     Prev { user_id: i32 },
     Seek { offset_ms: i32, user_id: i32 },
     SetVolume { percent: u8, user_id: i32 },
@@ -395,7 +398,7 @@ impl CommandDispatcher {
                 self.send(BotCommand::Stop { user_id: sender_id });
             }
             "n" | "next" => {
-                self.send(BotCommand::Next { user_id: sender_id });
+                self.send(BotCommand::Next { user_id: sender_id, after_track: None });
             }
             "o" | "prev" => {
                 self.send(BotCommand::Prev { user_id: sender_id });

@@ -108,6 +108,18 @@ impl StartFailureBrake {
     }
 }
 
+/// Whether an auto-advance (sent when a track ended or failed) is stale: the
+/// queue has already moved past the track it was advancing from — usually a
+/// manual `n` processed in the same instant the track ended. Firing it anyway
+/// would advance twice and skip a track. Manual skips (`after_track` None) are
+/// never stale.
+fn auto_advance_is_stale(after_track: Option<&str>, current: Option<&str>) -> bool {
+    match after_track {
+        None => false,
+        Some(expected) => current != Some(expected),
+    }
+}
+
 /// Whether a self channel-change requires flushing the injected audio stream.
 /// Moving to a different channel restarts the SDK's voice stream for the new
 /// channel's codec; audio blocks straddling that transition leave the encoder
@@ -1116,7 +1128,10 @@ async fn command_processor(
                 if start_brake.on_failure() {
                     brake_stop!();
                 } else {
-                    let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
+                    let _ = radio_cmd_tx.send(BotCommand::Next {
+                        user_id: 0,
+                        after_track: Some($uri.to_string()),
+                    });
                 }
                 false
             }
@@ -1298,7 +1313,21 @@ async fn command_processor(
                 send_event(RunnerEvent::Idle);
             }
 
-            BotCommand::Next { user_id } => {
+            BotCommand::Next { user_id, after_track } => {
+                // An auto-advance whose source track is no longer current lost
+                // the race against a manual `n`; executing it too would skip a
+                // track the user never heard.
+                {
+                    let current = state.lock().current().map(|e| e.track.uri().to_string());
+                    if auto_advance_is_stale(after_track.as_deref(), current.as_deref()) {
+                        tracing::debug!(
+                            "Dropping stale auto-advance (after {:?}, current {:?})",
+                            after_track, current
+                        );
+                        continue;
+                    }
+                }
+
                 // Capture current track info before advance() clears current_index
                 let (pre_seed_uri, pre_allow_rec, pre_played_ids) = {
                     let s = state.lock();
@@ -1602,8 +1631,10 @@ async fn command_processor(
                 } else {
                     start_brake.on_success();
                 }
-                // Advance exactly like a natural end-of-track.
-                let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0 });
+                // Advance exactly like a natural end-of-track, tagged with the
+                // track that ended so a racing manual `n` can't double-advance.
+                let ended_uri = state.lock().current().map(|e| e.track.uri().to_string());
+                let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri });
             }
 
             BotCommand::PreloadNext => {
@@ -1745,14 +1776,24 @@ async fn player_event_loop(
                 };
                 if is_current {
                     tracing::info!("Track ended, advancing to next");
-                    let _ = cmd_tx.send(BotCommand::Next { user_id: 0 });
+                    // Tag the advance with the ended track: the is_current
+                    // check above closes most of the window, but a manual `n`
+                    // already queued (not yet processed) still races — the
+                    // handler re-checks against after_track at execution time.
+                    let _ = cmd_tx.send(BotCommand::Next {
+                        user_id: 0,
+                        after_track: track_id.to_uri().ok(),
+                    });
                 } else {
                     tracing::debug!("Ignoring stale Spotify EndOfTrack for {track_id:?}");
                 }
             }
             PlayerEvent::Unavailable { track_id, .. } => {
                 tracing::warn!("Track unavailable: {track_id:?}, skipping");
-                let _ = cmd_tx.send(BotCommand::Next { user_id: 0 });
+                let _ = cmd_tx.send(BotCommand::Next {
+                    user_id: 0,
+                    after_track: track_id.to_uri().ok(),
+                });
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {
                 let _ = cmd_tx.send(BotCommand::PreloadNext);
@@ -1799,6 +1840,27 @@ mod tests {
         assert_eq!(startup_auth_plan(true, false, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(false, true, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(true, true, false), StartupAuthPlan::ConnectBestEffort);
+    }
+
+    // -- auto_advance_is_stale --
+
+    #[test]
+    fn manual_next_is_never_stale() {
+        assert!(!auto_advance_is_stale(None, Some("spotify:track:a")));
+        assert!(!auto_advance_is_stale(None, None));
+    }
+
+    #[test]
+    fn auto_advance_runs_when_ended_track_is_still_current() {
+        assert!(!auto_advance_is_stale(Some("spotify:track:a"), Some("spotify:track:a")));
+    }
+
+    #[test]
+    fn auto_advance_is_stale_after_queue_moved() {
+        // Track A ended naturally, but a manual `n` (processed first) already
+        // advanced the queue to B — the auto-advance must not fire again.
+        assert!(auto_advance_is_stale(Some("spotify:track:a"), Some("spotify:track:b")));
+        assert!(auto_advance_is_stale(Some("spotify:track:a"), None));
     }
 
     // -- StartFailureBrake --
