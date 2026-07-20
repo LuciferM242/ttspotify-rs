@@ -82,9 +82,10 @@ pub fn list_configs() -> Vec<(String, PathBuf)> {
 /// `list_configs` so it can be tested against a temp directory.
 fn list_configs_in(dir: &Path) -> Vec<(String, PathBuf)> {
     // Non-bot JSON files that share the config directory. "settings" is the
-    // app-global settings.json (update-check toggle); the rest are auth/session
-    // artifacts. None are server configs, so they must never appear as bots.
-    let skip = ["credentials", "cookies", "sessions", "settings"];
+    // app-global settings.json (update-check toggle), "lang_prefs" is the i18n
+    // per-user language store; the rest are auth/session artifacts. None are
+    // server configs, so they must never appear as bots.
+    let skip = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
     if !dir.exists() {
         return Vec::new();
     }
@@ -732,6 +733,26 @@ mod tests {
         std::fs::write(p.join("blank.json"), "{}").unwrap(); // parses to defaults, empty host/username
         std::fs::write(p.join("nouser.json"), r#"{"host":"h"}"#).unwrap(); // host but no username
         std::fs::write(p.join("settings.json"), r#"{"host":"h","username":"u"}"#).unwrap(); // name skip-list
+
+        let listed: Vec<String> = list_configs_in(p).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(listed, vec!["good".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_configs_skips_lang_prefs_by_name() {
+        let dir = std::env::temp_dir().join(format!("ttspotify_cfglangprefs_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.as_path();
+        let mut good = BotConfig::default();
+        good.host = "srv.example.com".to_string();
+        good.username = "botacct".to_string();
+        good.save(&p.join("good.json")).unwrap();
+        // lang_prefs.json is the i18n per-user language store, not a bot config.
+        // Even content that would pass config validation must be skipped by name.
+        std::fs::write(p.join("lang_prefs.json"), r#"{"host":"h","username":"u"}"#).unwrap();
 
         let listed: Vec<String> = list_configs_in(p).into_iter().map(|(name, _)| name).collect();
         assert_eq!(listed, vec!["good".to_string()]);
