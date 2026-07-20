@@ -3,6 +3,8 @@
 ## [Unreleased]
 ### Added
 - YouTube Shorts links now play.
+- Linux: after an update, the bot offers to refresh your systemd service file
+  when this release improves it - no more finding out from the changelog.
 
 ### Changed
 - Big YouTube playlists start playing right away and load the rest in the
