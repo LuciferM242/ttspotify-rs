@@ -23,6 +23,23 @@ enum Msg {
 /// `show_update_available`): whichever handler fires first `take()`s and runs it.
 type DismissAction = Rc<RefCell<Option<Box<dyn FnOnce()>>>>;
 
+thread_local! {
+    /// GUI-thread hook run right before a successful update relaunches the
+    /// process. The tray registers "stop all bots (bounded wait)" here so the
+    /// running bots disconnect cleanly from the TeamTalk server and persist
+    /// their config instead of being killed mid-flight by process::exit.
+    /// A thread_local (not a parameter) because the dialog can be opened from
+    /// a Send closure (`call_after` from the update-check worker) that cannot
+    /// capture the GUI-only BotManager Rc.
+    static PREPARE_RELAUNCH: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Register the GUI-thread cleanup hook that runs before a successful update
+/// exits and relaunches. Call once at tray startup.
+pub fn set_prepare_relaunch(hook: impl Fn() + 'static) {
+    PREPARE_RELAUNCH.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
 /// Modal-style "update available" window: read-only changelog + Download / Later.
 ///
 /// `on_dismiss` runs if the user picks Later or closes the window (X) — used at
@@ -230,8 +247,15 @@ pub fn show_check_error(msg: &str) {
     info_box("Check for updates", msg, MDS::OK | MDS::IconError);
 }
 
-/// Relaunch the (now-replaced) exe and exit the current process.
+/// Relaunch the (now-replaced) exe and exit the current process. Runs the
+/// registered prepare hook first so running bots shut down cleanly —
+/// process::exit skips the tray frame's on_destroy cleanup.
 fn relaunch_and_exit() {
+    PREPARE_RELAUNCH.with(|h| {
+        if let Some(hook) = h.borrow().as_ref() {
+            hook();
+        }
+    });
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::process::Command::new(exe).spawn();
     }

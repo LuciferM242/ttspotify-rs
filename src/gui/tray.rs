@@ -65,6 +65,16 @@ pub fn run() {
         // bots into a shutting-down app.
         let exiting = Rc::new(std::cell::Cell::new(false));
 
+        // Before a successful update relaunches (process::exit skips
+        // on_destroy), stop all bots with the same bounded wait as app exit so
+        // they disconnect cleanly and persist config.
+        let mgr_relaunch = manager.clone();
+        crate::gui::update_dialog::set_prepare_relaunch(move || {
+            mgr_relaunch
+                .borrow_mut()
+                .stop_all_with_timeout(std::time::Duration::from_secs(3));
+        });
+
         // Startup update check gates bot startup, but only when bots are actually
         // configured — there's nothing to gate on a fresh install, so skip the
         // check and go straight to start_bots (which prompts to create the first
