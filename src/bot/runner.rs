@@ -108,6 +108,59 @@ impl StartFailureBrake {
     }
 }
 
+/// Settles when the audio pipeline has reported "nothing left to play" twice
+/// in a row. A single empty poll isn't proof — a PCM chunk can be in flight
+/// between the channel and the framer; a busy poll restarts the count.
+struct DrainWait {
+    consecutive: u32,
+}
+
+impl DrainWait {
+    fn new() -> Self {
+        Self { consecutive: 0 }
+    }
+
+    /// Feed one drained-or-not observation; returns true once settled.
+    fn observe(&mut self, drained: bool) -> bool {
+        if drained {
+            self.consecutive += 1;
+        } else {
+            self.consecutive = 0;
+        }
+        self.consecutive >= 2
+    }
+}
+
+/// A natural end-of-track fires when the decoder finished writing the song
+/// into the buffer — several seconds before listeners hear the end. Advancing
+/// right away wipes that tail (users heard every song cut short). Wait for
+/// the pipeline to actually run dry, then advance; the after_track stale
+/// guard cancels this if the user skipped or stopped in the meantime.
+fn spawn_drained_advance(
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
+    pipeline_drained: Arc<AtomicBool>,
+    after_track: Option<String>,
+) {
+    tokio::spawn(async move {
+        // Hard cap so a wedged pipeline can't stall the queue forever:
+        // the buffer is seconds deep, 30s is far beyond any real drain.
+        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+        let started = std::time::Instant::now();
+        let mut wait = DrainWait::new();
+        loop {
+            if wait.observe(pipeline_drained.load(Ordering::Relaxed)) {
+                break;
+            }
+            if started.elapsed() > MAX_WAIT {
+                tracing::warn!("Track-end drain wait timed out; advancing anyway");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let _ = cmd_tx.send(BotCommand::Next { user_id: 0, after_track });
+    });
+}
+
 /// Whether an auto-advance (sent when a track ended or failed) is stale: the
 /// queue has already moved past the track it was advancing from — usually a
 /// manual `n` processed in the same instant the track ended. Firing it anyway
@@ -207,6 +260,9 @@ pub async fn run_bot(
     // Set on a self channel-move: the pipeline ends and restarts the injected
     // stream (like a manual pause/play) without touching position counters.
     let stream_flush = Arc::new(AtomicBool::new(false));
+    // True while the pipeline has nothing left to play; end-of-track advances
+    // wait on this so the buffered tail of a song reaches listeners first.
+    let pipeline_drained = Arc::new(AtomicBool::new(true));
     // Realtime playback position (ms injected since last reset), written by the
     // pipeline and read by the YouTube player for accurate `c`/seek positions.
     let pipeline_pos_ms = Arc::new(AtomicU32::new(0));
@@ -214,6 +270,7 @@ pub async fn run_bot(
     let pipeline_timing_reset = timing_reset.clone();
     let pipeline_pause = pause_flag.clone();
     let pipeline_stream_flush = stream_flush.clone();
+    let pipeline_drained_flag = pipeline_drained.clone();
     // Internal teardown signal set on EVERY run_bot exit (including the
     // reconnect-exhausted Err path, which must not touch the shared `shutdown`
     // — that would stop the supervisor from retrying). Keeps the pipeline
@@ -230,6 +287,7 @@ pub async fn run_bot(
             pipeline_timing_reset,
             pipeline_pause,
             pipeline_stream_flush,
+            pipeline_drained_flag,
             pipeline_shutdown,
             pipeline_pos,
             &pipeline_config,
@@ -337,6 +395,7 @@ pub async fn run_bot(
         recovery_notify: recovery_notify.clone(),
         local_shutdown: local_shutdown.clone(),
         event_tx: event_tx.clone(),
+        pipeline_drained: pipeline_drained.clone(),
     };
     tokio::spawn(spotify_supervisor(recovery, recovery_suspended.clone()));
 
@@ -363,6 +422,7 @@ pub async fn run_bot(
         audio_reset: audio_reset.clone(),
         timing_reset: timing_reset.clone(),
         pause_flag: pause_flag.clone(),
+        pipeline_drained: pipeline_drained.clone(),
         volume_for_save: volume.clone(),
         exit_reason: exit_reason.clone(),
         shutdown: shutdown.clone(),
@@ -378,8 +438,9 @@ pub async fn run_bot(
     let event_cmd_tx = cmd_tx.clone();
     let event_session = session_holder.clone();
     let event_notify = recovery_notify.clone();
+    let event_drained = pipeline_drained.clone();
     let event_loop_handle = tokio::spawn(async move {
-        player_event_loop(event_rx, event_state, event_cmd_tx, event_session, event_notify).await;
+        player_event_loop(event_rx, event_state, event_cmd_tx, event_session, event_notify, event_drained).await;
     });
 
     let dispatcher = crate::bot::commands::CommandDispatcher {
@@ -761,6 +822,9 @@ struct CmdContext {
     audio_reset: Arc<AtomicBool>,
     timing_reset: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
+    /// True while the audio pipeline has nothing buffered; natural track ends
+    /// wait on this before advancing so the song's tail plays out.
+    pipeline_drained: Arc<AtomicBool>,
     volume_for_save: Arc<AtomicU8>,
     exit_reason: Arc<parking_lot::Mutex<Option<BotExit>>>,
     shutdown: Arc<AtomicBool>,
@@ -784,6 +848,7 @@ struct SpotifyRecovery {
     recovery_notify: Arc<tokio::sync::Notify>,
     local_shutdown: Arc<AtomicBool>,
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
+    pipeline_drained: Arc<AtomicBool>,
 }
 
 /// Build a brand-new Spotify session (cached credentials only — never opens a
@@ -862,8 +927,9 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
                 let tx = rec.cmd_tx.clone();
                 let sh = rec.session_holder.clone();
                 let notify = rec.recovery_notify.clone();
+                let drained = rec.pipeline_drained.clone();
                 tokio::spawn(async move {
-                    player_event_loop(event_rx, st, tx, sh, notify).await;
+                    player_event_loop(event_rx, st, tx, sh, notify, drained).await;
                 });
                 // Resume the interrupted track slightly before where it died.
                 if let Some((uri, pos_ms, _)) = &resume {
@@ -948,7 +1014,7 @@ async fn command_processor(
         spotify_connected, recovery_notify, recovery_suspended, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_store, audio_reset, timing_reset, pause_flag,
-        volume_for_save, exit_reason, shutdown, event_tx, i18n,
+        pipeline_drained, volume_for_save, exit_reason, shutdown, event_tx, i18n,
     } = ctx;
 
     // Tracks whether the Spotify session has been connected yet. Starts false
@@ -1684,7 +1750,7 @@ async fn command_processor(
                     tracing::debug!("Ignoring stale YouTube TrackEnded (gen {generation})");
                     continue;
                 }
-                if let Some(e) = error {
+                if let Some(ref e) = error {
                     tracing::warn!("YouTube track ended with error: {e}");
                     // A failed YouTube load surfaces here (start_track was
                     // fire-and-forget); apply the same consecutive-failure
@@ -1701,10 +1767,15 @@ async fn command_processor(
                 } else {
                     start_brake.on_success();
                 }
-                // Advance exactly like a natural end-of-track, tagged with the
-                // track that ended so a racing manual `n` can't double-advance.
                 let ended_uri = state.lock().current().map(|e| e.track.uri().to_string());
-                let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri });
+                if error.is_some() {
+                    // Failed load: nothing meaningful buffered, skip promptly.
+                    let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri });
+                } else {
+                    // Natural end: same early-signal problem as Spotify — the
+                    // decoder finished, the buffered tail hasn't played yet.
+                    spawn_drained_advance(radio_cmd_tx.clone(), pipeline_drained.clone(), ended_uri);
+                }
             }
 
             BotCommand::PreloadNext => {
@@ -1807,6 +1878,7 @@ async fn player_event_loop(
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
     session: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
     recovery_notify: Arc<tokio::sync::Notify>,
+    pipeline_drained: Arc<AtomicBool>,
 ) {
     while let Some(event) = events.recv().await {
         match event {
@@ -1845,15 +1917,18 @@ async fn player_event_loop(
                     }
                 };
                 if is_current {
-                    tracing::info!("Track ended, advancing to next");
-                    // Tag the advance with the ended track: the is_current
-                    // check above closes most of the window, but a manual `n`
-                    // already queued (not yet processed) still races — the
-                    // handler re-checks against after_track at execution time.
-                    let _ = cmd_tx.send(BotCommand::Next {
-                        user_id: 0,
-                        after_track: track_id.to_uri().ok(),
-                    });
+                    tracing::info!("Track ended (decode); waiting for the buffered tail to play out");
+                    // EndOfTrack means "finished decoding into the buffer",
+                    // several seconds before the listener hears the end.
+                    // Advance only after the pipeline runs dry, or the last
+                    // seconds of every song get wiped by the track start.
+                    // The after_track tag still guards against a manual `n`
+                    // racing in during (or after) the wait.
+                    spawn_drained_advance(
+                        cmd_tx.clone(),
+                        pipeline_drained.clone(),
+                        track_id.to_uri().ok(),
+                    );
                 } else {
                     tracing::debug!("Ignoring stale Spotify EndOfTrack for {track_id:?}");
                 }
@@ -1910,6 +1985,26 @@ mod tests {
         assert_eq!(startup_auth_plan(true, false, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(false, true, false), StartupAuthPlan::ConnectBestEffort);
         assert_eq!(startup_auth_plan(true, true, false), StartupAuthPlan::ConnectBestEffort);
+    }
+
+    // -- DrainWait --
+
+    #[test]
+    fn drain_wait_needs_two_consecutive_drained_polls() {
+        let mut w = DrainWait::new();
+        assert!(!w.observe(true));
+        assert!(w.observe(true));
+    }
+
+    #[test]
+    fn drain_wait_resets_on_a_busy_poll() {
+        // A chunk can be in flight between the channel and the framer: one
+        // empty poll isn't proof. A busy poll restarts the count.
+        let mut w = DrainWait::new();
+        assert!(!w.observe(true));
+        assert!(!w.observe(false));
+        assert!(!w.observe(true));
+        assert!(w.observe(true));
     }
 
     // -- auto_advance_is_stale --

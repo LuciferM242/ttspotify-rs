@@ -138,6 +138,10 @@ pub struct AudioPipeline {
     /// drop buffered PCM, re-arm the jitter gate — but keep `stream_id`,
     /// `sample_index` and `pos_ms` so the playback position doesn't jump.
     stream_flush_flag: Arc<AtomicBool>,
+    /// True while the pipeline has nothing buffered to play (channel empty,
+    /// less than one frame accumulated). Read by the runner's end-of-track
+    /// drain wait so the tail of a song finishes before the queue advances.
+    drained_flag: Arc<AtomicBool>,
     shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     framer: Framer,
@@ -163,6 +167,7 @@ impl AudioPipeline {
         timing_reset_flag: Arc<AtomicBool>,
         pause_flag: Arc<AtomicBool>,
         stream_flush_flag: Arc<AtomicBool>,
+        drained_flag: Arc<AtomicBool>,
         shutdown_flag: Arc<AtomicBool>,
         pos_ms: Arc<AtomicU32>,
         config: &BotConfig,
@@ -179,6 +184,7 @@ impl AudioPipeline {
             timing_reset_flag,
             pause_flag,
             stream_flush_flag,
+            drained_flag,
             shutdown_flag,
             pos_ms,
             volume_controller,
@@ -200,6 +206,13 @@ impl AudioPipeline {
                 tracing::info!("Audio pipeline shutting down");
                 break;
             }
+
+            // Publish whether anything is left to play (for the end-of-track
+            // drain wait). Refreshed every iteration, including while paused.
+            self.drained_flag.store(
+                self.audio_rx.is_empty() && self.framer.len() < FRAME_SIZE,
+                Ordering::Relaxed,
+            );
 
             // Check if we need to reset (new track loaded)
             if self.reset_flag.swap(false, Ordering::Relaxed) {
@@ -225,12 +238,11 @@ impl AudioPipeline {
                 tracing::debug!("Audio pipeline timing reset (resume)");
             }
 
-            // When paused, drain all buffered audio and skip injection
+            // When paused, stop injecting but KEEP everything buffered: the
+            // players stop producing while paused, and resume must continue
+            // from the exact note the listener last heard. The old drain here
+            // silently skipped the buffered seconds on every pause/resume.
             if self.pause_flag.load(Ordering::Relaxed) {
-                // Drain channel to prevent backpressure on the sink
-                while self.audio_rx.try_recv().is_ok() {}
-                self.framer.clear();
-                self.prebuffer.rearm();
                 self.next_block_time = None;
                 std::thread::sleep(Duration::from_millis(50));
                 continue;
