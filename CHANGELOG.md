@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.0] - 2026-07-21
 ### Added
 - YouTube Shorts links now play.
 - Linux: after an update, the bot offers to refresh your systemd service file
@@ -42,6 +42,10 @@
   after Stop works, and no more brief black console window flashes.
 - A failed update no longer leaves a temp file next to the program.
 - Searches with extra spaces or tabs no longer fail on Spotify.
+- Skipping past the last track in the queue no longer stops the current song;
+  you get the end-of-queue message and the music plays on.
+- Pausing during a song's final seconds no longer risks jumping to the next
+  track after 30 seconds of pause.
 - Small cleanups: cache files stay in the config folder, a stray startup
   warning about lang_prefs.json is gone, and the "yt-dlp not found" error
   names the right flag (--setup-yt).
