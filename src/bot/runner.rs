@@ -139,21 +139,29 @@ impl DrainWait {
 fn spawn_drained_advance(
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
     pipeline_drained: Arc<AtomicBool>,
+    pause_flag: Arc<AtomicBool>,
     after_track: Option<String>,
 ) {
     tokio::spawn(async move {
         // Hard cap so a wedged pipeline can't stall the queue forever:
         // the buffer is seconds deep, 30s is far beyond any real drain.
+        // Paused time doesn't count — a pause during the tail holds the
+        // buffer indefinitely on purpose, and the cap firing then would
+        // yank a paused bot onto the next track.
         const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-        let started = std::time::Instant::now();
+        let mut started = std::time::Instant::now();
         let mut wait = DrainWait::new();
         loop {
-            if wait.observe(pipeline_drained.load(Ordering::Relaxed)) {
-                break;
-            }
-            if started.elapsed() > MAX_WAIT {
-                tracing::warn!("Track-end drain wait timed out; advancing anyway");
-                break;
+            if pause_flag.load(Ordering::Relaxed) {
+                started = std::time::Instant::now();
+            } else {
+                if wait.observe(pipeline_drained.load(Ordering::Relaxed)) {
+                    break;
+                }
+                if started.elapsed() > MAX_WAIT {
+                    tracing::warn!("Track-end drain wait timed out; advancing anyway");
+                    break;
+                }
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -439,8 +447,9 @@ pub async fn run_bot(
     let event_session = session_holder.clone();
     let event_notify = recovery_notify.clone();
     let event_drained = pipeline_drained.clone();
+    let event_pause = pause_flag.clone();
     let event_loop_handle = tokio::spawn(async move {
-        player_event_loop(event_rx, event_state, event_cmd_tx, event_session, event_notify, event_drained).await;
+        player_event_loop(event_rx, event_state, event_cmd_tx, event_session, event_notify, event_drained, event_pause).await;
     });
 
     let dispatcher = crate::bot::commands::CommandDispatcher {
@@ -928,8 +937,9 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
                 let sh = rec.session_holder.clone();
                 let notify = rec.recovery_notify.clone();
                 let drained = rec.pipeline_drained.clone();
+                let paused = rec.pause_flag.clone();
                 tokio::spawn(async move {
-                    player_event_loop(event_rx, st, tx, sh, notify, drained).await;
+                    player_event_loop(event_rx, st, tx, sh, notify, drained, paused).await;
                 });
                 // Resume the interrupted track slightly before where it died.
                 if let Some((uri, pos_ms, _)) = &resume {
@@ -1473,9 +1483,11 @@ async fn command_processor(
                     (seed, allow, played)
                 };
 
-                let next = {
+                let (next, prev_index) = {
                     let mut s = state.lock();
-                    s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
+                    let prev_index = s.current_index;
+                    let next = s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
+                    (next, prev_index)
                 };
                 if let Some((service, uri_str, name)) = next {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
@@ -1534,16 +1546,30 @@ async fn command_processor(
                         reply_t(user_id, Key::EndOfQueue, &[]);
                     }
 
-                    // Nothing left playing: reset to a clean idle state so the
-                    // status line and PlaybackStatus don't stay stuck on "Playing".
                     if !resumed {
-                        stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
-                        {
-                            let mut s = state.lock();
-                            s.position_ms = 0;
+                        let was_playing = {
+                            let s = state.lock();
+                            s.status == PlaybackStatus::Playing || s.status == PlaybackStatus::Paused
+                        };
+                        if user_id > 0 && was_playing {
+                            // Manual skip with nowhere to go: tell the user
+                            // (done above) but leave the current track alone —
+                            // "there is no next" shouldn't silence the room.
+                            // `s` exists for that. Restore the index advance()
+                            // cleared so the current track stays current.
+                            state.lock().current_index = prev_index;
+                        } else {
+                            // Natural end (or nothing was playing): reset to a
+                            // clean idle state so the status line and
+                            // PlaybackStatus don't stay stuck on "Playing".
+                            stop_playback(&player, &youtube_player, &client, &state, &audio_reset, &pause_flag);
+                            {
+                                let mut s = state.lock();
+                                s.position_ms = 0;
+                            }
+                            set_status("Idle");
+                            send_event(RunnerEvent::Idle);
                         }
-                        set_status("Idle");
-                        send_event(RunnerEvent::Idle);
                     }
                 }
             }
@@ -1774,7 +1800,7 @@ async fn command_processor(
                 } else {
                     // Natural end: same early-signal problem as Spotify — the
                     // decoder finished, the buffered tail hasn't played yet.
-                    spawn_drained_advance(radio_cmd_tx.clone(), pipeline_drained.clone(), ended_uri);
+                    spawn_drained_advance(radio_cmd_tx.clone(), pipeline_drained.clone(), pause_flag.clone(), ended_uri);
                 }
             }
 
@@ -1879,6 +1905,7 @@ async fn player_event_loop(
     session: Arc<parking_lot::Mutex<librespot_core::session::Session>>,
     recovery_notify: Arc<tokio::sync::Notify>,
     pipeline_drained: Arc<AtomicBool>,
+    pause_flag: Arc<AtomicBool>,
 ) {
     while let Some(event) = events.recv().await {
         match event {
@@ -1927,6 +1954,7 @@ async fn player_event_loop(
                     spawn_drained_advance(
                         cmd_tx.clone(),
                         pipeline_drained.clone(),
+                        pause_flag.clone(),
                         track_id.to_uri().ok(),
                     );
                 } else {
