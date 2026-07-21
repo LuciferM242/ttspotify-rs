@@ -18,7 +18,8 @@ Tracks, albums, playlists, search, and radio recommendations.
 
 ### YouTube
 
-Videos and search, played through [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Videos, Shorts, playlists, albums, and search, played through
+[yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 YouTube requires **cookies** to play reliably. Export them with a browser extension:
 
@@ -113,6 +114,21 @@ sudo install -m755 tt-spotify-bot /usr/local/bin/ttspotify
 
 > **Platform support:** Windows x64, Linux x86_64, and Linux aarch64 (glibc,
 > Ubuntu 22.04 / Debian 12 or newer).
+
+## Updating the bot
+
+The bot has a built-in self-updater: it checks GitHub for a newer release,
+shows you what changed, verifies the download's signature, and swaps the
+binary in place. No manual re-download needed.
+
+- **Windows:** the tray checks on startup and offers the update; there's also
+  a **Check for updates** item in the tray menu.
+- **Linux:** run `ttspotify --update`. If bots are running as systemd
+  services, it offers to restart them on the new version — and to refresh
+  your service file when a release improves it.
+
+Updating the YouTube tools (yt-dlp and friends) is separate:
+`ttspotify --update-tools`, or **Update tools** in the tray menu.
 
 ## Running multiple bots
 
