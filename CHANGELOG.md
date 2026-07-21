@@ -23,6 +23,10 @@
   to it. Re-run --install-service once to get this.
 
 ### Fixed
+- Songs no longer end 6-7 seconds early: the bot now plays the buffered tail
+  of a track (including the artist's fade-out) before starting the next one.
+- Pausing no longer skips a few seconds on resume; playback continues from
+  the exact spot you paused.
 - Audio no longer comes out garbled after the bot is moved to another channel.
 - Spotify playback recovers on its own when its streaming session drops,
   instead of staying broken until a restart.
