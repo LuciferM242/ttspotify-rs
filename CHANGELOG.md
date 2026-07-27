@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+### Fixed
+- The bot no longer crashes when YouTube declines to hand out a session token.
+  This could take the whole bot down with no visible error (only a panics.log
+  entry). YouTube requests that fail once are now retried automatically, and the
+  session token is fetched at startup so the first search is less likely to fail.
+
 ## [0.7.0] - 2026-07-21
 ### Added
 - YouTube Shorts links now play.
