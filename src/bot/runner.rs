@@ -354,6 +354,22 @@ pub async fn run_bot(
     // Shared with the recovery supervisor for rebuilding a dead session.
     let auth = Arc::new(auth);
     let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new(&config)?);
+    // Warm rustypipe's visitor-data cache in the background. The first YouTube
+    // request otherwise pays a cold-cache scrape of music.youtube.com, which is
+    // exactly the step that fails intermittently (consent wall / changed page /
+    // bot-flagged IP). Doing one throwaway search at startup fills the cache
+    // (reused for ~50 requests, persisted to rustypipe_cache.json) so a user's
+    // first real search skips that fragile path. Fire-and-forget: the result is
+    // ignored and a failure here is harmless (retry_once handles it later).
+    {
+        let warm = youtube_metadata.clone();
+        tokio::spawn(async move {
+            match warm.search_tracks("music", 1).await {
+                Ok(_) => tracing::debug!("YouTube visitor-data cache warmed"),
+                Err(e) => tracing::debug!("YouTube cache warm-up skipped: {e}"),
+            }
+        });
+    }
     let youtube_player = crate::youtube::player::YouTubePlayer::new(
         audio_tx.clone(),
         youtube_metadata.clone(),
