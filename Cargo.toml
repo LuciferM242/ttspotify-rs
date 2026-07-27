@@ -21,7 +21,12 @@ librespot-oauth = { version = "0.8", default-features = false, features = ["rust
 
 # YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
 # whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.
-rustypipe = { version = "0.11", default-features = false, features = ["rustls-tls-native-roots"] }
+# Pinned to git, not the crates.io 0.11.4 release: 0.11.4 panics in
+# visitor_data.rs (`.unwrap()` on a failed visitor-data scrape) and, with
+# panic = "abort", that killed a user's bot outright. The fix landed upstream
+# 2025-06-17 (commit 71712e4, "remove unwrap trying to fetch visitor data") but
+# was never published. Rev is repo HEAD; upstream is dead since 2025-06-18.
+rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e613038e14fe775f0d2eae889737d93", default-features = false, features = ["rustls-tls-native-roots"] }
 
 # YouTube audio: HTTP fetch + decode + resample.
 # symphonia decodes YouTube's m4a (ISO-MP4 container + AAC). default-features
