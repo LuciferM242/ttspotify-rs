@@ -127,16 +127,16 @@ impl YouTubeMetadata {
     }
 
     async fn fetch_video(&self, video_id: &str) -> Result<YouTubeTrack, BotError> {
-        let details = self.client.query()
-            .music_details(video_id)
+        let q = self.client.query();
+        let details = retry_once(|| q.music_details(video_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube video fetch failed: {e}")))?;
         Ok(track_item_to_track(details.track))
     }
 
     async fn fetch_playlist(&self, playlist_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
-        let mut playlist = self.client.query()
-            .music_playlist(playlist_id)
+        let q = self.client.query();
+        let mut playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
         // Pull all pages, not just the first. A paging failure truncates the
@@ -154,8 +154,8 @@ impl YouTubeMetadata {
 
     /// First page of a playlist plus a continuation for background loading.
     async fn fetch_playlist_first_page(&self, playlist_id: &str) -> Result<YtResolved, BotError> {
-        let playlist = self.client.query()
-            .music_playlist(playlist_id)
+        let q = self.client.query();
+        let playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
         let mut paginator = playlist.tracks;
@@ -193,8 +193,8 @@ impl YouTubeMetadata {
     }
 
     async fn fetch_album(&self, album_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
-        let album = self.client.query()
-            .music_album(album_id)
+        let q = self.client.query();
+        let album = retry_once(|| q.music_album(album_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube album fetch failed: {e}")))?;
         let tracks: Vec<YouTubeTrack> = album.tracks.into_iter().map(track_item_to_track).collect();
@@ -208,8 +208,8 @@ impl YouTubeMetadata {
     /// Search YouTube Music for tracks matching the query.
     /// Returns up to `limit` results (sliced from the first page).
     pub async fn search_tracks(&self, query: &str, limit: u8) -> Result<Vec<YouTubeTrack>, BotError> {
-        let result = self.client.query()
-            .music_search_tracks(query)
+        let q = self.client.query();
+        let result = retry_once(|| q.music_search_tracks(query))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube search failed: {e}")))?;
 
@@ -290,6 +290,30 @@ impl YouTubeMetadata {
     }
 }
 
+/// Run a rustypipe query, retrying once on error.
+///
+/// Every rustypipe request is backed by a visitor-data fetch that can fail
+/// transiently: a cold cache scrapes `music.youtube.com` for a token, and that
+/// scrape sometimes comes back empty (consent wall, a changed page, a
+/// momentarily bot-flagged IP). A second attempt fetches fresh visitor data and
+/// usually succeeds, so one cheap retry turns most of those one-off failures
+/// into a normal result instead of an error surfaced to the user. `op` is
+/// re-invoked from scratch on retry so it issues a brand-new request.
+async fn retry_once<T, E, F, Fut>(mut op: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    match op().await {
+        Ok(v) => Ok(v),
+        Err(first) => {
+            tracing::debug!("YouTube query failed ({first}); retrying once");
+            op().await
+        }
+    }
+}
+
 fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
     YouTubeTrack {
         id: item.id,
@@ -297,5 +321,54 @@ fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
         artists: item.artists.into_iter().map(|a| a.name).collect(),
         album: item.album.map(|a| a.name).unwrap_or_default(),
         duration_ms: item.duration.unwrap_or(0).saturating_mul(1000),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_once;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn retry_once_returns_first_success_without_retrying() {
+        let calls = Cell::new(0u32);
+        let res: Result<u32, &str> = retry_once(|| {
+            calls.set(calls.get() + 1);
+            async { Ok(42) }
+        })
+        .await;
+        assert_eq!(res, Ok(42));
+        assert_eq!(calls.get(), 1, "should not retry after a first-try success");
+    }
+
+    #[tokio::test]
+    async fn retry_once_recovers_on_the_second_attempt() {
+        let calls = Cell::new(0u32);
+        let res: Result<u32, &str> = retry_once(|| {
+            calls.set(calls.get() + 1);
+            let n = calls.get();
+            async move {
+                if n < 2 {
+                    Err("transient")
+                } else {
+                    Ok(7)
+                }
+            }
+        })
+        .await;
+        assert_eq!(res, Ok(7));
+        assert_eq!(calls.get(), 2, "should have retried exactly once");
+    }
+
+    #[tokio::test]
+    async fn retry_once_gives_up_after_two_failures() {
+        let calls = Cell::new(0u32);
+        let res: Result<u32, &str> = retry_once(|| {
+            calls.set(calls.get() + 1);
+            async { Err("still broken") }
+        })
+        .await;
+        assert_eq!(res, Err("still broken"));
+        assert_eq!(calls.get(), 2, "should attempt exactly twice, no more");
     }
 }
