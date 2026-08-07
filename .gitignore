@@ -9,6 +9,9 @@
 /.claude/
 CLAUDE.md
 
+# Local design specs (never committed - public repo)
+/docs/superpowers/
+
 # Build artifacts
 /TEAMTALK_DLL/
 /TeamTalkRust/

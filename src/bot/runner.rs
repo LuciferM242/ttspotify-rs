@@ -1502,7 +1502,10 @@ async fn command_processor(
                 let (next, prev_index) = {
                     let mut s = state.lock();
                     let prev_index = s.current_index;
-                    let next = s.advance().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
+                    // A user-typed `n` (no after_track tag) must move even under
+                    // repeat-track; an end-of-track advance keeps repeating.
+                    let entry = if after_track.is_some() { s.advance() } else { s.advance_manual() };
+                    let next = entry.map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
                     (next, prev_index)
                 };
                 if let Some((service, uri_str, name)) = next {

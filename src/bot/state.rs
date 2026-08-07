@@ -143,16 +143,34 @@ impl PlayerState {
         }
     }
 
-    /// Advance to the next track. Returns the next entry if available.
+    /// Advance to the next track because the current one ended. Returns the
+    /// next entry if available.
     pub fn advance(&mut self) -> Option<&QueueEntry> {
+        self.advance_inner(true)
+    }
+
+    /// Advance because the user explicitly skipped (`n`). Repeat-track is a
+    /// rule about what happens when a track *ends*, not a lock on the queue —
+    /// an explicit skip must always move. At the end of the queue repeat-track
+    /// loops back to the start, matching how repeat-one behaves elsewhere.
+    pub fn advance_manual(&mut self) -> Option<&QueueEntry> {
+        self.advance_inner(false)
+    }
+
+    /// Shared advance logic. `honor_repeat_track` is false for manual skips.
+    fn advance_inner(&mut self, honor_repeat_track: bool) -> Option<&QueueEntry> {
         if self.queue.is_empty() {
             self.current_index = None;
             return None;
         }
 
-        if self.repeat_track {
+        if self.repeat_track && honor_repeat_track {
             return self.current();
         }
+
+        // A manual skip under repeat-track still loops the queue rather than
+        // running off the end into silence.
+        let wrap_at_end = self.repeat_queue || (self.repeat_track && !honor_repeat_track);
 
         if self.shuffle {
             use rand::Rng;
@@ -164,7 +182,7 @@ impl PlayerState {
                 let idx = remaining[rng.gen_range(0..remaining.len())];
                 self.current_index = Some(idx);
                 return self.queue.get(idx);
-            } else if self.repeat_queue && self.queue.len() > 1 {
+            } else if wrap_at_end && self.queue.len() > 1 {
                 // All tracks played, re-shuffle from start (excluding the one that just played)
                 let others: Vec<usize> = (0..self.queue.len()).filter(|&i| i != current).collect();
                 if !others.is_empty() {
@@ -183,7 +201,7 @@ impl PlayerState {
             if next < self.queue.len() {
                 self.current_index = Some(next);
                 return self.queue.get(next);
-            } else if self.repeat_queue {
+            } else if wrap_at_end {
                 self.current_index = Some(0);
                 return self.queue.first();
             } else {
@@ -492,6 +510,55 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
+    }
+
+    // -- advance_manual: an explicit skip is never swallowed by repeat-track --
+
+    #[test]
+    fn manual_advance_moves_past_a_repeating_track() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.repeat_track = true;
+        assert_eq!(state.advance_manual().unwrap().track.id(), "1");
+        assert_eq!(state.advance_manual().unwrap().track.id(), "2");
+    }
+
+    #[test]
+    fn manual_advance_at_end_with_repeat_track_wraps_to_first() {
+        // Repeat-one implies the queue loops: skipping past the last entry
+        // returns to the start rather than ending playback.
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.repeat_track = true;
+        state.current_index = Some(2);
+        assert_eq!(state.advance_manual().unwrap().track.id(), "0");
+    }
+
+    #[test]
+    fn manual_advance_at_end_without_any_repeat_returns_none() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.current_index = Some(1);
+        assert!(state.advance_manual().is_none());
+    }
+
+    #[test]
+    fn manual_advance_still_wraps_under_repeat_queue() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.repeat_queue = true;
+        state.current_index = Some(1);
+        assert_eq!(state.advance_manual().unwrap().track.id(), "0");
+    }
+
+    #[test]
+    fn auto_advance_still_repeats_the_track() {
+        // The auto path (end-of-track) must keep repeat-track behavior.
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.repeat_track = true;
+        assert_eq!(state.advance().unwrap().track.id(), "0");
+        assert_eq!(state.advance().unwrap().track.id(), "0");
     }
 
     // -- advance: repeat_queue --
