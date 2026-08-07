@@ -389,6 +389,25 @@ impl PlayerState {
             .collect()
     }
 
+    /// Drop played entries, keeping at most `keep` of them before the current
+    /// track. Upcoming tracks are never touched.
+    ///
+    /// Radio is an endless source: it appends a batch every time playback
+    /// reaches the end, and nothing ever left the queue, so a long session grew
+    /// it without bound and made every `queue` listing longer than the last.
+    /// Trimming costs the ability to `p` back beyond `keep` tracks.
+    pub fn trim_played_history(&mut self, keep: usize) {
+        let Some(current) = self.current_index else {
+            return;
+        };
+        if current <= keep {
+            return;
+        }
+        let drop_count = current - keep;
+        self.queue.drain(..drop_count);
+        self.current_index = Some(current - drop_count);
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
         if index >= self.queue.len() {
             return None;
@@ -689,6 +708,52 @@ mod tests {
             named("b", "Artist - Song - 2011 Remaster"),
         ]);
         assert_eq!(fresh.len(), 1);
+    }
+
+    // -- trim_played_history --
+
+    #[test]
+    fn trim_played_history_keeps_the_recent_past_and_repoints_current() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 10);
+        state.current_index = Some(9);
+        state.trim_played_history(3);
+        // 3 played entries plus the current one.
+        assert_eq!(state.queue.len(), 4);
+        assert_eq!(state.current_index, Some(3));
+        assert_eq!(state.current().unwrap().track.id(), "9");
+        assert_eq!(state.queue[0].track.id(), "6");
+    }
+
+    #[test]
+    fn trim_played_history_keeps_upcoming_tracks() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 10);
+        state.current_index = Some(5);
+        state.trim_played_history(1);
+        // 1 played + current + the 4 still upcoming.
+        assert_eq!(state.queue.len(), 6);
+        assert_eq!(state.current().unwrap().track.id(), "5");
+        assert_eq!(state.queue.last().unwrap().track.id(), "9");
+    }
+
+    #[test]
+    fn trim_played_history_does_nothing_when_history_is_short() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.current_index = Some(1);
+        state.trim_played_history(20);
+        assert_eq!(state.queue.len(), 3);
+        assert_eq!(state.current_index, Some(1));
+    }
+
+    #[test]
+    fn trim_played_history_without_a_current_track_is_a_no_op() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 5);
+        state.current_index = None;
+        state.trim_played_history(1);
+        assert_eq!(state.queue.len(), 5);
     }
 
     // -- repeat_active --

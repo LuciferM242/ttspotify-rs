@@ -702,6 +702,12 @@ fn schedule_radio_prefetch(
     }
 }
 
+/// How many already-played tracks a radio session keeps in the queue. Radio
+/// never stops appending, so without a bound the queue grows for as long as
+/// the bot plays. Enough history to look back over an evening, not enough to
+/// turn `queue` into a wall of text.
+const RADIO_HISTORY_KEEP: usize = 20;
+
 /// How many tracks each background batch fetches, and the pause between
 /// batches. Pacing keeps the request stream looking like a normal client.
 const BULK_BG_BATCH: usize = 25;
@@ -1553,6 +1559,7 @@ async fn command_processor(
                                             let fresh = s.filter_unqueued_similar(tracks);
                                             let first = fresh.first().map(|t| (t.uri().to_string(), t.display_name()));
                                             s.enqueue_all(fresh, "Radio".to_string(), true);
+                                            s.trim_played_history(RADIO_HISTORY_KEEP);
                                             first
                                         };
                                         match started {
@@ -1902,6 +1909,7 @@ async fn command_processor(
                                     let fresh = s.filter_unqueued_similar(tracks);
                                     let count = fresh.len();
                                     s.enqueue_all(fresh, "Radio".to_string(), true);
+                                    s.trim_played_history(RADIO_HISTORY_KEEP);
                                     count
                                 };
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
