@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 ### Fixed
+- The queue no longer grows without end. With radio on, the bot added new
+  recommendations every time it reached the last track and never dropped
+  anything, so an evening of listening left dozens of played tracks in the
+  queue. It now keeps the last 20 played tracks.
+- Radio no longer keeps adding the same song. Recommendations were only
+  checked against tracks already queued by their Spotify id, so a remaster,
+  single or re-release of a song you already heard counted as a new track.
+- Repeat no longer fights with radio. With repeat on, radio kept extending the
+  queue past the end - which also meant "repeat queue" never actually looped.
+  Radio now stays out of the way while either repeat mode is on.
+- Skipping with `n` while "repeat track" is on now moves to the next track
+  instead of restarting the same one. At the end of the queue it loops back to
+  the first track.
+- A track that reports finishing more than once (for example a YouTube error
+  arriving alongside its end-of-track) no longer restarts or skips twice.
 - The bot no longer crashes when YouTube declines to hand out a session token.
   This could take the whole bot down with no visible error (only a panics.log
   entry). YouTube requests that fail once are now retried automatically, and the
