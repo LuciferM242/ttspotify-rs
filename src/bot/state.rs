@@ -148,6 +148,12 @@ impl PlayerState {
         }
     }
 
+    /// Whether either repeat mode is on. Repeat means "keep playing what is
+    /// already here", so radio must not append to the queue while it holds.
+    pub fn repeat_active(&self) -> bool {
+        self.repeat_track || self.repeat_queue
+    }
+
     /// Claim the right to send an automatic advance, returning false when one
     /// is already in flight.
     ///
@@ -539,6 +545,26 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
+    }
+
+    // -- repeat_active --
+
+    #[test]
+    fn repeat_active_is_false_with_no_modes_or_shuffle_only() {
+        let mut state = PlayerState::new();
+        assert!(!state.repeat_active());
+        state.shuffle = true;
+        assert!(!state.repeat_active(), "shuffle alone is not a repeat mode");
+    }
+
+    #[test]
+    fn repeat_active_is_true_for_either_repeat_mode() {
+        let mut state = PlayerState::new();
+        state.repeat_track = true;
+        assert!(state.repeat_active());
+        state.repeat_track = false;
+        state.repeat_queue = true;
+        assert!(state.repeat_active());
     }
 
     // -- auto-advance gate --

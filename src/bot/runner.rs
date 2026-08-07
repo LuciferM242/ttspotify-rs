@@ -1519,7 +1519,12 @@ async fn command_processor(
 
                         let (radio_on, at_end, allow_rec) = {
                             let s = state.lock();
-                            let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                            // Repeat-track never moves the index, so `at_end`
+                            // would stay true and seed a radio fetch on every
+                            // loop; repeat-queue would never get to wrap
+                            // because radio keeps extending past the end.
+                            let at_end = !s.repeat_active()
+                                && s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                             let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                             (s.radio_enabled, at_end, allow)
                         };
@@ -1865,7 +1870,9 @@ async fn command_processor(
                 let (radio_on, is_active, current_uri, queue_at_end, allow_rec) = {
                     let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
-                    let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                    // Repeat holds the queue fixed; radio must not grow it.
+                    let at_end = !s.repeat_active()
+                        && s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     (s.radio_enabled, s.status != PlaybackStatus::Idle, cur_uri, at_end, allow)
                 };
