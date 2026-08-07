@@ -68,6 +68,69 @@ pub struct PlayerState {
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
 
+/// Words that mark a re-release of the same recording rather than a new one.
+/// Deliberately excludes "live", "acoustic" and "remix": those are genuinely
+/// different performances and should stay separate queue entries.
+const REISSUE_MARKERS: [&str; 9] = [
+    "remaster", "version", "edit", "mono", "stereo", "anniversary", "deluxe", "reissue", "mix",
+];
+
+fn is_reissue_marker(segment: &str) -> bool {
+    // "remix" contains "mix" but is a different recording.
+    if segment.contains("remix") {
+        return false;
+    }
+    REISSUE_MARKERS.iter().any(|m| segment.contains(m))
+}
+
+/// A loose identity for a song: the same recording released twice should share
+/// one key. Case, punctuation, spacing and re-release qualifiers are dropped.
+fn song_key(display_name: &str) -> String {
+    let lower = display_name.to_lowercase();
+
+    // Drop bracketed qualifiers like "(remastered 2011)" or "[radio edit]".
+    let mut without_brackets = String::with_capacity(lower.len());
+    let mut group = String::new();
+    let mut depth = 0usize;
+    for ch in lower.chars() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if !is_reissue_marker(&group) {
+                        without_brackets.push_str(&group);
+                    }
+                    group.clear();
+                }
+            }
+            _ if depth > 0 => group.push(ch),
+            _ => without_brackets.push(ch),
+        }
+    }
+    without_brackets.push_str(&group);
+
+    // Drop trailing " - 2011 remaster" style qualifiers, keeping the leading
+    // "artist - title" split intact.
+    let parts: Vec<&str> = without_brackets.split(" - ").collect();
+    let kept: Vec<&str> = parts
+        .iter()
+        .enumerate()
+        .filter(|(i, part)| *i < 2 || !is_reissue_marker(part))
+        .map(|(_, part)| *part)
+        .collect();
+
+    kept.join(" ")
+        .chars()
+        // Apostrophes vanish rather than split the word: "don't" == "dont".
+        .filter(|c| !matches!(c, '\'' | '\u{2019}'))
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Default for PlayerState {
     fn default() -> Self {
         Self::new()
@@ -306,6 +369,26 @@ impl PlayerState {
             .collect()
     }
 
+    /// Like `filter_unqueued`, but also drops re-releases of songs already
+    /// queued (and duplicates inside `tracks` itself).
+    ///
+    /// Radio recommendations are excluded by track id, and the same recording
+    /// carries a different id on every remaster, single and regional release —
+    /// so a station seeded from one song can hand back that song again and
+    /// again, each copy looking new. Matching on `song_key` catches those.
+    pub fn filter_unqueued_similar(&self, tracks: Vec<Track>) -> Vec<Track> {
+        let mut seen_ids: std::collections::HashSet<String> =
+            self.queue.iter().map(|e| e.track.id().to_string()).collect();
+        let mut seen_songs: std::collections::HashSet<String> =
+            self.queue.iter().map(|e| song_key(&e.track.display_name())).collect();
+        tracks
+            .into_iter()
+            .filter(|t| {
+                seen_ids.insert(t.id().to_string()) && seen_songs.insert(song_key(&t.display_name()))
+            })
+            .collect()
+    }
+
     pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
         if index >= self.queue.len() {
             return None;
@@ -439,6 +522,19 @@ mod tests {
         })
     }
 
+    /// A track whose `display_name()` is exactly `display` ("Artists - Name").
+    fn named(id: &str, display: &str) -> Track {
+        let (artists, name) = display.split_once(" - ").unwrap_or(("", display));
+        Track::Spotify(SpotifyTrack {
+            id: id.to_string(),
+            name: name.to_string(),
+            artists: vec![artists.to_string()],
+            album: "Album".to_string(),
+            duration_ms: 180_000,
+            uri: format!("spotify:track:{id}"),
+        })
+    }
+
     fn fill(state: &mut PlayerState, n: usize) {
         for i in 0..n {
             state.enqueue(track(&i.to_string()), "tester".to_string(), true);
@@ -545,6 +641,54 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
+    }
+
+    // -- song_key / radio dedupe --
+
+    #[test]
+    fn song_key_ignores_remaster_and_edition_suffixes() {
+        let base = song_key("Artist - Song");
+        assert_eq!(song_key("Artist - Song - 2011 Remaster"), base);
+        assert_eq!(song_key("Artist - Song (Remastered 2011)"), base);
+        assert_eq!(song_key("Artist - Song (Single Version)"), base);
+        assert_eq!(song_key("Artist - Song - Radio Edit"), base);
+    }
+
+    #[test]
+    fn song_key_ignores_case_punctuation_and_spacing() {
+        assert_eq!(song_key("Artist - Don't Stop"), song_key("ARTIST  -  Dont  Stop"));
+    }
+
+    #[test]
+    fn song_key_keeps_genuinely_different_recordings_apart() {
+        let base = song_key("Artist - Song");
+        assert_ne!(song_key("Artist - Song (Live)"), base, "a live take is a different recording");
+        assert_ne!(song_key("Artist - Song (Acoustic)"), base);
+        assert_ne!(song_key("Artist - Other Song"), base);
+        assert_ne!(song_key("Other Artist - Song"), base);
+    }
+
+    #[test]
+    fn filter_unqueued_similar_drops_a_rerelease_of_a_queued_song() {
+        let mut state = PlayerState::new();
+        state.enqueue(named("a", "Artist - Song"), "u".into(), true);
+        let incoming = vec![
+            named("b", "Artist - Song (Remastered 2011)"),
+            named("c", "Artist - Another Song"),
+        ];
+        let fresh = state.filter_unqueued_similar(incoming);
+        assert_eq!(fresh.len(), 1, "the remaster is the same song under a new id");
+        assert_eq!(fresh[0].id(), "c");
+    }
+
+    #[test]
+    fn filter_unqueued_similar_drops_duplicates_within_the_incoming_batch() {
+        let state = PlayerState::new();
+        let fresh = state.filter_unqueued_similar(vec![
+            named("a", "Artist - Song"),
+            named("b", "Artist - Song - 2011 Remaster"),
+        ]);
+        assert_eq!(fresh.len(), 1);
     }
 
     // -- repeat_active --

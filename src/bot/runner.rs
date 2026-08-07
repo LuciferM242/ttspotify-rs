@@ -1545,18 +1545,29 @@ async fn command_processor(
                                 match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
                                         let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
-                                        let first_uri = tracks[0].uri().to_string();
-                                        let first_name = tracks[0].display_name();
-                                        {
+                                        // A station reseeded from the same song
+                                        // hands back re-releases of it under
+                                        // fresh ids; drop those before playing.
+                                        let started = {
                                             let mut s = state.lock();
-                                            s.enqueue_all(tracks, "Radio".to_string(), true);
-                                        }
-                                        if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
-                                            resumed = true;
-                                            reply_t(user_id, Key::RadioPlaying, &[
-                                                ("track", first_name.clone()),
-                                            ]);
-                                            announce_playing_status(&first_name);
+                                            let fresh = s.filter_unqueued_similar(tracks);
+                                            let first = fresh.first().map(|t| (t.uri().to_string(), t.display_name()));
+                                            s.enqueue_all(fresh, "Radio".to_string(), true);
+                                            first
+                                        };
+                                        match started {
+                                            Some((first_uri, first_name)) => {
+                                                if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
+                                                    resumed = true;
+                                                    reply_t(user_id, Key::RadioPlaying, &[
+                                                        ("track", first_name.clone()),
+                                                    ]);
+                                                    announce_playing_status(&first_name);
+                                                }
+                                            }
+                                            // Every recommendation was a song
+                                            // already played this session.
+                                            None => reply_t(user_id, Key::RadioNoRecs, &[]),
                                         }
                                     }
                                     Ok(_) => {
@@ -1886,11 +1897,13 @@ async fn command_processor(
                         match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
                             Ok(tracks) if !tracks.is_empty() => {
                                 let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
-                                let count = tracks.len();
-                                {
+                                let count = {
                                     let mut s = state.lock();
-                                    s.enqueue_all(tracks, "Radio".to_string(), true);
-                                }
+                                    let fresh = s.filter_unqueued_similar(tracks);
+                                    let count = fresh.len();
+                                    s.enqueue_all(fresh, "Radio".to_string(), true);
+                                    count
+                                };
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
                             }
                             Ok(_) => {
