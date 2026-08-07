@@ -1476,6 +1476,10 @@ async fn command_processor(
             }
 
             BotCommand::Next { user_id, after_track } => {
+                // Whatever happens below, this advance has been consumed: the
+                // next track is free to raise its own end-of-track signal.
+                state.lock().release_auto_advance();
+
                 // An auto-advance whose source track is no longer current lost
                 // the race against a manual `n`; executing it too would skip a
                 // track the user never heard.
@@ -1812,7 +1816,15 @@ async fn command_processor(
                 } else {
                     start_brake.on_success();
                 }
-                let ended_uri = state.lock().current().map(|e| e.track.uri().to_string());
+                let (ended_uri, may_advance) = {
+                    let mut s = state.lock();
+                    let uri = s.current().map(|e| e.track.uri().to_string());
+                    (uri, s.try_arm_auto_advance())
+                };
+                if !may_advance {
+                    tracing::debug!("Ignoring duplicate YouTube end-of-track: an advance is already in flight");
+                    continue;
+                }
                 if error.is_some() {
                     // Failed load: nothing meaningful buffered, skip promptly.
                     let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri });
@@ -1962,6 +1974,12 @@ async fn player_event_loop(
                         _ => true,
                     }
                 };
+                // Under repeat-track the URI check above can't tell a duplicate
+                // signal from a fresh one; the gate can.
+                if is_current && !state.lock().try_arm_auto_advance() {
+                    tracing::debug!("Ignoring duplicate Spotify EndOfTrack: an advance is already in flight");
+                    continue;
+                }
                 if is_current {
                     tracing::info!("Track ended (decode); waiting for the buffered tail to play out");
                     // EndOfTrack means "finished decoding into the buffer",
@@ -1982,6 +2000,10 @@ async fn player_event_loop(
             }
             PlayerEvent::Unavailable { track_id, .. } => {
                 tracing::warn!("Track unavailable: {track_id:?}, skipping");
+                if !state.lock().try_arm_auto_advance() {
+                    tracing::debug!("Unavailable: an advance is already in flight, not sending a second");
+                    continue;
+                }
                 let _ = cmd_tx.send(BotCommand::Next {
                     user_id: 0,
                     after_track: track_id.to_uri().ok(),

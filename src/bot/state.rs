@@ -60,6 +60,10 @@ pub struct PlayerState {
     /// Bumped on stop/clear and each new bulk load; a background bulk loader
     /// captures the value at spawn and dies when it no longer matches.
     pub bulk_load_generation: u64,
+
+    /// True while an automatic advance is in flight. See
+    /// `try_arm_auto_advance`.
+    auto_advance_pending: bool,
 }
 
 pub type SharedState = Arc<Mutex<PlayerState>>;
@@ -85,6 +89,7 @@ impl PlayerState {
             tracks_played: 0,
             active_service: Service::default(),
             bulk_load_generation: 0,
+            auto_advance_pending: false,
         }
     }
 
@@ -141,6 +146,28 @@ impl PlayerState {
         if was_empty && !self.queue.is_empty() {
             self.current_index = Some(0);
         }
+    }
+
+    /// Claim the right to send an automatic advance, returning false when one
+    /// is already in flight.
+    ///
+    /// One track can raise several "this track is done" signals — a natural
+    /// end-of-track, an `Unavailable`, a YouTube `TrackEnded` — and each would
+    /// send its own advance. The usual defence is the stale check, which
+    /// compares the ended track against the current one; under repeat-track
+    /// those are always equal, so every duplicate looks fresh and the track
+    /// restarts once per signal.
+    pub fn try_arm_auto_advance(&mut self) -> bool {
+        if self.auto_advance_pending {
+            return false;
+        }
+        self.auto_advance_pending = true;
+        true
+    }
+
+    /// Release the claim once the advance has been consumed (or abandoned).
+    pub fn release_auto_advance(&mut self) {
+        self.auto_advance_pending = false;
     }
 
     /// Advance to the next track because the current one ended. Returns the
@@ -238,6 +265,8 @@ impl PlayerState {
         self.status = PlaybackStatus::Idle;
         self.position_ms = 0;
         self.bulk_load_generation += 1;
+        // A waiter armed for the track we just stopped will never be consumed.
+        self.auto_advance_pending = false;
     }
 
     /// Drop everything after the current track (or the whole queue when
@@ -510,6 +539,33 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(state.advance().unwrap().track.id(), id_before);
         }
+    }
+
+    // -- auto-advance gate --
+
+    #[test]
+    fn auto_advance_gate_admits_one_signal_at_a_time() {
+        let mut state = PlayerState::new();
+        assert!(state.try_arm_auto_advance(), "first end-of-track should advance");
+        assert!(!state.try_arm_auto_advance(), "a second signal for the same track is a duplicate");
+    }
+
+    #[test]
+    fn auto_advance_gate_rearms_once_the_advance_is_consumed() {
+        let mut state = PlayerState::new();
+        assert!(state.try_arm_auto_advance());
+        state.release_auto_advance();
+        assert!(state.try_arm_auto_advance(), "the next track must be able to advance");
+    }
+
+    #[test]
+    fn clearing_the_queue_releases_a_pending_auto_advance() {
+        // Stopping mid-track leaves a waiter armed; without a release the next
+        // track ever played could never auto-advance.
+        let mut state = PlayerState::new();
+        assert!(state.try_arm_auto_advance());
+        state.clear();
+        assert!(state.try_arm_auto_advance());
     }
 
     // -- advance_manual: an explicit skip is never swallowed by repeat-track --
