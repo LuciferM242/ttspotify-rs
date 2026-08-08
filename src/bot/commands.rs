@@ -529,7 +529,7 @@ impl CommandDispatcher {
                     let footer = self.i18n.tr(sender_id, Key::SearchResultsFooter, &[]);
                     let msg = self.state.lock()
                         .get_search_results(sender_id)
-                        .map(|results| format_search_results(results, &header, &footer));
+                        .map(|results| format_search_results(&results, &header, &footer));
                     match msg {
                         Some(m) => self.reply(client, sender_id, &m),
                         None => self.reply_t(client, sender_id, Key::SearchUsage, &[]),

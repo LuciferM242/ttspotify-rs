@@ -1,16 +1,19 @@
-use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use moka::sync::Cache;
 use parking_lot::Mutex;
 
 use crate::services::Service;
 use crate::track::Track;
 
-/// How long a user's search results stay pickable before being swept.
-/// Prevents `search_results` growing unbounded when users search and walk away.
+/// How long a user's search results stay pickable.
 const SEARCH_RESULT_TTL: Duration = Duration::from_secs(600);
+
+/// How many users can hold pickable results at once. Bounded so a busy channel
+/// cannot grow this without limit.
+const SEARCH_RESULT_CAPACITY: u64 = 256;
 
 #[derive(Debug, Clone)]
 pub struct QueueEntry {
@@ -75,9 +78,11 @@ pub struct PlayerState {
     // Radio
     pub radio_enabled: bool,
 
-    // Search session (user_id → (inserted_at, results)). Access via the
-    // search-result helper methods so stale entries get swept.
-    pub search_results: HashMap<i32, (Instant, Vec<Track>)>,
+    /// Pickable search results per user. Expiry and the capacity bound are the
+    /// cache's job: the hand-rolled version only swept on insert, so results
+    /// from a user who searched and walked away outlived their TTL until
+    /// somebody else happened to search.
+    pub search_results: Cache<i32, Vec<Track>>,
 
     // Track position tracking
     pub position_ms: u32,
@@ -178,7 +183,10 @@ impl PlayerState {
             repeat: RepeatMode::Off,
             shuffle: false,
             radio_enabled: false,
-            search_results: HashMap::new(),
+            search_results: Cache::builder()
+                .max_capacity(SEARCH_RESULT_CAPACITY)
+                .time_to_live(SEARCH_RESULT_TTL)
+                .build(),
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
@@ -191,34 +199,28 @@ impl PlayerState {
         self.current_index.and_then(|i| self.queue.get(i))
     }
 
-    /// Store a user's search results, timestamped, sweeping any entries older
-    /// than `SEARCH_RESULT_TTL` first.
+    /// Store a user's pickable search results.
     pub fn insert_search_results(&mut self, user_id: i32, tracks: Vec<Track>) {
-        self.insert_search_results_at(user_id, tracks, Instant::now());
+        self.search_results.insert(user_id, tracks);
     }
 
-    /// Timestamp-injectable variant for tests.
-    pub fn insert_search_results_at(&mut self, user_id: i32, tracks: Vec<Track>, now: Instant) {
-        self.search_results
-            .retain(|_, (t, _)| now.duration_since(*t) < SEARCH_RESULT_TTL);
-        self.search_results.insert(user_id, (now, tracks));
-    }
-
-    /// Borrow a user's current search results, if any.
-    pub fn get_search_results(&self, user_id: i32) -> Option<&Vec<Track>> {
-        self.search_results.get(&user_id).map(|(_, v)| v)
+    /// A user's current search results, if any.
+    pub fn get_search_results(&self, user_id: i32) -> Option<Vec<Track>> {
+        self.search_results.get(&user_id)
     }
 
     /// Remove a user's search results; returns whether an entry existed.
     pub fn remove_search_results(&mut self, user_id: i32) -> bool {
-        self.search_results.remove(&user_id).is_some()
+        let existed = self.search_results.get(&user_id).is_some();
+        self.search_results.invalidate(&user_id);
+        existed
     }
 
     /// Clone the `pick`-th result of a user's search, if present.
     pub fn pick_search_result(&self, user_id: i32, pick: usize) -> Option<Track> {
         self.search_results
             .get(&user_id)
-            .and_then(|(_, v)| v.get(pick).cloned())
+            .and_then(|v| v.get(pick).cloned())
     }
 
     pub fn enqueue(&mut self, track: Track, requester: String, allow_recommend: bool) {
@@ -636,16 +638,16 @@ mod tests {
     }
 
     #[test]
-    fn stale_search_results_are_swept_on_insert() {
+    fn one_users_results_do_not_disturb_anothers() {
+        // Expiry itself is the cache's job now (and is covered in bot::cache);
+        // what this file still owns is that results are kept per user.
         let mut state = PlayerState::new();
-        let t0 = Instant::now();
-        // Old entry for user 1.
-        state.insert_search_results_at(1, vec![track("a")], t0);
-        // Fresh insert for user 2 well past the TTL sweeps user 1.
-        let later = t0 + SEARCH_RESULT_TTL + Duration::from_secs(1);
-        state.insert_search_results_at(2, vec![track("b")], later);
-        assert!(state.get_search_results(1).is_none(), "stale entry should be evicted");
-        assert!(state.get_search_results(2).is_some());
+        state.insert_search_results(1, vec![track("a")]);
+        state.insert_search_results(2, vec![track("b")]);
+        assert_eq!(state.pick_search_result(1, 0).unwrap().id(), "a");
+        assert!(state.remove_search_results(1));
+        assert!(state.get_search_results(1).is_none());
+        assert!(state.get_search_results(2).is_some(), "other users are untouched");
     }
 
     // -- enqueue / enqueue_all --
