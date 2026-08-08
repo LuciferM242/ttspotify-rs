@@ -1642,7 +1642,6 @@ async fn command_processor(
             }
 
             BotCommand::Seek { offset_ms, user_id: _ } => {
-                use crate::player::MediaPlayer as _;
                 let (new_pos, service) = {
                     let mut s = state.lock();
                     let current = s.position_ms as i32;
@@ -1654,10 +1653,7 @@ async fn command_processor(
                     (pos, svc)
                 };
                 audio_reset.store(true, Ordering::Relaxed);
-                match service {
-                    crate::services::Service::Spotify => player.seek(new_pos),
-                    crate::services::Service::YouTube => youtube_player.seek(new_pos),
-                }
+                crate::player::player_for(service, &player, &youtube_player).seek(new_pos);
             }
 
             BotCommand::SetVolume { .. } => {
