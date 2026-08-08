@@ -451,6 +451,7 @@ pub async fn run_bot(
         shutdown: shutdown.clone(),
         event_tx: event_tx.clone(),
         i18n: i18n.clone(),
+        search_cache: crate::bot::cache::SearchCache::new(),
     };
     let processor_handle = tokio::spawn(async move {
         command_processor(cmd_rx, cmd_ctx).await;
@@ -861,6 +862,8 @@ struct CmdContext {
     shutdown: Arc<AtomicBool>,
     event_tx: Option<crossbeam_channel::Sender<RunnerEvent>>,
     i18n: Arc<crate::i18n::I18n>,
+    /// Short-lived cache so a repeated search skips the network.
+    search_cache: crate::bot::cache::SearchCache,
 }
 
 /// Everything the session-recovery supervisor needs to rebuild a dead Spotify
@@ -1047,6 +1050,7 @@ async fn command_processor(
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
         bot_gender, config_store, audio_reset, timing_reset, pause_flag,
         pipeline_drained, volume_for_save, exit_reason, shutdown, event_tx, i18n,
+        search_cache,
     } = ctx;
 
     // Tracks whether the Spotify session has been connected yet. Starts false
@@ -1708,21 +1712,31 @@ async fn command_processor(
 
             BotCommand::SearchOnly { query, user_id } => {
                 let active = state.lock().active_service;
-                let result: Result<Vec<crate::track::Track>, BotError> = match active {
-                    crate::services::Service::Spotify => {
-                        if let Err(e) = ensure_spotify!() {
-                            reply_t(user_id, Key::SpotifyUnavailable, &[
-                                ("error", crate::bot::commands::user_error(&e)),
-                            ]);
-                            continue;
+                // The same search often arrives twice - a retry after a typo,
+                // or two people asking for the same song - and each one was a
+                // fresh round trip.
+                let cached = search_cache.get(active, &query, search_limit);
+                let result: Result<Vec<crate::track::Track>, BotError> = match cached {
+                    Some(hit) => {
+                        tracing::debug!("Search cache hit for {active:?} {query:?}");
+                        Ok(hit)
+                    }
+                    None => match active {
+                        crate::services::Service::Spotify => {
+                            if let Err(e) = ensure_spotify!() {
+                                reply_t(user_id, Key::SpotifyUnavailable, &[
+                                    ("error", crate::bot::commands::user_error(&e)),
+                                ]);
+                                continue;
+                            }
+                            with_reconnect!(metadata.search_tracks(&query, search_limit))
+                                .map(|v| v.into_iter().map(Into::into).collect())
                         }
-                        with_reconnect!(metadata.search_tracks(&query, search_limit))
-                            .map(|v| v.into_iter().map(Into::into).collect())
-                    }
-                    crate::services::Service::YouTube => {
-                        youtube_metadata.search_tracks(&query, search_limit).await
-                            .map(|v| v.into_iter().map(Into::into).collect())
-                    }
+                        crate::services::Service::YouTube => {
+                            youtube_metadata.search_tracks(&query, search_limit).await
+                                .map(|v| v.into_iter().map(Into::into).collect())
+                        }
+                    },
                 };
                 match result {
                     Ok(tracks) => {
@@ -1731,6 +1745,7 @@ async fn command_processor(
                             &i18n.tr(user_id, Key::SearchResultsHeader, &[]),
                             &i18n.tr(user_id, Key::SearchResultsFooter, &[]),
                         ));
+                        search_cache.insert(active, &query, search_limit, tracks.clone());
                         state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
