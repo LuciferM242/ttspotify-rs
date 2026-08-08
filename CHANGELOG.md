@@ -1,11 +1,19 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- The queue now shows the current track and what is coming, instead of every
+  track played this session - the way Spotify and YouTube Music show a queue.
+  Upcoming tracks are numbered from 1, so the number shown is the number
+  "queue rm" takes; before, the numbers you read and the numbers you typed
+  were different.
+
 ### Fixed
 - The queue no longer grows without end. With radio on, the bot added new
   recommendations every time it reached the last track and never dropped
   anything, so an evening of listening left dozens of played tracks in the
-  queue. It now keeps the last 20 played tracks.
+  queue. It now keeps the last 20 played tracks, whatever filled the queue.
+  You can still step back that far with "p".
 - Radio no longer keeps adding the same song. Recommendations were only
   checked against tracks already queued by their Spotify id, so a remaster,
   single or re-release of a song you already heard counted as a new track.
