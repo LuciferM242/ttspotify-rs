@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 ### Changed
+- Searching for something that was searched in the last few minutes now
+  answers instantly instead of going back out to Spotify or YouTube.
 - The queue now shows the current track and what is coming, instead of every
   track played this session - the way Spotify and YouTube Music show a queue.
   Upcoming tracks are numbered from 1, so the number shown is the number
