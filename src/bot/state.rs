@@ -530,6 +530,7 @@ impl PlayerState {
 mod tests {
     use super::*;
     use crate::spotify::types::SpotifyTrack;
+    use proptest::prelude::*;
 
     #[test]
     fn filter_unqueued_drops_tracks_already_in_queue() {
@@ -815,6 +816,135 @@ mod tests {
         state.current_index = None;
         state.trim_played_history(1);
         assert_eq!(state.queue.len(), 5);
+    }
+
+    // -- queue invariants under arbitrary command sequences --
+
+    /// One queue-mutating operation, as a user could trigger it.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Enqueue,
+        EnqueueMany(u8),
+        Advance,
+        AdvanceManual,
+        Prev,
+        Remove(u8),
+        Trim(u8),
+        ClearUpcoming,
+        Clear,
+        SetRepeat(u8),
+        SetShuffle(bool),
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            Just(Op::Enqueue),
+            (1u8..4).prop_map(Op::EnqueueMany),
+            Just(Op::Advance),
+            Just(Op::AdvanceManual),
+            Just(Op::Prev),
+            (0u8..8).prop_map(Op::Remove),
+            (0u8..5).prop_map(Op::Trim),
+            Just(Op::ClearUpcoming),
+            Just(Op::Clear),
+            (0u8..3).prop_map(Op::SetRepeat),
+            any::<bool>().prop_map(Op::SetShuffle),
+        ]
+    }
+
+    fn apply(state: &mut PlayerState, op: &Op, next_id: &mut u32) {
+        match op {
+            Op::Enqueue => {
+                state.enqueue(track(&next_id.to_string()), "u".into(), true);
+                *next_id += 1;
+            }
+            Op::EnqueueMany(n) => {
+                let batch: Vec<Track> = (0..*n)
+                    .map(|_| {
+                        let t = track(&next_id.to_string());
+                        *next_id += 1;
+                        t
+                    })
+                    .collect();
+                state.enqueue_all(batch, "u".into(), true);
+            }
+            Op::Advance => {
+                state.advance();
+            }
+            Op::AdvanceManual => {
+                state.advance_manual();
+            }
+            Op::Prev => {
+                state.go_prev();
+            }
+            Op::Remove(i) => {
+                state.remove(*i as usize);
+            }
+            Op::Trim(keep) => state.trim_played_history(*keep as usize),
+            Op::ClearUpcoming => state.clear_upcoming(),
+            Op::Clear => state.clear(),
+            Op::SetRepeat(m) => {
+                state.repeat = match m {
+                    0 => RepeatMode::Off,
+                    1 => RepeatMode::Track,
+                    _ => RepeatMode::Queue,
+                }
+            }
+            Op::SetShuffle(on) => state.shuffle = *on,
+        }
+    }
+
+    proptest! {
+        /// `current_index` must always name a real entry, or nothing at all.
+        /// Every "the bot played the wrong track" bug in this file has been a
+        /// violation of exactly this.
+        #[test]
+        fn current_index_always_points_at_a_real_entry(ops in prop::collection::vec(op_strategy(), 1..40)) {
+            let mut state = PlayerState::new();
+            let mut next_id = 0u32;
+            for op in &ops {
+                apply(&mut state, op, &mut next_id);
+                if let Some(i) = state.current_index {
+                    prop_assert!(
+                        i < state.queue.len(),
+                        "current_index {i} past queue length {} after {op:?}",
+                        state.queue.len()
+                    );
+                }
+                prop_assert!(
+                    !(state.queue.is_empty() && state.current_index.is_some()),
+                    "empty queue must have no current track (after {op:?})"
+                );
+            }
+        }
+
+        /// Trimming played history is invisible to what is still to come.
+        #[test]
+        fn trim_never_touches_the_current_or_upcoming_tracks(
+            fill_n in 1usize..30,
+            current in 0usize..30,
+            keep in 0usize..10,
+        ) {
+            let mut state = PlayerState::new();
+            fill(&mut state, fill_n);
+            let current = current.min(fill_n - 1);
+            state.current_index = Some(current);
+
+            let before_current = state.current().unwrap().track.id().to_string();
+            let before_upcoming: Vec<String> = state.queue[current + 1..]
+                .iter().map(|e| e.track.id().to_string()).collect();
+
+            state.trim_played_history(keep);
+
+            let after_current = state.current().unwrap().track.id().to_string();
+            let idx = state.current_index.unwrap();
+            let after_upcoming: Vec<String> = state.queue[idx + 1..]
+                .iter().map(|e| e.track.id().to_string()).collect();
+
+            prop_assert_eq!(before_current, after_current);
+            prop_assert_eq!(before_upcoming, after_upcoming);
+            prop_assert!(idx <= keep, "kept {idx} played entries, asked for at most {}", keep);
+        }
     }
 
     // -- RepeatMode --

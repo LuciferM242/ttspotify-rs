@@ -80,6 +80,23 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 parking_lot = "0.12"
 
+# Caching with expiry: search results per user, and search responses keyed by
+# query so a repeated search answers from memory instead of the network.
+moka = { version = "0.12", features = ["sync"] }
+
+[dev-dependencies]
+# Property tests over the queue: the index-drift class of bug that example
+# tests keep missing.
+proptest = "1"
+# Snapshot tests for text the bot prints (queue listing, mode line), so a
+# wording change is a reviewable diff instead of a rewritten assertion.
+insta = "1"
+# Parametrised cases, to collapse near-duplicate queue tests.
+rstest = "0.23"
+# Fake MediaPlayer implementations, so player dispatch can be tested without a
+# Spotify session or a yt-dlp subprocess.
+mockall = "0.13"
+
 [profile.release]
 strip = true
 lto = true
