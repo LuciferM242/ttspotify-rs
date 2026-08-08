@@ -169,6 +169,24 @@ fn spawn_drained_advance(
     });
 }
 
+/// Whether reaching this point in the queue should pull in more radio
+/// recommendations.
+///
+/// Radio extends the queue when playback reaches the last entry. Repeat means
+/// "keep playing what is already here", and the two used to fight: repeat-track
+/// never moves the index, so `at_end` stayed true and seeded a fetch on every
+/// loop, and repeat-queue never got to wrap because radio kept extending past
+/// the end — which silently turned repeat-queue into a no-op and grew the queue
+/// for as long as the bot played.
+fn radio_should_extend(
+    radio_on: bool,
+    allow_recommend: bool,
+    at_end: bool,
+    repeat_active: bool,
+) -> bool {
+    radio_on && allow_recommend && at_end && !repeat_active
+}
+
 /// Whether an auto-advance (sent when a track ended or failed) is stale: the
 /// queue has already moved past the track it was advancing from — usually a
 /// manual `n` processed in the same instant the track ended. Firing it anyway
@@ -1536,18 +1554,13 @@ async fn command_processor(
                         reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
                         announce_playing_status(&name);
 
-                        let (radio_on, at_end, allow_rec) = {
+                        let seed_radio = {
                             let s = state.lock();
-                            // Repeat-track never moves the index, so `at_end`
-                            // would stay true and seed a radio fetch on every
-                            // loop; repeat-queue would never get to wrap
-                            // because radio keeps extending past the end.
-                            let at_end = !s.repeat_active()
-                                && s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                            let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                             let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                            (s.radio_enabled, at_end, allow)
+                            radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active())
                         };
-                        if radio_on && at_end && allow_rec {
+                        if seed_radio {
                             schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
                         }
                     }
@@ -1892,17 +1905,18 @@ async fn command_processor(
             }
 
             BotCommand::RadioPreFetch { seed_uri } => {
-                let (radio_on, is_active, current_uri, queue_at_end, allow_rec) = {
+                let (should_extend, is_active, current_uri) = {
                     let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
-                    // Repeat holds the queue fixed; radio must not grow it.
-                    let at_end = !s.repeat_active()
-                        && s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                    let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                    (s.radio_enabled, s.status != PlaybackStatus::Idle, cur_uri, at_end, allow)
+                    let extend = radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active());
+                    (extend, s.status != PlaybackStatus::Idle, cur_uri)
                 };
 
-                if radio_on && is_active && allow_rec && current_uri.as_deref() == Some(&seed_uri) && queue_at_end {
+                // The seed must still be the track playing: a prefetch queued
+                // for a track the user has since skipped is stale.
+                if should_extend && is_active && current_uri.as_deref() == Some(&seed_uri) {
                     if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
                         let played_ids: Vec<String> = {
                             let s = state.lock();
@@ -2063,6 +2077,33 @@ mod tests {
     use crate::bot::state::PlayerState;
     use crate::spotify::types::SpotifyTrack;
     use crate::track::Track;
+    use rstest::rstest;
+
+    // -- radio_should_extend --
+
+    #[rstest]
+    // The ordinary case: radio on, single-track play, queue exhausted.
+    #[case(true, true, true, false, true)]
+    // Repeat of either kind holds the queue fixed - this is the combination
+    // that grew a queue to 40-50 entries over an evening.
+    #[case(true, true, true, true, false)]
+    // Mid-queue there is nothing to extend yet.
+    #[case(true, true, false, false, false)]
+    // Radio off, or a track from a playlist/album (no recommendations seeded).
+    #[case(false, true, true, false, false)]
+    #[case(true, false, true, false, false)]
+    fn radio_extends_only_at_the_end_of_a_queue_that_is_not_repeating(
+        #[case] radio_on: bool,
+        #[case] allow_recommend: bool,
+        #[case] at_end: bool,
+        #[case] repeat_active: bool,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            radio_should_extend(radio_on, allow_recommend, at_end, repeat_active),
+            expected
+        );
+    }
 
     // -- startup_auth_plan --
 

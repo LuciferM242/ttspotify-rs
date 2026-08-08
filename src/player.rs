@@ -81,4 +81,32 @@ mod tests {
 
         player_for(Service::Spotify, &spotify, &youtube).preload("spotify:track:abc");
     }
+
+    /// Every method on the trait routes by service, not just the two above —
+    /// a new method wired to the wrong player would fail silently.
+    #[test]
+    fn load_play_pause_and_stop_all_route_to_the_owning_player() {
+        for service in [Service::Spotify, Service::YouTube] {
+            let mut spotify = MockMediaPlayer::new();
+            let mut youtube = MockMediaPlayer::new();
+            let (target, other) = match service {
+                Service::Spotify => (&mut spotify, &mut youtube),
+                Service::YouTube => (&mut youtube, &mut spotify),
+            };
+            target.expect_load().times(1).return_const(());
+            target.expect_play().times(1).return_const(());
+            target.expect_pause().times(1).return_const(());
+            target.expect_stop().times(1).return_const(());
+            other.expect_load().never();
+            other.expect_play().never();
+            other.expect_pause().never();
+            other.expect_stop().never();
+
+            let player = player_for(service, &spotify, &youtube);
+            player.load("uri");
+            player.play();
+            player.pause();
+            player.stop();
+        }
+    }
 }

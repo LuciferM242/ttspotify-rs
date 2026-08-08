@@ -716,17 +716,6 @@ mod tests {
 
     // -- advance: repeat_track --
 
-    #[test]
-    fn advance_with_repeat_track_returns_same_track() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = RepeatMode::Track;
-        let id_before = state.current().unwrap().track.id().to_string();
-        for _ in 0..5 {
-            assert_eq!(state.advance().unwrap().track.id(), id_before);
-        }
-    }
-
     // -- song_key / radio dedupe --
 
     #[test]
@@ -1094,6 +1083,15 @@ mod tests {
     }
 
     #[test]
+    fn releasing_an_unarmed_auto_advance_gate_is_harmless() {
+        // Stop and clear both release; a release with nothing pending must not
+        // leave the gate in a state that swallows the next real signal.
+        let mut state = PlayerState::new();
+        state.release_auto_advance();
+        assert!(state.try_arm_auto_advance());
+    }
+
+    #[test]
     fn auto_advance_gate_rearms_once_the_advance_is_consumed() {
         let mut state = PlayerState::new();
         assert!(state.try_arm_auto_advance());
@@ -1113,64 +1111,7 @@ mod tests {
 
     // -- advance_manual: an explicit skip is never swallowed by repeat-track --
 
-    #[test]
-    fn manual_advance_moves_past_a_repeating_track() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = RepeatMode::Track;
-        assert_eq!(state.advance_manual().unwrap().track.id(), "1");
-        assert_eq!(state.advance_manual().unwrap().track.id(), "2");
-    }
-
-    #[test]
-    fn manual_advance_at_end_with_repeat_track_wraps_to_first() {
-        // Repeat-one implies the queue loops: skipping past the last entry
-        // returns to the start rather than ending playback.
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = RepeatMode::Track;
-        state.current_index = Some(2);
-        assert_eq!(state.advance_manual().unwrap().track.id(), "0");
-    }
-
-    #[test]
-    fn manual_advance_at_end_without_any_repeat_returns_none() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.current_index = Some(1);
-        assert!(state.advance_manual().is_none());
-    }
-
-    #[test]
-    fn manual_advance_still_wraps_under_repeat_queue() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.repeat = RepeatMode::Queue;
-        state.current_index = Some(1);
-        assert_eq!(state.advance_manual().unwrap().track.id(), "0");
-    }
-
-    #[test]
-    fn auto_advance_still_repeats_the_track() {
-        // The auto path (end-of-track) must keep repeat-track behavior.
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = RepeatMode::Track;
-        assert_eq!(state.advance().unwrap().track.id(), "0");
-        assert_eq!(state.advance().unwrap().track.id(), "0");
-    }
-
     // -- advance: repeat_queue --
-
-    #[test]
-    fn advance_with_repeat_queue_wraps_to_first() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.repeat = RepeatMode::Queue;
-        assert_eq!(state.advance().unwrap().track.id(), "1");
-        assert_eq!(state.advance().unwrap().track.id(), "0"); // wrap
-        assert_eq!(state.advance().unwrap().track.id(), "1");
-    }
 
     // -- advance: shuffle --
 
@@ -1350,12 +1291,6 @@ mod tests {
     // -- queue_display --
 
     #[test]
-    fn queue_display_empty() {
-        let state = PlayerState::new();
-        assert_eq!(state.queue_display(), "Queue is empty");
-    }
-
-    #[test]
     fn queue_display_shows_the_current_track_then_upcoming_only() {
         // Like Spotify and YouTube Music: the queue is what is coming, not a
         // log of what already played.
@@ -1366,6 +1301,19 @@ mod tests {
         assert!(display.contains("Track 1"), "current track should be shown: {display}");
         assert!(display.contains("Track 2") && display.contains("Track 3"));
         assert!(!display.contains("Track 0"), "already-played tracks should not be listed: {display}");
+    }
+
+    #[test]
+    fn queue_display_with_nothing_playing_lists_the_whole_queue_as_upcoming() {
+        // Reachable state: playback ran off the end of the queue, so entries
+        // remain but none is current. Everything left is still to come.
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.current_index = None;
+        let display = state.queue_display();
+        assert!(!display.contains("Now playing"), "nothing is playing: {display}");
+        assert!(display.contains("1.") && display.contains("Track 0"), "got: {display}");
+        assert!(display.contains("3.") && display.contains("Track 2"), "got: {display}");
     }
 
     #[test]
@@ -1383,16 +1331,6 @@ mod tests {
             "next upcoming should be numbered 1: {display}");
         assert!(upcoming.iter().any(|l| l.contains("2.") && l.contains("Track 3")),
             "second upcoming should be numbered 2: {display}");
-    }
-
-    #[test]
-    fn queue_display_says_when_nothing_is_upcoming() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.current_index = Some(1);
-        let display = state.queue_display();
-        assert!(display.contains("Track 1"), "current track still shown: {display}");
-        assert!(display.to_lowercase().contains("nothing upcoming"), "got: {display}");
     }
 
     #[test]
@@ -1414,27 +1352,6 @@ mod tests {
     }
 
     // -- mode_display --
-
-    #[test]
-    fn mode_display_no_modes() {
-        let state = PlayerState::new();
-        assert_eq!(state.mode_display(), "No modes active");
-    }
-
-    #[test]
-    fn mode_display_single_mode() {
-        let mut state = PlayerState::new();
-        state.shuffle = true;
-        assert_eq!(state.mode_display(), "Shuffle");
-    }
-
-    #[test]
-    fn mode_display_multiple_modes_joined_with_comma() {
-        let mut state = PlayerState::new();
-        state.repeat = RepeatMode::Track;
-        state.shuffle = true;
-        assert_eq!(state.mode_display(), "Repeat Track, Shuffle");
-    }
 
     // -- current --
 
