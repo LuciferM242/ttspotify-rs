@@ -280,6 +280,30 @@ impl PlayerState {
         self.auto_advance_pending = false;
     }
 
+    /// Append `tracks` and make the first of them the current track, returning
+    /// it.
+    ///
+    /// For refilling a queue that has run dry: playback has walked off the end,
+    /// so `current_index` is `None`, but the played entries are still in the
+    /// queue. A plain `enqueue_all` only sets the index when the queue was
+    /// *empty*, so the caller would start a track while the state still says
+    /// nothing is playing — and the next skip then finds nothing to advance
+    /// from and reports end-of-queue with tracks sitting right there.
+    pub fn enqueue_all_as_current(
+        &mut self,
+        tracks: Vec<Track>,
+        requester: String,
+        allow_recommend: bool,
+    ) -> Option<&QueueEntry> {
+        if tracks.is_empty() {
+            return None;
+        }
+        let first_new = self.queue.len();
+        self.enqueue_all(tracks, requester, allow_recommend);
+        self.current_index = Some(first_new);
+        self.queue.get(first_new)
+    }
+
     /// Advance to the next track because the current one ended. Returns the
     /// next entry if available.
     pub fn advance(&mut self) -> Option<&QueueEntry> {
@@ -808,6 +832,57 @@ mod tests {
         state.current_index = None;
         state.trim_played_history(1);
         assert_eq!(state.queue.len(), 5);
+    }
+
+    // -- enqueue_all_as_current --
+
+    #[test]
+    fn appending_after_the_queue_ran_out_makes_the_first_new_track_current() {
+        // Radio refills the queue once playback has run off the end. The
+        // played tracks are still there, so the queue is not empty and a plain
+        // append leaves current_index None - the bot then plays a track while
+        // its own state says nothing is playing, and `n` reports end of queue
+        // with tracks sitting right there.
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.current_index = None; // played past the end
+
+        let started = state.enqueue_all_as_current(
+            vec![track("r1"), track("r2")], "Radio".into(), true,
+        );
+
+        assert_eq!(started.map(|e| e.track.id().to_string()), Some("r1".to_string()));
+        assert_eq!(state.current_index, Some(2));
+        assert_eq!(state.queue.len(), 4, "played tracks are kept");
+    }
+
+    #[test]
+    fn a_skip_after_a_radio_refill_moves_to_the_next_new_track() {
+        // The reported bug: two tracks in the queue, `n` said end of queue.
+        let mut state = PlayerState::new();
+        fill(&mut state, 1);
+        state.current_index = None;
+        state.enqueue_all_as_current(vec![track("r1"), track("r2")], "Radio".into(), true);
+
+        assert_eq!(state.advance_manual().map(|e| e.track.id().to_string()), Some("r2".to_string()));
+    }
+
+    #[test]
+    fn appending_as_current_to_an_empty_queue_starts_at_the_first_track() {
+        let mut state = PlayerState::new();
+        let started = state.enqueue_all_as_current(vec![track("a")], "Radio".into(), true);
+        assert_eq!(started.map(|e| e.track.id().to_string()), Some("a".to_string()));
+        assert_eq!(state.current_index, Some(0));
+    }
+
+    #[test]
+    fn appending_nothing_as_current_leaves_the_queue_alone() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.current_index = None;
+        assert!(state.enqueue_all_as_current(vec![], "Radio".into(), true).is_none());
+        assert_eq!(state.current_index, None);
+        assert_eq!(state.queue.len(), 2);
     }
 
     // -- rendered text (snapshots) --

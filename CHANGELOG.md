@@ -11,6 +11,11 @@
   were different.
 
 ### Fixed
+- "n" no longer says the queue has ended while tracks are sitting in it. When
+  radio refilled a queue that had run out, the bot started playing the new
+  batch but still considered nothing to be playing, so skipping found nothing
+  to skip from - and every track that finished added another batch that was
+  never played, which is what grew the queue.
 - The queue no longer grows without end. With radio on, the bot added new
   recommendations every time it reached the last track and never dropped
   anything, so an evening of listening left dozens of played tracks in the

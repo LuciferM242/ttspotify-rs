@@ -1583,9 +1583,14 @@ async fn command_processor(
                                         let started = {
                                             let mut s = state.lock();
                                             let fresh = s.filter_unqueued_similar(tracks);
-                                            let first = fresh.first().map(|t| (t.uri().to_string(), t.display_name()));
-                                            s.enqueue_all(fresh, "Radio".to_string(), true);
-                                            first
+                                            // The queue is not empty here - the
+                                            // played tracks are still in it -
+                                            // so the new batch has to be made
+                                            // current explicitly, or playback
+                                            // starts with the state believing
+                                            // nothing is playing.
+                                            s.enqueue_all_as_current(fresh, "Radio".to_string(), true)
+                                                .map(|e| (e.track.uri().to_string(), e.track.display_name()))
                                         };
                                         match started {
                                             Some((first_uri, first_name)) => {
