@@ -1,0 +1,6 @@
+---
+source: src/bot/state.rs
+expression: state.queue_display()
+---
+> Now playing [SP]: Artist - Track 1 [3:00]
+  Nothing upcoming

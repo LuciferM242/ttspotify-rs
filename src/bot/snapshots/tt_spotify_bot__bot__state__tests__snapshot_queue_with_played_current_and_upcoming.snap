@@ -1,0 +1,7 @@
+---
+source: src/bot/state.rs
+expression: state.queue_display()
+---
+> Now playing [SP]: Artist - Track 2 [3:00]
+  1. [SP]: Artist - Track 3 [3:00]
+  2. [SP]: Artist - Track 4 [3:00]

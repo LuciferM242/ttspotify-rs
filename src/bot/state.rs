@@ -531,6 +531,7 @@ mod tests {
     use super::*;
     use crate::spotify::types::SpotifyTrack;
     use proptest::prelude::*;
+    use rstest::rstest;
 
     #[test]
     fn filter_unqueued_drops_tracks_already_in_queue() {
@@ -816,6 +817,95 @@ mod tests {
         state.current_index = None;
         state.trim_played_history(1);
         assert_eq!(state.queue.len(), 5);
+    }
+
+    // -- rendered text (snapshots) --
+    //
+    // These cover the exact strings a user reads. A wording or layout change
+    // shows up as a snapshot diff to review rather than a rewritten assertion.
+
+    #[test]
+    fn snapshot_queue_with_played_current_and_upcoming() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 5);
+        state.current_index = Some(2);
+        insta::assert_snapshot!(state.queue_display());
+    }
+
+    #[test]
+    fn snapshot_queue_with_nothing_upcoming() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.current_index = Some(1);
+        insta::assert_snapshot!(state.queue_display());
+    }
+
+    #[test]
+    fn snapshot_queue_empty() {
+        insta::assert_snapshot!(PlayerState::new().queue_display());
+    }
+
+    #[rstest]
+    #[case::off(RepeatMode::Off, false)]
+    #[case::repeat_track(RepeatMode::Track, false)]
+    #[case::repeat_queue(RepeatMode::Queue, false)]
+    #[case::shuffle(RepeatMode::Off, true)]
+    #[case::repeat_queue_and_shuffle(RepeatMode::Queue, true)]
+    fn snapshot_mode_line(#[case] repeat: RepeatMode, #[case] shuffle: bool) {
+        let mut state = PlayerState::new();
+        state.repeat = repeat;
+        state.shuffle = shuffle;
+        insta::assert_snapshot!(
+            format!("{repeat:?}-shuffle-{shuffle}"),
+            state.mode_display()
+        );
+    }
+
+    // -- advance, across every mode (parametrised) --
+
+    #[rstest]
+    // Off: walks forward, then stops at the end.
+    #[case(RepeatMode::Off, 0, Some("1"))]
+    #[case(RepeatMode::Off, 2, None)]
+    // Track: stays put wherever it is.
+    #[case(RepeatMode::Track, 0, Some("0"))]
+    #[case(RepeatMode::Track, 2, Some("2"))]
+    // Queue: walks forward, then wraps.
+    #[case(RepeatMode::Queue, 0, Some("1"))]
+    #[case(RepeatMode::Queue, 2, Some("0"))]
+    fn auto_advance_per_repeat_mode(
+        #[case] repeat: RepeatMode,
+        #[case] from: usize,
+        #[case] expected: Option<&str>,
+    ) {
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.repeat = repeat;
+        state.current_index = Some(from);
+        let got = state.advance().map(|e| e.track.id().to_string());
+        assert_eq!(got.as_deref(), expected);
+    }
+
+    #[rstest]
+    // A manual skip moves in every mode, and wraps rather than stopping when
+    // any repeat mode is on.
+    #[case(RepeatMode::Off, 0, Some("1"))]
+    #[case(RepeatMode::Off, 2, None)]
+    #[case(RepeatMode::Track, 0, Some("1"))]
+    #[case(RepeatMode::Track, 2, Some("0"))]
+    #[case(RepeatMode::Queue, 0, Some("1"))]
+    #[case(RepeatMode::Queue, 2, Some("0"))]
+    fn manual_advance_per_repeat_mode(
+        #[case] repeat: RepeatMode,
+        #[case] from: usize,
+        #[case] expected: Option<&str>,
+    ) {
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.repeat = repeat;
+        state.current_index = Some(from);
+        let got = state.advance_manual().map(|e| e.track.id().to_string());
+        assert_eq!(got.as_deref(), expected);
     }
 
     // -- queue invariants under arbitrary command sequences --

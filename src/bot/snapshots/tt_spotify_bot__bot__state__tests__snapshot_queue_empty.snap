@@ -1,0 +1,5 @@
+---
+source: src/bot/state.rs
+expression: "PlayerState::new().queue_display()"
+---
+Queue is empty
