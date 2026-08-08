@@ -59,6 +59,10 @@ pub struct Queue {
     /// The source being played through: a playlist, an album, radio.
     upcoming: VecDeque<QueueEntry>,
     history_cap: usize,
+    /// Tracks retired since the queue was last cleared or looped. Kept
+    /// separately from `history`, which is capped and so cannot answer "which
+    /// number is this track" once a long playlist passes the cap.
+    played_total: usize,
 }
 
 impl Default for Queue {
@@ -79,6 +83,7 @@ impl Queue {
             next_up: VecDeque::new(),
             upcoming: VecDeque::new(),
             history_cap,
+            played_total: 0,
         }
     }
 
@@ -135,9 +140,19 @@ impl Queue {
         self.next_up.pop_front().or_else(|| self.upcoming.pop_front())
     }
 
-    fn retire_current(&mut self) {
+    /// Move the current track into history.
+    ///
+    /// `trim` is false under repeat-queue, where history is not just a record
+    /// of the past but the material the next lap is rebuilt from — dropping the
+    /// front of it there would quietly shorten a playlist every time round.
+    /// Nothing is appended during a lap, so history stays bounded by the size
+    /// of the queue itself.
+    fn retire_current(&mut self, trim: bool) {
         if let Some(entry) = self.current.take() {
             self.history.push_back(entry);
+            self.played_total += 1;
+        }
+        if trim {
             while self.history.len() > self.history_cap {
                 self.history.pop_front();
             }
@@ -165,8 +180,9 @@ impl Queue {
             return self.current.as_ref();
         }
 
+        let trim_history = repeat != RepeatMode::Queue;
         if let Some(next) = self.take_next() {
-            self.retire_current();
+            self.retire_current(trim_history);
             self.current = Some(next);
             return self.current.as_ref();
         }
@@ -176,8 +192,12 @@ impl Queue {
         let loops = repeat == RepeatMode::Queue
             || (repeat == RepeatMode::Track && !honor_repeat_track);
         if loops {
-            self.retire_current();
+            // Everything is about to be drained back into the queue, so the
+            // cap must not eat the front of it first.
+            self.retire_current(false);
             self.upcoming.extend(self.history.drain(..));
+            // A new lap: numbering starts from the top again.
+            self.played_total = 0;
             if shuffle {
                 self.shuffle_source();
             }
@@ -185,8 +205,24 @@ impl Queue {
             return self.current.as_ref();
         }
 
-        self.retire_current();
+        self.retire_current(trim_history);
         None
+    }
+
+    /// The track that would play next, without moving anything — for
+    /// preloading. Mirrors what `advance` would pick, repeat mode included.
+    pub fn peek_next(&self, repeat: RepeatMode) -> Option<&QueueEntry> {
+        if repeat == RepeatMode::Track {
+            return self.current.as_ref();
+        }
+        self.next_up
+            .front()
+            .or_else(|| self.upcoming.front())
+            .or_else(|| {
+                // About to lap: the next track is the front of what will be
+                // drained back in. Shuffle makes this a guess, so don't guess.
+                (repeat == RepeatMode::Queue).then(|| self.history.front()).flatten()
+            })
     }
 
     /// Step back. Past `PREV_RESTART_AFTER_MS` into the track this means
@@ -204,6 +240,7 @@ impl Queue {
             self.next_up.push_front(entry);
         }
         self.current = Some(previous);
+        self.played_total = self.played_total.saturating_sub(1);
         PrevAction::MovedBack
     }
 
@@ -230,8 +267,20 @@ impl Queue {
         self.upcoming.clear();
     }
 
+    /// Which track this is and how many are known about, as
+    /// `(position, total)` — the numbers shown beside the current track. Both
+    /// are 0 when nothing is playing.
+    pub fn position(&self) -> (usize, usize) {
+        if self.current.is_none() {
+            return (0, 0);
+        }
+        let position = self.played_total + 1;
+        (position, position + self.upcoming_len())
+    }
+
     /// Forget everything, including what is playing.
     pub fn clear(&mut self) {
+        self.played_total = 0;
         self.history.clear();
         self.current = None;
         self.next_up.clear();
@@ -385,6 +434,20 @@ mod tests {
         assert_eq!(upcoming_ids(&q), ["b", "c"], "the whole queue is back");
     }
 
+    #[test]
+    fn repeat_queue_replays_a_queue_longer_than_the_history_cap() {
+        // History is bounded so an endless source cannot grow the queue, but
+        // repeat-queue rebuilds the queue *from* history: capping it there
+        // would silently drop the front of a long playlist on every lap.
+        let mut q = Queue::with_history_cap(3);
+        q.push_source((0..10).map(|i| entry(&i.to_string())));
+        for _ in 0..10 {
+            q.advance(RepeatMode::Queue, false);
+        }
+        assert_eq!(current_id(&q).as_deref(), Some("0"), "back to the first track");
+        assert_eq!(q.upcoming_len(), 9, "the whole playlist came back");
+    }
+
     // -- history --
 
     #[test]
@@ -492,6 +555,54 @@ mod tests {
         q.remove_upcoming(1);
         assert_eq!(current_id(&q).as_deref(), Some("a"));
         assert_eq!(q.upcoming_len(), 0);
+    }
+
+    // -- position --
+
+    #[test]
+    fn position_counts_through_the_queue() {
+        let mut q = playing_abc();
+        assert_eq!(q.position(), (1, 3));
+        q.advance(RepeatMode::Off, false);
+        assert_eq!(q.position(), (2, 3));
+        q.advance(RepeatMode::Off, false);
+        assert_eq!(q.position(), (3, 3));
+    }
+
+    #[test]
+    fn position_stays_right_past_the_history_cap() {
+        // History is capped, so it cannot be what answers "which track is
+        // this" on a playlist longer than the cap.
+        let mut q = Queue::with_history_cap(2);
+        q.push_source((0..10).map(|i| entry(&i.to_string())));
+        for _ in 0..6 {
+            q.advance(RepeatMode::Off, false);
+        }
+        assert_eq!(q.position(), (7, 10));
+    }
+
+    #[test]
+    fn position_restarts_on_a_new_lap() {
+        let mut q = playing_abc();
+        for _ in 0..3 {
+            q.advance(RepeatMode::Queue, false);
+        }
+        assert_eq!(q.position(), (1, 3), "back to the top of the queue");
+    }
+
+    #[test]
+    fn position_steps_back_with_previous() {
+        let mut q = playing_abc();
+        q.advance(RepeatMode::Off, false);
+        assert_eq!(q.position(), (2, 3));
+        q.go_prev(0);
+        assert_eq!(q.position(), (1, 3));
+    }
+
+    #[test]
+    fn position_is_zero_when_nothing_plays() {
+        let q = Queue::new();
+        assert_eq!(q.position(), (0, 0));
     }
 
     // -- clearing --

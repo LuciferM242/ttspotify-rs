@@ -42,6 +42,10 @@ pub enum BotCommand {
     RadioPreFetch { seed_uri: String },
     /// Internal: preload next track for gapless playback
     PreloadNext,
+    /// Internal: start whatever the queue says is current. Sent when a
+    /// background load fills a queue that had run dry - the queue makes the
+    /// first arrival current, but only the command loop can start audio.
+    StartCurrent,
     /// Internal: a YouTube track finished (or errored). `generation` identifies
     /// which load this belongs to so a stale completion (after the user already
     /// skipped/stopped) is dropped instead of double-advancing the queue.
@@ -428,8 +432,7 @@ impl CommandDispatcher {
                 if let Some(entry) = state.current() {
                     let pos_secs = state.position_ms / 1000;
                     let pos = format!("{}:{:02}", pos_secs / 60, pos_secs % 60);
-                    let total = state.queue.len();
-                    let idx = state.current_index.map(|i| i + 1).unwrap_or(0);
+                    let (idx, total) = state.queue.position();
                     let args = [
                         ("track", entry.track.display_name()),
                         ("index", idx.to_string()),
@@ -457,20 +460,19 @@ impl CommandDispatcher {
                         if n == 0 {
                             self.reply_t(client, sender_id, Key::IndexStartsAtOne, &[]);
                         } else {
-                            // Offset from current position (rm 1 = next upcoming track)
+                            // `n` is the number shown by `queue`: 1 is the next
+                            // track up, and the playing track has no number.
                             let state = self.state.lock();
-                            let base = state.current_index.map(|i| i + 1).unwrap_or(0);
-                            let abs_idx = base + n - 1;
-                            if abs_idx >= state.queue.len() {
-                                drop(state);
-                                self.reply_t(client, sender_id, Key::NoTrackAtPosition, &[
+                            let name = state.upcoming().nth(n - 1).map(|e| e.track.display_name());
+                            drop(state);
+                            match name {
+                                Some(name) => {
+                                    self.send(BotCommand::QueueRemove { index: n, user_id: sender_id });
+                                    self.reply_t(client, sender_id, Key::Removed, &[("name", name)]);
+                                }
+                                None => self.reply_t(client, sender_id, Key::NoTrackAtPosition, &[
                                     ("position", n.to_string()),
-                                ]);
-                            } else {
-                                let name = state.queue[abs_idx].track.display_name();
-                                drop(state);
-                                self.send(BotCommand::QueueRemove { index: abs_idx, user_id: sender_id });
-                                self.reply_t(client, sender_id, Key::Removed, &[("name", name)]);
+                                ]),
                             }
                         }
                     } else {
@@ -729,7 +731,7 @@ impl CommandDispatcher {
                 let mins = (uptime.as_secs() % 3600) / 60;
                 let state = self.state.lock();
                 let tracks = state.tracks_played;
-                let queue_len = state.queue.len();
+                let queue_len = state.upcoming_len();
                 let vol = self.volume.load(Ordering::Relaxed);
                 drop(state);
                 let uptime_str = if hours > 0 {

@@ -720,13 +720,6 @@ fn schedule_radio_prefetch(
     }
 }
 
-/// How many already-played tracks the queue keeps behind the current one.
-///
-/// Nothing used to leave the queue, so any endless source — radio above all —
-/// grew it for as long as the bot played. Trimmed on every advance, so the
-/// bound holds whatever filled the queue. `p` can step back this far.
-const QUEUE_HISTORY_KEEP: usize = 20;
-
 /// How many tracks each background batch fetches, and the pause between
 /// batches. Pacing keeps the request stream looking like a normal client.
 const BULK_BG_BATCH: usize = 25;
@@ -748,6 +741,7 @@ fn spawn_youtube_bulk_loader(
     mut rest: crate::youtube::metadata::YtPlaylistRest,
     requester: String,
     generation: u64,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -768,9 +762,14 @@ fn spawn_youtube_bulk_loader(
                 if s.bulk_load_generation != generation {
                     return;
                 }
+                let was_idle = s.current().is_none();
                 let fresh = s.filter_unqueued(batch);
                 if !fresh.is_empty() {
-                    s.enqueue_all(fresh, requester.clone(), false);
+                    s.enqueue_source(fresh, requester.clone(), false);
+                }
+                // The queue revived itself; ask the command loop for audio.
+                if was_idle && s.current().is_some() {
+                    let _ = cmd_tx.send(BotCommand::StartCurrent);
                 }
             }
             tokio::time::sleep(BULK_BG_DELAY).await;
@@ -789,6 +788,7 @@ fn spawn_bulk_loader(
     uris: Vec<librespot_core::spotify_uri::SpotifyUri>,
     requester: String,
     generation: u64,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
 ) {
     tokio::spawn(async move {
         for chunk in uris.chunks(BULK_BG_BATCH) {
@@ -802,10 +802,15 @@ fn spawn_bulk_loader(
                 if s.bulk_load_generation != generation {
                     return;
                 }
+                let was_idle = s.current().is_none();
                 // A repeated bulk source may overlap what's queued already.
                 let fresh = s.filter_unqueued(batch);
                 if !fresh.is_empty() {
-                    s.enqueue_all(fresh, requester.clone(), false);
+                    s.enqueue_source(fresh, requester.clone(), false);
+                }
+                // The queue revived itself; ask the command loop for audio.
+                if was_idle && s.current().is_some() {
+                    let _ = cmd_tx.send(BotCommand::StartCurrent);
                 }
             }
             tokio::time::sleep(BULK_BG_DELAY).await;
@@ -817,23 +822,18 @@ fn spawn_bulk_loader(
 /// Format queue position and estimated wait time for a newly queued track.
 /// Returns a string like " (3rd up, ~8 min)" or empty if not applicable.
 pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
-    let current_idx = match state.current_index {
-        Some(i) => i,
-        None => return String::new(),
+    let Some(current) = state.current() else {
+        return String::new();
     };
-    let total = state.queue.len();
-    if total <= current_idx + 1 {
+    // Where the track just added sits: last in line.
+    let upcoming_pos = state.upcoming_len();
+    if upcoming_pos == 0 {
         return String::new();
     }
-    // Position in upcoming queue (1-based)
-    let upcoming_pos = total - current_idx - 1;
-    // Estimate wait: sum durations of tracks between current and the end,
-    // minus elapsed time on current track
-    let mut wait_ms: u64 = 0;
-    if let Some(current) = state.queue.get(current_idx) {
-        wait_ms += current.track.duration_ms().saturating_sub(state.position_ms) as u64;
-    }
-    for entry in state.queue.iter().skip(current_idx + 1).take(upcoming_pos - 1) {
+    // Wait = what is left of the current track, plus everything queued ahead
+    // of the new arrival.
+    let mut wait_ms: u64 = current.track.duration_ms().saturating_sub(state.position_ms) as u64;
+    for entry in state.upcoming().take(upcoming_pos - 1) {
         wait_ms += entry.track.duration_ms() as u64;
     }
     let wait_min = (wait_ms + 30_000) / 60_000; // round to nearest minute
@@ -1158,9 +1158,8 @@ async fn command_processor(
 
     let now_playing_status = |track_name: &str, st: &SharedState| -> String {
         let s = st.lock();
-        let total = s.queue.len();
+        let (pos, total) = s.queue.position();
         if total > 1 {
-            let pos = s.current_index.map(|i| i + 1).unwrap_or(1);
             format!("{track_name} [{pos}/{total}]")
         } else {
             track_name.to_string()
@@ -1351,15 +1350,11 @@ async fn command_processor(
                         let is_multi = tracks.len() > 1 || is_bulk;
                         let tracks_to_add = tracks;
 
-                        let first_name = tracks_to_add[0].display_name();
-                        let first_uri = tracks_to_add[0].uri().to_string();
-                        let first_service = tracks_to_add[0].service();
-
                         // Hold lock across idle check + enqueue to prevent race.
                         // A generation is claimed only for loads that continue in
                         // the background, so single/album plays don't kill an
                         // in-flight bulk loader.
-                        let (is_idle, loader_gen, count, added_name) = {
+                        let (is_idle, loader_gen, count, added_name, playing) = {
                             let mut s = state.lock();
                             let idle = s.status == PlaybackStatus::Idle;
                             if idle {
@@ -1374,13 +1369,28 @@ async fn command_processor(
                             };
                             let count = fresh.len();
                             let added_name = fresh.first().map(|t| t.display_name());
-                            s.enqueue_all(fresh, user_name.clone(), !is_multi);
+                            if is_multi {
+                                s.enqueue_source(fresh, user_name.clone(), false);
+                            } else {
+                                // An explicit request plays before whatever
+                                // playlist or radio is being worked through.
+                                for track in fresh {
+                                    s.enqueue_next(track, user_name.clone(), true);
+                                }
+                            }
                             let generation = if bulk_rest.is_some() {
                                 Some(s.begin_bulk_load())
                             } else {
                                 None
                             };
-                            (idle, generation, count, added_name)
+                            // What the queue actually made current: the first
+                            // entry of `tracks_to_add` may have been dropped as
+                            // a duplicate, so it cannot be trusted as the track
+                            // to start.
+                            let playing = s.current().map(|e| {
+                                (e.track.service(), e.track.uri().to_string(), e.track.display_name())
+                            });
+                            (idle, generation, count, added_name, playing)
                         };
 
                         if let Some(generation) = loader_gen {
@@ -1391,6 +1401,7 @@ async fn command_processor(
                                     uris,
                                     user_name.clone(),
                                     generation,
+                                    radio_cmd_tx.clone(),
                                 ),
                                 Some(BulkRest::YouTube(rest)) => spawn_youtube_bulk_loader(
                                     youtube_metadata.clone(),
@@ -1398,6 +1409,7 @@ async fn command_processor(
                                     rest,
                                     user_name.clone(),
                                     generation,
+                                    radio_cmd_tx.clone(),
                                 ),
                                 None => unreachable!("loader_gen implies bulk_rest"),
                             }
@@ -1411,7 +1423,7 @@ async fn command_processor(
                             String::new()
                         };
 
-                        if is_idle {
+                        if let (true, Some((first_service, first_uri, first_name))) = (is_idle, playing) {
                             if start_or_skip!(first_service, &first_uri, user_id, &first_name) {
                                 if count > 1 {
                                     reply_t(user_id, Key::NowPlayingQueued, &[
@@ -1450,7 +1462,9 @@ async fn command_processor(
                                     ("more", more.clone()),
                                 ])
                             } else {
-                                let name = added_name.as_deref().unwrap_or(&first_name);
+                                // `count` is 1 here, so a track was added and
+                                // `added_name` is its name.
+                                let name = added_name.as_deref().unwrap_or_default();
                                 i18n.tr(user_id, Key::QueuedOne, &[
                                     ("track", name.to_string()),
                                     ("upcoming", upcoming),
@@ -1526,28 +1540,24 @@ async fn command_processor(
                     let s = state.lock();
                     let seed = s.current().map(|e| e.track.uri().to_string());
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                    let played: Vec<String> = s.queue.iter().map(|e| e.track.id().to_string()).collect();
+                    let played: Vec<String> = s.queue.all_entries().map(|e| e.track.id().to_string()).collect();
                     (seed, allow, played)
                 };
 
-                let (next, prev_index) = {
+                let next = {
                     let mut s = state.lock();
-                    let prev_index = s.current_index;
                     // A user-typed `n` (no after_track tag) must move even under
                     // repeat-track; an end-of-track advance keeps repeating.
                     let entry = if after_track.is_some() { s.advance() } else { s.advance_manual() };
                     let next = entry.map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
-                    if next.is_some() {
-                        // Bound the queue wherever its contents came from. Not
-                        // done when the queue ran out: `prev_index` is restored
-                        // below and must still point at the same entry.
-                        s.trim_played_history(QUEUE_HISTORY_KEEP);
-                    }
                     tracing::debug!(
-                        "Advance: queue={} index={:?} modes=[{}] radio={}",
-                        s.queue.len(), s.current_index, s.mode_display(), s.radio_enabled
+                        "Advance: upcoming={} playing={:?} modes=[{}] radio={}",
+                        s.upcoming_len(),
+                        s.current().map(|e| e.track.display_name()),
+                        s.mode_display(),
+                        s.radio_enabled
                     );
-                    (next, prev_index)
+                    next
                 };
                 if let Some((service, uri_str, name)) = next {
                     if start_or_skip!(service, &uri_str, user_id, &name) {
@@ -1556,7 +1566,7 @@ async fn command_processor(
 
                         let seed_radio = {
                             let s = state.lock();
-                            let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                            let at_end = s.upcoming_len() == 0;
                             let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                             radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active())
                         };
@@ -1583,14 +1593,11 @@ async fn command_processor(
                                         let started = {
                                             let mut s = state.lock();
                                             let fresh = s.filter_unqueued_similar(tracks);
-                                            // The queue is not empty here - the
-                                            // played tracks are still in it -
-                                            // so the new batch has to be made
-                                            // current explicitly, or playback
-                                            // starts with the state believing
-                                            // nothing is playing.
-                                            s.enqueue_all_as_current(fresh, "Radio".to_string(), true)
-                                                .map(|e| (e.track.uri().to_string(), e.track.display_name()))
+                                            s.enqueue_source(fresh, "Radio".to_string(), true);
+                                            // Adding to an idle queue starts the
+                                            // first track, so this is what is
+                                            // now playing.
+                                            s.current().map(|e| (e.track.uri().to_string(), e.track.display_name()))
                                         };
                                         match started {
                                             Some((first_uri, first_name)) => {
@@ -1631,9 +1638,9 @@ async fn command_processor(
                             // Manual skip with nowhere to go: tell the user
                             // (done above) but leave the current track alone —
                             // "there is no next" shouldn't silence the room.
-                            // `s` exists for that. Restore the index advance()
-                            // cleared so the current track stays current.
-                            state.lock().current_index = prev_index;
+                            // Stepping back puts the track the skip retired
+                            // back in place, still playing.
+                            state.lock().go_prev(0);
                         } else {
                             // Natural end (or nothing was playing): reset to a
                             // clean idle state so the status line and
@@ -1651,15 +1658,36 @@ async fn command_processor(
             }
 
             BotCommand::Prev { user_id } => {
-                let prev = {
+                use crate::bot::queue::PrevAction;
+                let (action, track) = {
                     let mut s = state.lock();
-                    s.go_prev().map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()))
+                    let position_ms = s.position_ms;
+                    let action = s.go_prev(position_ms);
+                    let track = s.current()
+                        .map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
+                    (action, track)
                 };
-                if let Some((service, uri_str, name)) = prev {
-                    if start_or_skip!(service, &uri_str, user_id, &name) {
-                        reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
-                        announce_playing_status(&name);
+                match action {
+                    // Far enough in that "previous" means this track again,
+                    // like the Previous button in Spotify.
+                    PrevAction::RestartCurrent => {
+                        if let Some((service, _, name)) = track {
+                            state.lock().position_ms = 0;
+                            audio_reset.store(true, Ordering::Relaxed);
+                            crate::player::player_for(service, &player, &youtube_player).seek(0);
+                            reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
+                            announce_playing_status(&name);
+                        }
                     }
+                    PrevAction::MovedBack => {
+                        if let Some((service, uri_str, name)) = track {
+                            if start_or_skip!(service, &uri_str, user_id, &name) {
+                                reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
+                                announce_playing_status(&name);
+                            }
+                        }
+                    }
+                    PrevAction::NothingBehind => reply_t(user_id, Key::EndOfQueue, &[]),
                 }
             }
 
@@ -1725,7 +1753,7 @@ async fn command_processor(
 
             BotCommand::QueueRemove { index, user_id: _ } => {
                 let mut s = state.lock();
-                s.remove(index);
+                s.remove_upcoming(index);
             }
 
             BotCommand::SearchOnly { query, user_id } => {
@@ -1785,7 +1813,7 @@ async fn command_processor(
                         let service = track.service();
                         let uri_str = track.uri().to_string();
                         let track_name = track.display_name();
-                        s.enqueue(track, user_name, true);
+                        s.enqueue_next(track, user_name, true);
                         (service, uri_str, track_name, idle)
                     })
                 };
@@ -1883,23 +1911,31 @@ async fn command_processor(
                 }
             }
 
-            BotCommand::PreloadNext => {
-                let next_uri = {
+            BotCommand::StartCurrent => {
+                // Only when nothing is actually playing: a load that landed
+                // while a track is running must not interrupt it.
+                let track = {
                     let s = state.lock();
-                    if s.repeats_track() {
-                        s.current().map(|e| e.track.uri().to_string())
-                    } else if let Some(idx) = s.current_index {
-                        let next = idx + 1;
-                        if next < s.queue.len() {
-                            Some(s.queue[next].track.uri().to_string())
-                        } else if s.repeats_queue() && !s.queue.is_empty() {
-                            Some(s.queue[0].track.uri().to_string())
-                        } else {
-                            None
-                        }
+                    if s.status == PlaybackStatus::Idle {
+                        s.current().map(|e| {
+                            (e.track.service(), e.track.uri().to_string(), e.track.display_name())
+                        })
                     } else {
                         None
                     }
+                };
+                if let Some((service, uri_str, name)) = track {
+                    tracing::info!("Starting {name}: a background load refilled an idle queue");
+                    if start_or_skip!(service, &uri_str, 0, &name) {
+                        announce_playing_status(&name);
+                    }
+                }
+            }
+
+            BotCommand::PreloadNext => {
+                let next_uri = {
+                    let s = state.lock();
+                    s.peek_next().map(|e| e.track.uri().to_string())
                 };
                 if let Some(uri_str) = next_uri {
                     if let Ok(uri) = SpotifyUri::from_uri(&uri_str) {
@@ -1913,7 +1949,7 @@ async fn command_processor(
                 let (should_extend, is_active, current_uri) = {
                     let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
-                    let at_end = s.current_index.map(|i| i + 1 >= s.queue.len()).unwrap_or(true);
+                    let at_end = s.upcoming_len() == 0;
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     let extend = radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active());
                     (extend, s.status != PlaybackStatus::Idle, cur_uri)
@@ -1925,7 +1961,7 @@ async fn command_processor(
                     if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
                         let played_ids: Vec<String> = {
                             let s = state.lock();
-                            s.queue.iter().map(|e| e.track.id().to_string()).collect()
+                            s.queue.all_entries().map(|e| e.track.id().to_string()).collect()
                         };
                         match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
                             Ok(tracks) if !tracks.is_empty() => {
@@ -1934,7 +1970,7 @@ async fn command_processor(
                                     let mut s = state.lock();
                                     let fresh = s.filter_unqueued_similar(tracks);
                                     let count = fresh.len();
-                                    s.enqueue_all(fresh, "Radio".to_string(), true);
+                                    s.enqueue_source(fresh, "Radio".to_string(), true);
                                     count
                                 };
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
@@ -2235,7 +2271,7 @@ mod tests {
 
     fn enqueue(state: &mut PlayerState, durations_ms: &[u32]) {
         for (i, d) in durations_ms.iter().enumerate() {
-            state.enqueue(track(&i.to_string(), *d), "u".into(), true);
+            state.enqueue_source(vec![track(&i.to_string(), *d)], "u".into(), true);
         }
     }
 

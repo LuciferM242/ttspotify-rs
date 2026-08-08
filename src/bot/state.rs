@@ -5,8 +5,11 @@ use std::time::Duration;
 use moka::sync::Cache;
 use parking_lot::Mutex;
 
+use crate::bot::queue::{PrevAction, Queue};
 use crate::services::Service;
 use crate::track::Track;
+
+pub use crate::bot::queue::QueueEntry;
 
 /// How long a user's search results stay pickable.
 const SEARCH_RESULT_TTL: Duration = Duration::from_secs(600);
@@ -14,15 +17,6 @@ const SEARCH_RESULT_TTL: Duration = Duration::from_secs(600);
 /// How many users can hold pickable results at once. Bounded so a busy channel
 /// cannot grow this without limit.
 const SEARCH_RESULT_CAPACITY: u64 = 256;
-
-#[derive(Debug, Clone)]
-pub struct QueueEntry {
-    pub track: Track,
-    #[allow(dead_code)] // stored for future "who queued this" display
-    pub requester: String,
-    /// Only allow radio recommendations for single-track plays (not playlists/albums)
-    pub allow_recommend: bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackStatus {
@@ -67,8 +61,7 @@ impl RepeatMode {
 
 #[derive(Debug)]
 pub struct PlayerState {
-    pub queue: Vec<QueueEntry>,
-    pub current_index: Option<usize>,
+    pub queue: Queue,
     pub status: PlaybackStatus,
 
     // Modes
@@ -177,8 +170,7 @@ impl Default for PlayerState {
 impl PlayerState {
     pub fn new() -> Self {
         Self {
-            queue: Vec::new(),
-            current_index: None,
+            queue: Queue::new(),
             status: PlaybackStatus::Idle,
             repeat: RepeatMode::Off,
             shuffle: false,
@@ -196,7 +188,16 @@ impl PlayerState {
     }
 
     pub fn current(&self) -> Option<&QueueEntry> {
-        self.current_index.and_then(|i| self.queue.get(i))
+        self.queue.current()
+    }
+
+    /// Tracks still to play, explicit picks first.
+    pub fn upcoming(&self) -> impl Iterator<Item = &QueueEntry> {
+        self.queue.upcoming()
+    }
+
+    pub fn upcoming_len(&self) -> usize {
+        self.queue.upcoming_len()
     }
 
     /// Store a user's pickable search results.
@@ -223,25 +224,21 @@ impl PlayerState {
             .and_then(|v| v.get(pick).cloned())
     }
 
-    pub fn enqueue(&mut self, track: Track, requester: String, allow_recommend: bool) {
-        self.queue.push(QueueEntry { track, requester, allow_recommend });
-        if self.current_index.is_none() {
-            self.current_index = Some(0);
-        }
+    /// Queue a track the user asked for by name: it plays before whatever
+    /// source is being worked through, the way "next in queue" sits ahead of
+    /// "next from" in Spotify.
+    pub fn enqueue_next(&mut self, track: Track, requester: String, allow_recommend: bool) {
+        self.queue.push_next(QueueEntry { track, requester, allow_recommend });
     }
 
-    pub fn enqueue_all(&mut self, tracks: Vec<Track>, requester: String, allow_recommend: bool) {
-        let was_empty = self.queue.is_empty();
-        for track in tracks {
-            self.queue.push(QueueEntry {
-                track,
-                requester: requester.clone(),
-                allow_recommend,
-            });
-        }
-        if was_empty && !self.queue.is_empty() {
-            self.current_index = Some(0);
-        }
+    /// Queue tracks from a source being played through: a playlist, an album,
+    /// or radio.
+    pub fn enqueue_source(&mut self, tracks: Vec<Track>, requester: String, allow_recommend: bool) {
+        self.queue.push_source(tracks.into_iter().map(|track| QueueEntry {
+            track,
+            requester: requester.clone(),
+            allow_recommend,
+        }));
     }
 
     /// Whether either repeat mode is on. Repeat means "keep playing what is
@@ -280,122 +277,35 @@ impl PlayerState {
         self.auto_advance_pending = false;
     }
 
-    /// Append `tracks` and make the first of them the current track, returning
-    /// it.
-    ///
-    /// For refilling a queue that has run dry: playback has walked off the end,
-    /// so `current_index` is `None`, but the played entries are still in the
-    /// queue. A plain `enqueue_all` only sets the index when the queue was
-    /// *empty*, so the caller would start a track while the state still says
-    /// nothing is playing — and the next skip then finds nothing to advance
-    /// from and reports end-of-queue with tracks sitting right there.
-    pub fn enqueue_all_as_current(
-        &mut self,
-        tracks: Vec<Track>,
-        requester: String,
-        allow_recommend: bool,
-    ) -> Option<&QueueEntry> {
-        if tracks.is_empty() {
-            return None;
-        }
-        let first_new = self.queue.len();
-        self.enqueue_all(tracks, requester, allow_recommend);
-        self.current_index = Some(first_new);
-        self.queue.get(first_new)
-    }
-
-    /// Advance to the next track because the current one ended. Returns the
-    /// next entry if available.
+    /// Advance because the current track ended.
     pub fn advance(&mut self) -> Option<&QueueEntry> {
-        self.advance_inner(true)
+        let (repeat, shuffle) = (self.repeat, self.shuffle);
+        self.queue.advance(repeat, shuffle)
     }
 
-    /// Advance because the user explicitly skipped (`n`). Repeat-track is a
-    /// rule about what happens when a track *ends*, not a lock on the queue —
-    /// an explicit skip must always move. At the end of the queue repeat-track
-    /// loops back to the start, matching how repeat-one behaves elsewhere.
+    /// Advance because the user asked to skip.
     pub fn advance_manual(&mut self) -> Option<&QueueEntry> {
-        self.advance_inner(false)
+        let (repeat, shuffle) = (self.repeat, self.shuffle);
+        self.queue.advance_manual(repeat, shuffle)
     }
 
-    /// Shared advance logic. `honor_repeat_track` is false for manual skips.
-    fn advance_inner(&mut self, honor_repeat_track: bool) -> Option<&QueueEntry> {
-        if self.queue.is_empty() {
-            self.current_index = None;
-            return None;
-        }
-
-        if self.repeats_track() && honor_repeat_track {
-            return self.current();
-        }
-
-        // A manual skip under repeat-track still loops the queue rather than
-        // running off the end into silence.
-        let wrap_at_end = self.repeats_queue() || (self.repeats_track() && !honor_repeat_track);
-
-        if self.shuffle {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            let current = self.current_index.unwrap_or(0);
-            // Only shuffle among upcoming tracks (after current).
-            let remaining: Vec<usize> = ((current + 1)..self.queue.len()).collect();
-            if !remaining.is_empty() {
-                let idx = remaining[rng.gen_range(0..remaining.len())];
-                self.current_index = Some(idx);
-                return self.queue.get(idx);
-            } else if wrap_at_end && self.queue.len() > 1 {
-                // All tracks played, re-shuffle from start (excluding the one that just played)
-                let others: Vec<usize> = (0..self.queue.len()).filter(|&i| i != current).collect();
-                if !others.is_empty() {
-                    let idx = others[rng.gen_range(0..others.len())];
-                    self.current_index = Some(idx);
-                    return self.queue.get(idx);
-                }
-            }
-            // Fallthrough: no more tracks
-            self.current_index = None;
-            return None;
-        }
-
-        if let Some(idx) = self.current_index {
-            let next = idx + 1;
-            if next < self.queue.len() {
-                self.current_index = Some(next);
-                return self.queue.get(next);
-            } else if wrap_at_end {
-                self.current_index = Some(0);
-                return self.queue.first();
-            } else {
-                self.current_index = None;
-                return None;
-            }
-        }
-
-        None
+    /// Step back, given how far into the current track playback is.
+    pub fn go_prev(&mut self, position_ms: u32) -> PrevAction {
+        self.queue.go_prev(position_ms)
     }
 
-    /// Go to previous track.
-    pub fn go_prev(&mut self) -> Option<&QueueEntry> {
-        if self.queue.is_empty() {
-            return None;
-        }
+    /// The track that would play next, for preloading.
+    pub fn peek_next(&self) -> Option<&QueueEntry> {
+        self.queue.peek_next(self.repeat)
+    }
 
-        if let Some(idx) = self.current_index {
-            if idx > 0 {
-                self.current_index = Some(idx - 1);
-            } else if self.repeats_queue() {
-                self.current_index = Some(self.queue.len() - 1);
-            }
-        } else {
-            self.current_index = Some(self.queue.len() - 1);
-        }
-
-        self.current()
+    /// Randomise the order of the source tier.
+    pub fn shuffle_now(&mut self) {
+        self.queue.shuffle_source();
     }
 
     pub fn clear(&mut self) {
         self.queue.clear();
-        self.current_index = None;
         self.status = PlaybackStatus::Idle;
         self.position_ms = 0;
         self.bulk_load_generation += 1;
@@ -408,11 +318,7 @@ impl PlayerState {
     /// loader — otherwise it would keep re-filling the queue the user just
     /// cleared.
     pub fn clear_upcoming(&mut self) {
-        if let Some(idx) = self.current_index {
-            self.queue.truncate(idx + 1);
-        } else {
-            self.queue.clear();
-        }
+        self.queue.clear_upcoming();
         self.bulk_load_generation += 1;
     }
 
@@ -427,7 +333,7 @@ impl PlayerState {
     /// repeating a bulk source (liked songs, a playlist) doesn't duplicate it.
     pub fn filter_unqueued(&self, tracks: Vec<Track>) -> Vec<Track> {
         let queued: std::collections::HashSet<&str> =
-            self.queue.iter().map(|e| e.track.id()).collect();
+            self.queue.all_entries().map(|e| e.track.id()).collect();
         tracks
             .into_iter()
             .filter(|t| !queued.contains(t.id()))
@@ -443,9 +349,9 @@ impl PlayerState {
     /// again, each copy looking new. Matching on `song_key` catches those.
     pub fn filter_unqueued_similar(&self, tracks: Vec<Track>) -> Vec<Track> {
         let mut seen_ids: std::collections::HashSet<String> =
-            self.queue.iter().map(|e| e.track.id().to_string()).collect();
+            self.queue.all_entries().map(|e| e.track.id().to_string()).collect();
         let mut seen_songs: std::collections::HashSet<String> =
-            self.queue.iter().map(|e| song_key(&e.track.display_name())).collect();
+            self.queue.all_entries().map(|e| song_key(&e.track.display_name())).collect();
         tracks
             .into_iter()
             .filter(|t| {
@@ -454,45 +360,10 @@ impl PlayerState {
             .collect()
     }
 
-    /// Drop played entries, keeping at most `keep` of them before the current
-    /// track. Upcoming tracks are never touched.
-    ///
-    /// Radio is an endless source: it appends a batch every time playback
-    /// reaches the end, and nothing ever left the queue, so a long session grew
-    /// it without bound and made every `queue` listing longer than the last.
-    /// Trimming costs the ability to `p` back beyond `keep` tracks.
-    pub fn trim_played_history(&mut self, keep: usize) {
-        let Some(current) = self.current_index else {
-            return;
-        };
-        if current <= keep {
-            return;
-        }
-        let drop_count = current - keep;
-        self.queue.drain(..drop_count);
-        self.current_index = Some(current - drop_count);
-    }
-
-    pub fn remove(&mut self, index: usize) -> Option<QueueEntry> {
-        if index >= self.queue.len() {
-            return None;
-        }
-        let entry = self.queue.remove(index);
-
-        // Adjust current index
-        if let Some(ref mut cur) = self.current_index {
-            if index < *cur {
-                *cur -= 1;
-            } else if index == *cur {
-                if self.queue.is_empty() {
-                    self.current_index = None;
-                } else if *cur >= self.queue.len() {
-                    *cur = self.queue.len() - 1;
-                }
-            }
-        }
-
-        Some(entry)
+    /// Remove the `n`-th upcoming track, counting from 1 the way `queue`
+    /// displays them. The playing track is not removable.
+    pub fn remove_upcoming(&mut self, n: usize) -> Option<QueueEntry> {
+        self.queue.remove_upcoming(n)
     }
 
     /// The current track followed by what is still to come.
@@ -513,23 +384,21 @@ impl PlayerState {
                 entry.track.display_name(), entry.track.duration_display());
         }
 
-        let first_upcoming = self.current_index.map(|i| i + 1).unwrap_or(0);
-        let upcoming = self.queue.get(first_upcoming..).unwrap_or(&[]);
-        if upcoming.is_empty() {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str("  Nothing upcoming");
-            return out;
-        }
-
-        for (i, entry) in upcoming.iter().enumerate() {
+        let mut any_upcoming = false;
+        for (i, entry) in self.upcoming().enumerate() {
+            any_upcoming = true;
             if !out.is_empty() {
                 out.push('\n');
             }
             let _ = write!(out, "  {}. [{}]: {} [{}]",
                 i + 1, entry.track.service().marker(),
                 entry.track.display_name(), entry.track.duration_display());
+        }
+        if !any_upcoming {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("  Nothing upcoming");
         }
         out
     }
@@ -559,66 +428,6 @@ mod tests {
     use proptest::prelude::*;
     use rstest::rstest;
 
-    #[test]
-    fn filter_unqueued_drops_tracks_already_in_queue() {
-        let mut state = PlayerState::new();
-        state.enqueue(track("a"), "u".into(), true);
-        state.enqueue(track("b"), "u".into(), true);
-        let incoming = vec![track("b"), track("c")];
-        let fresh = state.filter_unqueued(incoming);
-        assert_eq!(fresh.len(), 1);
-        assert_eq!(fresh[0].id(), "c");
-    }
-
-    #[test]
-    fn filter_unqueued_keeps_all_when_queue_empty() {
-        let state = PlayerState::new();
-        let fresh = state.filter_unqueued(vec![track("a"), track("b")]);
-        assert_eq!(fresh.len(), 2);
-    }
-
-    #[test]
-    fn begin_bulk_load_increments_and_returns_generation() {
-        let mut state = PlayerState::new();
-        let g1 = state.begin_bulk_load();
-        let g2 = state.begin_bulk_load();
-        assert_eq!(g2, g1 + 1);
-        assert_eq!(state.bulk_load_generation, g2);
-    }
-
-    #[test]
-    fn clear_invalidates_bulk_load_generation() {
-        let mut state = PlayerState::new();
-        let g = state.begin_bulk_load();
-        state.clear();
-        assert_ne!(state.bulk_load_generation, g);
-    }
-
-    #[test]
-    fn clear_upcoming_keeps_current_and_invalidates_bulk_loader() {
-        let mut state = PlayerState::new();
-        state.enqueue_all(vec![track("a"), track("b"), track("c")], "u".to_string(), false);
-        state.current_index = Some(0);
-        let g = state.begin_bulk_load();
-        state.clear_upcoming();
-        // Current track stays, upcoming dropped, in-flight loader invalidated.
-        assert_eq!(state.queue.len(), 1);
-        assert_eq!(state.current_index, Some(0));
-        assert_ne!(state.bulk_load_generation, g);
-    }
-
-    #[test]
-    fn clear_upcoming_with_no_current_empties_queue_and_invalidates_loader() {
-        let mut state = PlayerState::new();
-        state.enqueue_all(vec![track("a"), track("b")], "u".to_string(), false);
-        // Played past the end of the queue: entries remain but none is current.
-        state.current_index = None;
-        let g = state.begin_bulk_load();
-        state.clear_upcoming();
-        assert!(state.queue.is_empty());
-        assert_ne!(state.bulk_load_generation, g);
-    }
-
     fn track(id: &str) -> Track {
         Track::Spotify(SpotifyTrack {
             id: id.to_string(),
@@ -643,10 +452,10 @@ mod tests {
         })
     }
 
+    /// Queue `n` tracks from a source, the first of which starts playing.
     fn fill(state: &mut PlayerState, n: usize) {
-        for i in 0..n {
-            state.enqueue(track(&i.to_string()), "tester".to_string(), true);
-        }
+        let tracks: Vec<Track> = (0..n).map(|i| track(&i.to_string())).collect();
+        state.enqueue_source(tracks, "tester".to_string(), true);
     }
 
     // -- search results --
@@ -674,73 +483,102 @@ mod tests {
         assert!(state.get_search_results(2).is_some(), "other users are untouched");
     }
 
-    // -- enqueue / enqueue_all --
+    // -- bulk loading --
 
     #[test]
-    fn enqueue_on_empty_queue_sets_current_index() {
+    fn begin_bulk_load_increments_and_returns_generation() {
         let mut state = PlayerState::new();
-        assert_eq!(state.current_index, None);
-        state.enqueue(track("a"), "u".into(), true);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.queue.len(), 1);
+        let g1 = state.begin_bulk_load();
+        let g2 = state.begin_bulk_load();
+        assert_eq!(g2, g1 + 1);
+        assert_eq!(state.bulk_load_generation, g2);
     }
 
     #[test]
-    fn enqueue_on_non_empty_queue_does_not_change_current_index() {
+    fn clear_invalidates_bulk_load_generation() {
         let mut state = PlayerState::new();
-        state.enqueue(track("a"), "u".into(), true);
-        state.enqueue(track("b"), "u".into(), true);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.queue.len(), 2);
+        let g = state.begin_bulk_load();
+        state.clear();
+        assert_ne!(state.bulk_load_generation, g);
     }
 
     #[test]
-    fn enqueue_all_on_empty_queue_sets_current_index() {
-        let mut state = PlayerState::new();
-        state.enqueue_all(vec![track("a"), track("b")], "u".into(), false);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    #[test]
-    fn enqueue_all_on_non_empty_queue_keeps_current_index() {
-        let mut state = PlayerState::new();
-        state.enqueue(track("a"), "u".into(), true);
-        state.enqueue_all(vec![track("b"), track("c")], "u".into(), false);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.queue.len(), 3);
-    }
-
-    #[test]
-    fn enqueue_all_with_empty_vec_on_empty_queue_leaves_index_none() {
-        let mut state = PlayerState::new();
-        state.enqueue_all(vec![], "u".into(), true);
-        assert_eq!(state.current_index, None);
-    }
-
-    // -- advance: linear --
-
-    #[test]
-    fn advance_walks_queue_then_returns_none() {
+    fn clear_upcoming_keeps_current_and_invalidates_bulk_loader() {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.advance().map(|e| e.track.id().to_string()), Some("1".to_string()));
-        assert_eq!(state.advance().map(|e| e.track.id().to_string()), Some("2".to_string()));
-        assert!(state.advance().is_none());
-        assert_eq!(state.current_index, None);
+        let g = state.begin_bulk_load();
+        state.clear_upcoming();
+        assert_eq!(state.current().unwrap().track.id(), "0", "current keeps playing");
+        assert_eq!(state.upcoming_len(), 0);
+        assert_ne!(state.bulk_load_generation, g);
     }
 
     #[test]
-    fn advance_on_empty_queue_returns_none() {
+    fn clear_resets_the_queue_status_and_position() {
         let mut state = PlayerState::new();
-        assert!(state.advance().is_none());
-        assert_eq!(state.current_index, None);
+        fill(&mut state, 3);
+        state.status = PlaybackStatus::Playing;
+        state.position_ms = 42_000;
+        state.clear();
+        assert!(state.current().is_none());
+        assert_eq!(state.upcoming_len(), 0);
+        assert_eq!(state.status, PlaybackStatus::Idle);
+        assert_eq!(state.position_ms, 0);
     }
 
-    // -- advance: repeat_track --
+    // -- duplicate filtering --
 
-    // -- song_key / radio dedupe --
+    #[test]
+    fn filter_unqueued_drops_tracks_already_in_queue() {
+        let mut state = PlayerState::new();
+        state.enqueue_source(vec![track("a"), track("b")], "u".into(), true);
+        let fresh = state.filter_unqueued(vec![track("b"), track("c")]);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id(), "c");
+    }
+
+    #[test]
+    fn filter_unqueued_keeps_all_when_queue_empty() {
+        let state = PlayerState::new();
+        let fresh = state.filter_unqueued(vec![track("a"), track("b")]);
+        assert_eq!(fresh.len(), 2);
+    }
+
+    #[test]
+    fn filter_unqueued_still_sees_tracks_that_already_played() {
+        // Played tracks move to history; radio must not offer them straight
+        // back as fresh recommendations.
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.advance();
+        let fresh = state.filter_unqueued(vec![track("0"), track("new")]);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id(), "new");
+    }
+
+    #[test]
+    fn filter_unqueued_similar_drops_a_rerelease_of_a_queued_song() {
+        let mut state = PlayerState::new();
+        state.enqueue_source(vec![named("a", "Artist - Song")], "u".into(), true);
+        let fresh = state.filter_unqueued_similar(vec![
+            named("b", "Artist - Song (Remastered 2011)"),
+            named("c", "Artist - Another Song"),
+        ]);
+        assert_eq!(fresh.len(), 1, "the remaster is the same song under a new id");
+        assert_eq!(fresh[0].id(), "c");
+    }
+
+    #[test]
+    fn filter_unqueued_similar_drops_duplicates_within_the_incoming_batch() {
+        let state = PlayerState::new();
+        let fresh = state.filter_unqueued_similar(vec![
+            named("a", "Artist - Song"),
+            named("b", "Artist - Song - 2011 Remaster"),
+        ]);
+        assert_eq!(fresh.len(), 1);
+    }
+
+    // -- song_key --
 
     #[test]
     fn song_key_ignores_remaster_and_edition_suffixes() {
@@ -765,136 +603,54 @@ mod tests {
         assert_ne!(song_key("Other Artist - Song"), base);
     }
 
+    // -- rendered text --
+
     #[test]
-    fn filter_unqueued_similar_drops_a_rerelease_of_a_queued_song() {
+    fn queue_display_shows_the_current_track_then_upcoming_only() {
+        // Like Spotify: the queue is what is coming, not a log of what played.
         let mut state = PlayerState::new();
-        state.enqueue(named("a", "Artist - Song"), "u".into(), true);
-        let incoming = vec![
-            named("b", "Artist - Song (Remastered 2011)"),
-            named("c", "Artist - Another Song"),
-        ];
-        let fresh = state.filter_unqueued_similar(incoming);
-        assert_eq!(fresh.len(), 1, "the remaster is the same song under a new id");
-        assert_eq!(fresh[0].id(), "c");
+        fill(&mut state, 4);
+        state.advance();
+        let display = state.queue_display();
+        assert!(display.contains("Track 1"), "current track should be shown: {display}");
+        assert!(display.contains("Track 2") && display.contains("Track 3"));
+        assert!(!display.contains("Track 0"), "played tracks are not listed: {display}");
     }
 
     #[test]
-    fn filter_unqueued_similar_drops_duplicates_within_the_incoming_batch() {
-        let state = PlayerState::new();
-        let fresh = state.filter_unqueued_similar(vec![
-            named("a", "Artist - Song"),
-            named("b", "Artist - Song - 2011 Remaster"),
-        ]);
-        assert_eq!(fresh.len(), 1);
-    }
-
-    // -- trim_played_history --
-
-    #[test]
-    fn trim_played_history_keeps_the_recent_past_and_repoints_current() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 10);
-        state.current_index = Some(9);
-        state.trim_played_history(3);
-        // 3 played entries plus the current one.
-        assert_eq!(state.queue.len(), 4);
-        assert_eq!(state.current_index, Some(3));
-        assert_eq!(state.current().unwrap().track.id(), "9");
-        assert_eq!(state.queue[0].track.id(), "6");
-    }
-
-    #[test]
-    fn trim_played_history_keeps_upcoming_tracks() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 10);
-        state.current_index = Some(5);
-        state.trim_played_history(1);
-        // 1 played + current + the 4 still upcoming.
-        assert_eq!(state.queue.len(), 6);
-        assert_eq!(state.current().unwrap().track.id(), "5");
-        assert_eq!(state.queue.last().unwrap().track.id(), "9");
-    }
-
-    #[test]
-    fn trim_played_history_does_nothing_when_history_is_short() {
+    fn queue_display_numbers_upcoming_tracks_the_way_queue_rm_counts() {
+        // `queue rm 1` removes the next track up, so it must be listed as 1.
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.current_index = Some(1);
-        state.trim_played_history(20);
-        assert_eq!(state.queue.len(), 3);
-        assert_eq!(state.current_index, Some(1));
+        let display = state.queue_display();
+        assert!(display.contains("1.") && display.contains("Track 1"), "got: {display}");
+        assert!(display.contains("2.") && display.contains("Track 2"), "got: {display}");
     }
 
     #[test]
-    fn trim_played_history_without_a_current_track_is_a_no_op() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 5);
-        state.current_index = None;
-        state.trim_played_history(1);
-        assert_eq!(state.queue.len(), 5);
-    }
-
-    // -- enqueue_all_as_current --
-
-    #[test]
-    fn appending_after_the_queue_ran_out_makes_the_first_new_track_current() {
-        // Radio refills the queue once playback has run off the end. The
-        // played tracks are still there, so the queue is not empty and a plain
-        // append leaves current_index None - the bot then plays a track while
-        // its own state says nothing is playing, and `n` reports end of queue
-        // with tracks sitting right there.
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.current_index = None; // played past the end
-
-        let started = state.enqueue_all_as_current(
-            vec![track("r1"), track("r2")], "Radio".into(), true,
-        );
-
-        assert_eq!(started.map(|e| e.track.id().to_string()), Some("r1".to_string()));
-        assert_eq!(state.current_index, Some(2));
-        assert_eq!(state.queue.len(), 4, "played tracks are kept");
-    }
-
-    #[test]
-    fn a_skip_after_a_radio_refill_moves_to_the_next_new_track() {
-        // The reported bug: two tracks in the queue, `n` said end of queue.
+    fn queue_display_says_when_nothing_is_upcoming() {
         let mut state = PlayerState::new();
         fill(&mut state, 1);
-        state.current_index = None;
-        state.enqueue_all_as_current(vec![track("r1"), track("r2")], "Radio".into(), true);
-
-        assert_eq!(state.advance_manual().map(|e| e.track.id().to_string()), Some("r2".to_string()));
+        let display = state.queue_display();
+        assert!(display.contains("Track 0"), "current track still shown: {display}");
+        assert!(display.to_lowercase().contains("nothing upcoming"), "got: {display}");
     }
 
     #[test]
-    fn appending_as_current_to_an_empty_queue_starts_at_the_first_track() {
+    fn queue_display_includes_service_marker() {
         let mut state = PlayerState::new();
-        let started = state.enqueue_all_as_current(vec![track("a")], "Radio".into(), true);
-        assert_eq!(started.map(|e| e.track.id().to_string()), Some("a".to_string()));
-        assert_eq!(state.current_index, Some(0));
+        fill(&mut state, 1);
+        let display = state.queue_display();
+        assert!(display.contains("[SP]"), "expected [SP] marker, got: {display}");
+        assert!(!display.contains("[YT]"));
     }
-
-    #[test]
-    fn appending_nothing_as_current_leaves_the_queue_alone() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.current_index = None;
-        assert!(state.enqueue_all_as_current(vec![], "Radio".into(), true).is_none());
-        assert_eq!(state.current_index, None);
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    // -- rendered text (snapshots) --
-    //
-    // These cover the exact strings a user reads. A wording or layout change
-    // shows up as a snapshot diff to review rather than a rewritten assertion.
 
     #[test]
     fn snapshot_queue_with_played_current_and_upcoming() {
         let mut state = PlayerState::new();
         fill(&mut state, 5);
-        state.current_index = Some(2);
+        state.advance();
+        state.advance();
         insta::assert_snapshot!(state.queue_display());
     }
 
@@ -902,7 +658,7 @@ mod tests {
     fn snapshot_queue_with_nothing_upcoming() {
         let mut state = PlayerState::new();
         fill(&mut state, 2);
-        state.current_index = Some(1);
+        state.advance();
         insta::assert_snapshot!(state.queue_display());
     }
 
@@ -927,183 +683,7 @@ mod tests {
         );
     }
 
-    // -- advance, across every mode (parametrised) --
-
-    #[rstest]
-    // Off: walks forward, then stops at the end.
-    #[case(RepeatMode::Off, 0, Some("1"))]
-    #[case(RepeatMode::Off, 2, None)]
-    // Track: stays put wherever it is.
-    #[case(RepeatMode::Track, 0, Some("0"))]
-    #[case(RepeatMode::Track, 2, Some("2"))]
-    // Queue: walks forward, then wraps.
-    #[case(RepeatMode::Queue, 0, Some("1"))]
-    #[case(RepeatMode::Queue, 2, Some("0"))]
-    fn auto_advance_per_repeat_mode(
-        #[case] repeat: RepeatMode,
-        #[case] from: usize,
-        #[case] expected: Option<&str>,
-    ) {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = repeat;
-        state.current_index = Some(from);
-        let got = state.advance().map(|e| e.track.id().to_string());
-        assert_eq!(got.as_deref(), expected);
-    }
-
-    #[rstest]
-    // A manual skip moves in every mode, and wraps rather than stopping when
-    // any repeat mode is on.
-    #[case(RepeatMode::Off, 0, Some("1"))]
-    #[case(RepeatMode::Off, 2, None)]
-    #[case(RepeatMode::Track, 0, Some("1"))]
-    #[case(RepeatMode::Track, 2, Some("0"))]
-    #[case(RepeatMode::Queue, 0, Some("1"))]
-    #[case(RepeatMode::Queue, 2, Some("0"))]
-    fn manual_advance_per_repeat_mode(
-        #[case] repeat: RepeatMode,
-        #[case] from: usize,
-        #[case] expected: Option<&str>,
-    ) {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = repeat;
-        state.current_index = Some(from);
-        let got = state.advance_manual().map(|e| e.track.id().to_string());
-        assert_eq!(got.as_deref(), expected);
-    }
-
-    // -- queue invariants under arbitrary command sequences --
-
-    /// One queue-mutating operation, as a user could trigger it.
-    #[derive(Debug, Clone)]
-    enum Op {
-        Enqueue,
-        EnqueueMany(u8),
-        Advance,
-        AdvanceManual,
-        Prev,
-        Remove(u8),
-        Trim(u8),
-        ClearUpcoming,
-        Clear,
-        SetRepeat(u8),
-        SetShuffle(bool),
-    }
-
-    fn op_strategy() -> impl Strategy<Value = Op> {
-        prop_oneof![
-            Just(Op::Enqueue),
-            (1u8..4).prop_map(Op::EnqueueMany),
-            Just(Op::Advance),
-            Just(Op::AdvanceManual),
-            Just(Op::Prev),
-            (0u8..8).prop_map(Op::Remove),
-            (0u8..5).prop_map(Op::Trim),
-            Just(Op::ClearUpcoming),
-            Just(Op::Clear),
-            (0u8..3).prop_map(Op::SetRepeat),
-            any::<bool>().prop_map(Op::SetShuffle),
-        ]
-    }
-
-    fn apply(state: &mut PlayerState, op: &Op, next_id: &mut u32) {
-        match op {
-            Op::Enqueue => {
-                state.enqueue(track(&next_id.to_string()), "u".into(), true);
-                *next_id += 1;
-            }
-            Op::EnqueueMany(n) => {
-                let batch: Vec<Track> = (0..*n)
-                    .map(|_| {
-                        let t = track(&next_id.to_string());
-                        *next_id += 1;
-                        t
-                    })
-                    .collect();
-                state.enqueue_all(batch, "u".into(), true);
-            }
-            Op::Advance => {
-                state.advance();
-            }
-            Op::AdvanceManual => {
-                state.advance_manual();
-            }
-            Op::Prev => {
-                state.go_prev();
-            }
-            Op::Remove(i) => {
-                state.remove(*i as usize);
-            }
-            Op::Trim(keep) => state.trim_played_history(*keep as usize),
-            Op::ClearUpcoming => state.clear_upcoming(),
-            Op::Clear => state.clear(),
-            Op::SetRepeat(m) => {
-                state.repeat = match m {
-                    0 => RepeatMode::Off,
-                    1 => RepeatMode::Track,
-                    _ => RepeatMode::Queue,
-                }
-            }
-            Op::SetShuffle(on) => state.shuffle = *on,
-        }
-    }
-
-    proptest! {
-        /// `current_index` must always name a real entry, or nothing at all.
-        /// Every "the bot played the wrong track" bug in this file has been a
-        /// violation of exactly this.
-        #[test]
-        fn current_index_always_points_at_a_real_entry(ops in prop::collection::vec(op_strategy(), 1..40)) {
-            let mut state = PlayerState::new();
-            let mut next_id = 0u32;
-            for op in &ops {
-                apply(&mut state, op, &mut next_id);
-                if let Some(i) = state.current_index {
-                    prop_assert!(
-                        i < state.queue.len(),
-                        "current_index {i} past queue length {} after {op:?}",
-                        state.queue.len()
-                    );
-                }
-                prop_assert!(
-                    !(state.queue.is_empty() && state.current_index.is_some()),
-                    "empty queue must have no current track (after {op:?})"
-                );
-            }
-        }
-
-        /// Trimming played history is invisible to what is still to come.
-        #[test]
-        fn trim_never_touches_the_current_or_upcoming_tracks(
-            fill_n in 1usize..30,
-            current in 0usize..30,
-            keep in 0usize..10,
-        ) {
-            let mut state = PlayerState::new();
-            fill(&mut state, fill_n);
-            let current = current.min(fill_n - 1);
-            state.current_index = Some(current);
-
-            let before_current = state.current().unwrap().track.id().to_string();
-            let before_upcoming: Vec<String> = state.queue[current + 1..]
-                .iter().map(|e| e.track.id().to_string()).collect();
-
-            state.trim_played_history(keep);
-
-            let after_current = state.current().unwrap().track.id().to_string();
-            let idx = state.current_index.unwrap();
-            let after_upcoming: Vec<String> = state.queue[idx + 1..]
-                .iter().map(|e| e.track.id().to_string()).collect();
-
-            prop_assert_eq!(before_current, after_current);
-            prop_assert_eq!(before_upcoming, after_upcoming);
-            prop_assert!(idx <= keep, "kept {idx} played entries, asked for at most {}", keep);
-        }
-    }
-
-    // -- RepeatMode --
+    // -- modes --
 
     #[test]
     fn repeat_mode_is_one_setting_not_two_flags() {
@@ -1119,8 +699,6 @@ mod tests {
 
     #[test]
     fn repeat_mode_round_trips_through_the_config_flags() {
-        // The config file stores two booleans; a file with both set is not a
-        // state the bot can reach, and must resolve to something sane.
         assert_eq!(RepeatMode::from_flags(false, false), RepeatMode::Off);
         assert_eq!(RepeatMode::from_flags(true, false), RepeatMode::Track);
         assert_eq!(RepeatMode::from_flags(false, true), RepeatMode::Queue);
@@ -1128,8 +706,6 @@ mod tests {
         assert_eq!(RepeatMode::Queue.to_flags(), (false, true));
         assert_eq!(RepeatMode::Off.to_flags(), (false, false));
     }
-
-    // -- repeat_active --
 
     #[test]
     fn repeat_active_is_false_with_no_modes_or_shuffle_only() {
@@ -1159,8 +735,6 @@ mod tests {
 
     #[test]
     fn releasing_an_unarmed_auto_advance_gate_is_harmless() {
-        // Stop and clear both release; a release with nothing pending must not
-        // leave the gate in a state that swallows the next real signal.
         let mut state = PlayerState::new();
         state.release_auto_advance();
         assert!(state.try_arm_auto_advance());
@@ -1176,271 +750,127 @@ mod tests {
 
     #[test]
     fn clearing_the_queue_releases_a_pending_auto_advance() {
-        // Stopping mid-track leaves a waiter armed; without a release the next
-        // track ever played could never auto-advance.
         let mut state = PlayerState::new();
         assert!(state.try_arm_auto_advance());
         state.clear();
         assert!(state.try_arm_auto_advance());
     }
 
-    // -- advance_manual: an explicit skip is never swallowed by repeat-track --
-
-    // -- advance: repeat_queue --
-
-    // -- advance: shuffle --
-
-    #[test]
-    fn advance_with_shuffle_picks_an_upcoming_index() {
-        // With current=0 and queue [0,1,2,3], shuffle picks among indices 1..=3.
-        for _ in 0..20 {
-            let mut s = PlayerState::new();
-            fill(&mut s, 4);
-            s.shuffle = true;
-            let next = s.advance().unwrap().track.id().to_string();
-            let n: usize = next.parse().unwrap();
-            assert!((1..=3).contains(&n), "shuffle picked {n}, expected upcoming index");
-        }
-    }
-
-    #[test]
-    fn advance_with_shuffle_at_end_returns_none_without_repeat_queue() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        state.shuffle = true;
-        state.current_index = Some(1); // already at last
-        assert!(state.advance().is_none());
-        assert_eq!(state.current_index, None);
-    }
-
-    #[test]
-    fn advance_repeat_track_wins_over_shuffle() {
-        // repeat_track is checked before shuffle, so it should short-circuit.
-        let mut state = PlayerState::new();
-        fill(&mut state, 5);
-        state.repeat = RepeatMode::Track;
-        state.shuffle = true;
-        let id_before = state.current().unwrap().track.id().to_string();
-        for _ in 0..10 {
-            assert_eq!(state.advance().unwrap().track.id(), id_before);
-        }
-    }
-
-    // Repeat-track and repeat-queue can no longer both be set, so the old test
-    // for which one wins has nothing left to assert: `RepeatMode` makes that
-    // state unrepresentable. `repeat_mode_is_one_setting_not_two_flags` covers
-    // the replacement guarantee.
-
-    #[test]
-    fn advance_with_shuffle_and_repeat_queue_picks_different_track_at_end() {
-        for _ in 0..20 {
-            let mut s = PlayerState::new();
-            fill(&mut s, 3);
-            s.shuffle = true;
-            s.repeat = RepeatMode::Queue;
-            s.current_index = Some(2); // at end
-            let next = s.advance().unwrap().track.id().to_string();
-            assert_ne!(next, "2", "shuffle+repeat_queue should not repeat current");
-        }
-    }
-
-    // -- go_prev --
-
-    #[test]
-    fn go_prev_walks_backward() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(2);
-        assert_eq!(state.go_prev().unwrap().track.id(), "1");
-        assert_eq!(state.go_prev().unwrap().track.id(), "0");
-    }
-
-    #[test]
-    fn go_prev_at_zero_without_repeat_stays_at_zero() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        // current_index already 0 from enqueue
-        assert_eq!(state.go_prev().unwrap().track.id(), "0");
-        assert_eq!(state.current_index, Some(0));
-    }
-
-    #[test]
-    fn go_prev_at_zero_with_repeat_queue_wraps_to_last() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat = RepeatMode::Queue;
-        assert_eq!(state.go_prev().unwrap().track.id(), "2");
-        assert_eq!(state.current_index, Some(2));
-    }
-
-    #[test]
-    fn go_prev_from_none_jumps_to_last() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = None;
-        assert_eq!(state.go_prev().unwrap().track.id(), "2");
-    }
-
-    #[test]
-    fn go_prev_on_empty_queue_returns_none() {
-        let mut state = PlayerState::new();
-        assert!(state.go_prev().is_none());
-    }
-
-    // -- remove --
-
-    #[test]
-    fn remove_before_current_decrements_current_index() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(2);
-        state.remove(0);
-        assert_eq!(state.current_index, Some(1));
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    #[test]
-    fn remove_after_current_does_not_change_current_index() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(0);
-        state.remove(2);
-        assert_eq!(state.current_index, Some(0));
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    #[test]
-    fn remove_current_when_more_remain_keeps_index() {
-        // queue [0,1,2], current=1, remove(1) → queue [0,2], current still 1
-        // (now points to former index 2, the new last item)
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(1);
-        state.remove(1);
-        assert_eq!(state.current_index, Some(1));
-        assert_eq!(state.current().unwrap().track.id(), "2");
-    }
-
-    #[test]
-    fn remove_current_at_end_clamps_to_new_last() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(2);
-        state.remove(2);
-        assert_eq!(state.current_index, Some(1));
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    #[test]
-    fn remove_last_remaining_item_clears_current_index() {
-        let mut state = PlayerState::new();
-        state.enqueue(track("a"), "u".into(), true);
-        state.remove(0);
-        assert_eq!(state.current_index, None);
-        assert!(state.queue.is_empty());
-    }
-
-    #[test]
-    fn remove_out_of_bounds_returns_none() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 2);
-        assert!(state.remove(99).is_none());
-        assert_eq!(state.queue.len(), 2);
-    }
-
-    // -- clear --
-
-    #[test]
-    fn clear_resets_queue_index_status_and_position() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.status = PlaybackStatus::Playing;
-        state.position_ms = 12_345;
-        state.clear();
-        assert!(state.queue.is_empty());
-        assert_eq!(state.current_index, None);
-        assert_eq!(state.status, PlaybackStatus::Idle);
-        assert_eq!(state.position_ms, 0);
-    }
-
-    // -- queue_display --
-
-    #[test]
-    fn queue_display_shows_the_current_track_then_upcoming_only() {
-        // Like Spotify and YouTube Music: the queue is what is coming, not a
-        // log of what already played.
-        let mut state = PlayerState::new();
-        fill(&mut state, 4);
-        state.current_index = Some(1);
-        let display = state.queue_display();
-        assert!(display.contains("Track 1"), "current track should be shown: {display}");
-        assert!(display.contains("Track 2") && display.contains("Track 3"));
-        assert!(!display.contains("Track 0"), "already-played tracks should not be listed: {display}");
-    }
-
-    #[test]
-    fn queue_display_with_nothing_playing_lists_the_whole_queue_as_upcoming() {
-        // Reachable state: playback ran off the end of the queue, so entries
-        // remain but none is current. Everything left is still to come.
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = None;
-        let display = state.queue_display();
-        assert!(!display.contains("Now playing"), "nothing is playing: {display}");
-        assert!(display.contains("1.") && display.contains("Track 0"), "got: {display}");
-        assert!(display.contains("3.") && display.contains("Track 2"), "got: {display}");
-    }
-
-    #[test]
-    fn queue_display_numbers_upcoming_tracks_the_way_queue_rm_counts() {
-        // `queue rm 1` removes the next upcoming track, so it must be listed
-        // as 1 - numbering by absolute queue position made the numbers a user
-        // reads differ from the ones they type.
-        let mut state = PlayerState::new();
-        fill(&mut state, 4);
-        state.current_index = Some(1);
-        let display = state.queue_display();
-        let upcoming: Vec<&str> = display.lines().filter(|l| l.trim_start().starts_with('1')
-            || l.trim_start().starts_with('2')).collect();
-        assert!(upcoming.iter().any(|l| l.contains("1.") && l.contains("Track 2")),
-            "next upcoming should be numbered 1: {display}");
-        assert!(upcoming.iter().any(|l| l.contains("2.") && l.contains("Track 3")),
-            "second upcoming should be numbered 2: {display}");
-    }
-
-    #[test]
-    fn queue_display_includes_service_marker() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 1);
-        let display = state.queue_display();
-        // Spotify-only queue should mark every entry [SP].
-        assert!(display.contains("[SP]"), "expected [SP] marker, got: {display}");
-        assert!(!display.contains("[YT]"));
-    }
-
-    // -- active_service --
+    // -- active service --
 
     #[test]
     fn active_service_defaults_to_spotify() {
-        let state = PlayerState::new();
-        assert_eq!(state.active_service, Service::Spotify);
+        assert_eq!(PlayerState::new().active_service, Service::Spotify);
     }
 
-    // -- mode_display --
+    // -- the queue behaves under arbitrary command sequences --
 
-    // -- current --
-
-    #[test]
-    fn current_returns_none_when_index_is_none() {
-        let state = PlayerState::new();
-        assert!(state.current().is_none());
+    #[derive(Debug, Clone)]
+    enum Op {
+        PlayNext,
+        QueueSource(u8),
+        Advance,
+        Skip,
+        Prev(u32),
+        Remove(u8),
+        ClearUpcoming,
+        Clear,
+        SetRepeat(u8),
+        SetShuffle(bool),
     }
 
-    #[test]
-    fn current_returns_indexed_entry() {
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.current_index = Some(2);
-        assert_eq!(state.current().unwrap().track.id(), "2");
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            Just(Op::PlayNext),
+            (1u8..4).prop_map(Op::QueueSource),
+            Just(Op::Advance),
+            Just(Op::Skip),
+            (0u32..5_000).prop_map(Op::Prev),
+            (0u8..6).prop_map(Op::Remove),
+            Just(Op::ClearUpcoming),
+            Just(Op::Clear),
+            (0u8..3).prop_map(Op::SetRepeat),
+            any::<bool>().prop_map(Op::SetShuffle),
+        ]
+    }
+
+    fn apply(state: &mut PlayerState, op: &Op, next_id: &mut u32) {
+        match op {
+            Op::PlayNext => {
+                state.enqueue_next(track(&next_id.to_string()), "u".into(), true);
+                *next_id += 1;
+            }
+            Op::QueueSource(n) => {
+                let batch: Vec<Track> = (0..*n)
+                    .map(|_| {
+                        let t = track(&next_id.to_string());
+                        *next_id += 1;
+                        t
+                    })
+                    .collect();
+                state.enqueue_source(batch, "u".into(), false);
+            }
+            Op::Advance => {
+                state.advance();
+            }
+            Op::Skip => {
+                state.advance_manual();
+            }
+            Op::Prev(position_ms) => {
+                state.go_prev(*position_ms);
+            }
+            Op::Remove(n) => {
+                state.remove_upcoming(*n as usize);
+            }
+            Op::ClearUpcoming => state.clear_upcoming(),
+            Op::Clear => state.clear(),
+            Op::SetRepeat(m) => {
+                state.repeat = match m {
+                    0 => RepeatMode::Off,
+                    1 => RepeatMode::Track,
+                    _ => RepeatMode::Queue,
+                }
+            }
+            Op::SetShuffle(on) => state.shuffle = *on,
+        }
+    }
+
+    proptest! {
+        /// The bug this model was built to kill: the queue holding tracks while
+        /// a skip reports there is nothing to skip to.
+        #[test]
+        fn a_skip_always_moves_while_tracks_are_queued(
+            ops in prop::collection::vec(op_strategy(), 1..40)
+        ) {
+            let mut state = PlayerState::new();
+            let mut next_id = 0u32;
+            for op in &ops {
+                apply(&mut state, op, &mut next_id);
+                if state.upcoming_len() > 0 {
+                    let before = state.upcoming_len();
+                    prop_assert!(
+                        state.advance_manual().is_some(),
+                        "{} tracks queued but the skip found nothing (after {op:?})",
+                        before
+                    );
+                }
+            }
+        }
+
+        /// Something is always playing while the queue holds anything at all.
+        #[test]
+        fn nothing_is_queued_without_something_playing(
+            ops in prop::collection::vec(op_strategy(), 1..40)
+        ) {
+            let mut state = PlayerState::new();
+            let mut next_id = 0u32;
+            for op in &ops {
+                apply(&mut state, op, &mut next_id);
+                prop_assert!(
+                    !(state.current().is_none() && state.upcoming_len() > 0),
+                    "tracks are queued with nothing playing (after {op:?})"
+                );
+            }
+        }
     }
 }
