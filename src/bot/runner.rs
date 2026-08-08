@@ -227,8 +227,7 @@ pub async fn run_bot(
 
     let mut initial_state = PlayerState::new();
     initial_state.radio_enabled = config.radio_enabled;
-    initial_state.repeat_track = config.repeat_track;
-    initial_state.repeat_queue = config.repeat_queue;
+    initial_state.repeat = crate::bot::state::RepeatMode::from_flags(config.repeat_track, config.repeat_queue);
     initial_state.shuffle = config.shuffle;
     initial_state.active_service = config.default_service;
     let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
@@ -1216,8 +1215,7 @@ async fn command_processor(
             let s = state.lock();
             let vol = volume_for_save.load(Ordering::Relaxed);
             let radio = s.radio_enabled;
-            let repeat_track = s.repeat_track;
-            let repeat_queue = s.repeat_queue;
+            let (repeat_track, repeat_queue) = s.repeat.to_flags();
             let shuffle = s.shuffle;
             drop(s);
             config_store.update(|cfg| {
@@ -1682,28 +1680,16 @@ async fn command_processor(
 
             BotCommand::SetMode { mode, user_id: _ } => {
                 let mut s = state.lock();
-                match mode {
-                    PlaybackMode::RepeatTrack => {
-                        s.repeat_track = true;
-                        s.repeat_queue = false;
-                        s.shuffle = false;
-                    }
-                    PlaybackMode::RepeatQueue => {
-                        s.repeat_track = false;
-                        s.repeat_queue = true;
-                        s.shuffle = false;
-                    }
-                    PlaybackMode::Shuffle => {
-                        s.repeat_track = false;
-                        s.repeat_queue = false;
-                        s.shuffle = true;
-                    }
-                    PlaybackMode::Off => {
-                        s.repeat_track = false;
-                        s.repeat_queue = false;
-                        s.shuffle = false;
-                    }
-                }
+                use crate::bot::state::RepeatMode;
+                // The modes are alternatives: picking one clears the others.
+                let (repeat, shuffle) = match mode {
+                    PlaybackMode::RepeatTrack => (RepeatMode::Track, false),
+                    PlaybackMode::RepeatQueue => (RepeatMode::Queue, false),
+                    PlaybackMode::Shuffle => (RepeatMode::Off, true),
+                    PlaybackMode::Off => (RepeatMode::Off, false),
+                };
+                s.repeat = repeat;
+                s.shuffle = shuffle;
             }
 
             BotCommand::RadioToggle { enable, user_id: _ } => {
@@ -1871,13 +1857,13 @@ async fn command_processor(
             BotCommand::PreloadNext => {
                 let next_uri = {
                     let s = state.lock();
-                    if s.repeat_track {
+                    if s.repeats_track() {
                         s.current().map(|e| e.track.uri().to_string())
                     } else if let Some(idx) = s.current_index {
                         let next = idx + 1;
                         if next < s.queue.len() {
                             Some(s.queue[next].track.uri().to_string())
-                        } else if s.repeat_queue && !s.queue.is_empty() {
+                        } else if s.repeats_queue() && !s.queue.is_empty() {
                             Some(s.queue[0].track.uri().to_string())
                         } else {
                             None

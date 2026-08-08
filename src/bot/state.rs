@@ -29,6 +29,39 @@ pub enum PlaybackStatus {
     Paused,
 }
 
+/// What happens when a track ends. One setting rather than two booleans:
+/// "repeat this track" and "repeat the queue" are alternatives, and holding
+/// them as separate flags made the impossible both-at-once state expressible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    Track,
+    Queue,
+}
+
+impl RepeatMode {
+    /// Read the pair of booleans the config file stores. A file with both set
+    /// is not a state the bot can produce; track-repeat is the narrower of the
+    /// two, so it wins.
+    pub fn from_flags(track: bool, queue: bool) -> Self {
+        match (track, queue) {
+            (true, _) => Self::Track,
+            (false, true) => Self::Queue,
+            (false, false) => Self::Off,
+        }
+    }
+
+    /// Back to the `(repeat_track, repeat_queue)` pair the config stores.
+    pub fn to_flags(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Track => (true, false),
+            Self::Queue => (false, true),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct PlayerState {
     pub queue: Vec<QueueEntry>,
@@ -36,8 +69,7 @@ pub struct PlayerState {
     pub status: PlaybackStatus,
 
     // Modes
-    pub repeat_track: bool,
-    pub repeat_queue: bool,
+    pub repeat: RepeatMode,
     pub shuffle: bool,
 
     // Radio
@@ -143,8 +175,7 @@ impl PlayerState {
             queue: Vec::new(),
             current_index: None,
             status: PlaybackStatus::Idle,
-            repeat_track: false,
-            repeat_queue: false,
+            repeat: RepeatMode::Off,
             shuffle: false,
             radio_enabled: false,
             search_results: HashMap::new(),
@@ -214,7 +245,15 @@ impl PlayerState {
     /// Whether either repeat mode is on. Repeat means "keep playing what is
     /// already here", so radio must not append to the queue while it holds.
     pub fn repeat_active(&self) -> bool {
-        self.repeat_track || self.repeat_queue
+        self.repeat != RepeatMode::Off
+    }
+
+    pub fn repeats_track(&self) -> bool {
+        self.repeat == RepeatMode::Track
+    }
+
+    pub fn repeats_queue(&self) -> bool {
+        self.repeat == RepeatMode::Queue
     }
 
     /// Claim the right to send an automatic advance, returning false when one
@@ -260,13 +299,13 @@ impl PlayerState {
             return None;
         }
 
-        if self.repeat_track && honor_repeat_track {
+        if self.repeats_track() && honor_repeat_track {
             return self.current();
         }
 
         // A manual skip under repeat-track still loops the queue rather than
         // running off the end into silence.
-        let wrap_at_end = self.repeat_queue || (self.repeat_track && !honor_repeat_track);
+        let wrap_at_end = self.repeats_queue() || (self.repeats_track() && !honor_repeat_track);
 
         if self.shuffle {
             use rand::Rng;
@@ -318,7 +357,7 @@ impl PlayerState {
         if let Some(idx) = self.current_index {
             if idx > 0 {
                 self.current_index = Some(idx - 1);
-            } else if self.repeat_queue {
+            } else if self.repeats_queue() {
                 self.current_index = Some(self.queue.len() - 1);
             }
         } else {
@@ -471,11 +510,10 @@ impl PlayerState {
 
     pub fn mode_display(&self) -> String {
         let mut modes = Vec::new();
-        if self.repeat_track {
-            modes.push("Repeat Track");
-        }
-        if self.repeat_queue {
-            modes.push("Repeat Queue");
+        match self.repeat {
+            RepeatMode::Off => {}
+            RepeatMode::Track => modes.push("Repeat Track"),
+            RepeatMode::Queue => modes.push("Repeat Queue"),
         }
         if self.shuffle {
             modes.push("Shuffle");
@@ -678,7 +716,7 @@ mod tests {
     fn advance_with_repeat_track_returns_same_track() {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         let id_before = state.current().unwrap().track.id().to_string();
         for _ in 0..5 {
             assert_eq!(state.advance().unwrap().track.id(), id_before);
@@ -779,6 +817,32 @@ mod tests {
         assert_eq!(state.queue.len(), 5);
     }
 
+    // -- RepeatMode --
+
+    #[test]
+    fn repeat_mode_is_one_setting_not_two_flags() {
+        let mut state = PlayerState::new();
+        assert_eq!(state.repeat, RepeatMode::Off);
+        state.repeat = RepeatMode::Track;
+        assert!(state.repeats_track());
+        assert!(!state.repeats_queue(), "selecting one repeat mode clears the other");
+        state.repeat = RepeatMode::Queue;
+        assert!(state.repeats_queue());
+        assert!(!state.repeats_track());
+    }
+
+    #[test]
+    fn repeat_mode_round_trips_through_the_config_flags() {
+        // The config file stores two booleans; a file with both set is not a
+        // state the bot can reach, and must resolve to something sane.
+        assert_eq!(RepeatMode::from_flags(false, false), RepeatMode::Off);
+        assert_eq!(RepeatMode::from_flags(true, false), RepeatMode::Track);
+        assert_eq!(RepeatMode::from_flags(false, true), RepeatMode::Queue);
+        assert_eq!(RepeatMode::from_flags(true, true), RepeatMode::Track);
+        assert_eq!(RepeatMode::Queue.to_flags(), (false, true));
+        assert_eq!(RepeatMode::Off.to_flags(), (false, false));
+    }
+
     // -- repeat_active --
 
     #[test]
@@ -792,10 +856,9 @@ mod tests {
     #[test]
     fn repeat_active_is_true_for_either_repeat_mode() {
         let mut state = PlayerState::new();
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         assert!(state.repeat_active());
-        state.repeat_track = false;
-        state.repeat_queue = true;
+        state.repeat = RepeatMode::Queue;
         assert!(state.repeat_active());
     }
 
@@ -832,7 +895,7 @@ mod tests {
     fn manual_advance_moves_past_a_repeating_track() {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         assert_eq!(state.advance_manual().unwrap().track.id(), "1");
         assert_eq!(state.advance_manual().unwrap().track.id(), "2");
     }
@@ -843,7 +906,7 @@ mod tests {
         // returns to the start rather than ending playback.
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         state.current_index = Some(2);
         assert_eq!(state.advance_manual().unwrap().track.id(), "0");
     }
@@ -860,7 +923,7 @@ mod tests {
     fn manual_advance_still_wraps_under_repeat_queue() {
         let mut state = PlayerState::new();
         fill(&mut state, 2);
-        state.repeat_queue = true;
+        state.repeat = RepeatMode::Queue;
         state.current_index = Some(1);
         assert_eq!(state.advance_manual().unwrap().track.id(), "0");
     }
@@ -870,7 +933,7 @@ mod tests {
         // The auto path (end-of-track) must keep repeat-track behavior.
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         assert_eq!(state.advance().unwrap().track.id(), "0");
         assert_eq!(state.advance().unwrap().track.id(), "0");
     }
@@ -881,7 +944,7 @@ mod tests {
     fn advance_with_repeat_queue_wraps_to_first() {
         let mut state = PlayerState::new();
         fill(&mut state, 2);
-        state.repeat_queue = true;
+        state.repeat = RepeatMode::Queue;
         assert_eq!(state.advance().unwrap().track.id(), "1");
         assert_eq!(state.advance().unwrap().track.id(), "0"); // wrap
         assert_eq!(state.advance().unwrap().track.id(), "1");
@@ -917,7 +980,7 @@ mod tests {
         // repeat_track is checked before shuffle, so it should short-circuit.
         let mut state = PlayerState::new();
         fill(&mut state, 5);
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         state.shuffle = true;
         let id_before = state.current().unwrap().track.id().to_string();
         for _ in 0..10 {
@@ -925,19 +988,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn advance_repeat_track_wins_over_repeat_queue() {
-        // repeat_track is checked before the linear/repeat_queue branch.
-        let mut state = PlayerState::new();
-        fill(&mut state, 3);
-        state.repeat_track = true;
-        state.repeat_queue = true;
-        state.current_index = Some(2); // at end
-        // Without repeat_track, repeat_queue would wrap to 0. With repeat_track,
-        // we stay on index 2.
-        assert_eq!(state.advance().unwrap().track.id(), "2");
-        assert_eq!(state.current_index, Some(2));
-    }
+    // Repeat-track and repeat-queue can no longer both be set, so the old test
+    // for which one wins has nothing left to assert: `RepeatMode` makes that
+    // state unrepresentable. `repeat_mode_is_one_setting_not_two_flags` covers
+    // the replacement guarantee.
 
     #[test]
     fn advance_with_shuffle_and_repeat_queue_picks_different_track_at_end() {
@@ -945,7 +999,7 @@ mod tests {
             let mut s = PlayerState::new();
             fill(&mut s, 3);
             s.shuffle = true;
-            s.repeat_queue = true;
+            s.repeat = RepeatMode::Queue;
             s.current_index = Some(2); // at end
             let next = s.advance().unwrap().track.id().to_string();
             assert_ne!(next, "2", "shuffle+repeat_queue should not repeat current");
@@ -976,7 +1030,7 @@ mod tests {
     fn go_prev_at_zero_with_repeat_queue_wraps_to_last() {
         let mut state = PlayerState::new();
         fill(&mut state, 3);
-        state.repeat_queue = true;
+        state.repeat = RepeatMode::Queue;
         assert_eq!(state.go_prev().unwrap().track.id(), "2");
         assert_eq!(state.current_index, Some(2));
     }
@@ -1155,7 +1209,7 @@ mod tests {
     #[test]
     fn mode_display_multiple_modes_joined_with_comma() {
         let mut state = PlayerState::new();
-        state.repeat_track = true;
+        state.repeat = RepeatMode::Track;
         state.shuffle = true;
         assert_eq!(state.mode_display(), "Repeat Track, Shuffle");
     }
