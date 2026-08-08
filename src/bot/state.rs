@@ -430,17 +430,40 @@ impl PlayerState {
         Some(entry)
     }
 
+    /// The current track followed by what is still to come.
+    ///
+    /// Played tracks are deliberately left out, the way Spotify's queue and
+    /// YouTube Music's "up next" do it: the queue answers "what is coming",
+    /// not "what have we heard". Upcoming entries are numbered from 1 so the
+    /// numbers shown are the numbers `queue rm N` takes.
     pub fn queue_display(&self) -> String {
         if self.queue.is_empty() {
             return "Queue is empty".to_string();
         }
 
         let mut out = String::new();
-        for (i, entry) in self.queue.iter().enumerate() {
-            let marker = if self.current_index == Some(i) { "> " } else { "  " };
-            if i > 0 { out.push('\n'); }
-            let _ = write!(out, "{}{} [{}]: {} [{}]",
-                marker, i + 1, entry.track.service().marker(),
+        if let Some(entry) = self.current() {
+            let _ = write!(out, "> Now playing [{}]: {} [{}]",
+                entry.track.service().marker(),
+                entry.track.display_name(), entry.track.duration_display());
+        }
+
+        let first_upcoming = self.current_index.map(|i| i + 1).unwrap_or(0);
+        let upcoming = self.queue.get(first_upcoming..).unwrap_or(&[]);
+        if upcoming.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("  Nothing upcoming");
+            return out;
+        }
+
+        for (i, entry) in upcoming.iter().enumerate() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            let _ = write!(out, "  {}. [{}]: {} [{}]",
+                i + 1, entry.track.service().marker(),
                 entry.track.display_name(), entry.track.duration_display());
         }
         out
@@ -1057,15 +1080,43 @@ mod tests {
     }
 
     #[test]
-    fn queue_display_marks_current_with_arrow() {
+    fn queue_display_shows_the_current_track_then_upcoming_only() {
+        // Like Spotify and YouTube Music: the queue is what is coming, not a
+        // log of what already played.
         let mut state = PlayerState::new();
-        fill(&mut state, 3);
+        fill(&mut state, 4);
         state.current_index = Some(1);
         let display = state.queue_display();
-        let lines: Vec<&str> = display.lines().collect();
-        assert!(lines[0].starts_with("  "));
-        assert!(lines[1].starts_with("> "));
-        assert!(lines[2].starts_with("  "));
+        assert!(display.contains("Track 1"), "current track should be shown: {display}");
+        assert!(display.contains("Track 2") && display.contains("Track 3"));
+        assert!(!display.contains("Track 0"), "already-played tracks should not be listed: {display}");
+    }
+
+    #[test]
+    fn queue_display_numbers_upcoming_tracks_the_way_queue_rm_counts() {
+        // `queue rm 1` removes the next upcoming track, so it must be listed
+        // as 1 - numbering by absolute queue position made the numbers a user
+        // reads differ from the ones they type.
+        let mut state = PlayerState::new();
+        fill(&mut state, 4);
+        state.current_index = Some(1);
+        let display = state.queue_display();
+        let upcoming: Vec<&str> = display.lines().filter(|l| l.trim_start().starts_with('1')
+            || l.trim_start().starts_with('2')).collect();
+        assert!(upcoming.iter().any(|l| l.contains("1.") && l.contains("Track 2")),
+            "next upcoming should be numbered 1: {display}");
+        assert!(upcoming.iter().any(|l| l.contains("2.") && l.contains("Track 3")),
+            "second upcoming should be numbered 2: {display}");
+    }
+
+    #[test]
+    fn queue_display_says_when_nothing_is_upcoming() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        state.current_index = Some(1);
+        let display = state.queue_display();
+        assert!(display.contains("Track 1"), "current track still shown: {display}");
+        assert!(display.to_lowercase().contains("nothing upcoming"), "got: {display}");
     }
 
     #[test]
