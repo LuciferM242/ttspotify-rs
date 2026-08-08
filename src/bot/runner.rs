@@ -702,11 +702,12 @@ fn schedule_radio_prefetch(
     }
 }
 
-/// How many already-played tracks a radio session keeps in the queue. Radio
-/// never stops appending, so without a bound the queue grows for as long as
-/// the bot plays. Enough history to look back over an evening, not enough to
-/// turn `queue` into a wall of text.
-const RADIO_HISTORY_KEEP: usize = 20;
+/// How many already-played tracks the queue keeps behind the current one.
+///
+/// Nothing used to leave the queue, so any endless source — radio above all —
+/// grew it for as long as the bot played. Trimmed on every advance, so the
+/// bound holds whatever filled the queue. `p` can step back this far.
+const QUEUE_HISTORY_KEEP: usize = 20;
 
 /// How many tracks each background batch fetches, and the pause between
 /// batches. Pacing keeps the request stream looking like a normal client.
@@ -1516,6 +1517,16 @@ async fn command_processor(
                     // repeat-track; an end-of-track advance keeps repeating.
                     let entry = if after_track.is_some() { s.advance() } else { s.advance_manual() };
                     let next = entry.map(|e| (e.track.service(), e.track.uri().to_string(), e.track.display_name()));
+                    if next.is_some() {
+                        // Bound the queue wherever its contents came from. Not
+                        // done when the queue ran out: `prev_index` is restored
+                        // below and must still point at the same entry.
+                        s.trim_played_history(QUEUE_HISTORY_KEEP);
+                    }
+                    tracing::debug!(
+                        "Advance: queue={} index={:?} modes=[{}] radio={}",
+                        s.queue.len(), s.current_index, s.mode_display(), s.radio_enabled
+                    );
                     (next, prev_index)
                 };
                 if let Some((service, uri_str, name)) = next {
@@ -1559,7 +1570,6 @@ async fn command_processor(
                                             let fresh = s.filter_unqueued_similar(tracks);
                                             let first = fresh.first().map(|t| (t.uri().to_string(), t.display_name()));
                                             s.enqueue_all(fresh, "Radio".to_string(), true);
-                                            s.trim_played_history(RADIO_HISTORY_KEEP);
                                             first
                                         };
                                         match started {
@@ -1909,7 +1919,6 @@ async fn command_processor(
                                     let fresh = s.filter_unqueued_similar(tracks);
                                     let count = fresh.len();
                                     s.enqueue_all(fresh, "Radio".to_string(), true);
-                                    s.trim_played_history(RADIO_HISTORY_KEEP);
                                     count
                                 };
                                 tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
