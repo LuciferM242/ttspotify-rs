@@ -231,3 +231,73 @@ channel_not_found = Channel not found: {path}
 
 # Shown when a track could not be started. {track} = the track title.
 failed_to_start = Failed to start track: {track}
+
+# Help text
+#
+# One entry per help topic. Long lines: \n marks a line break in the
+# message the user sees. Command names and their arguments stay in English,
+# because they are what the user has to type.
+
+# The main help listing: playback, queue and mode sections.
+help_overview_playback = Playback:\n  p <query>      Search and play a track, playlist, or album\n  p               Toggle play/pause\n  s               Stop playback and clear queue\n  n               Next track\n  o               Previous track\n  replay          Restart current track\n  c               Show current track info\n\nQueue:\n  queue           Show the queue\n  queue clear     Clear upcoming tracks\n  queue rm <N>    Remove Nth upcoming track\n\nModes:\n  mode [r|rq|off]     Set repeat mode\n  shuffle [on|off]    Shuffle the upcoming tracks
+
+# Extra help lines shown only when Spotify is the active service.
+help_overview_spotify =   radio [on|off]      Toggle radio (auto-recommendations)\n  liked               Play your Liked Songs (also: fav)
+
+# The rest of the main help listing: audio, search, service, bot.
+help_overview_rest = \nAudio:\n  v [0-100]       Get or set volume\n  sf/sb [N]       Seek forward/backward N seconds\n\nSearch:\n  search <query>  Search and pick from results\n  <number>        Pick a search result\n  a / cancel      Cancel search\n\nService:\n  /sp             Switch to Spotify\n  /yt             Switch to YouTube\n\nBot:\n  link         Get URL for current track\n  stats        Show bot uptime and session stats\n  lang         Show or set your language\n  cn <name>    Change nickname\n  gender       Set bot gender\n  info         Bot info
+
+# Help lines shown only to admins.
+help_overview_admin =   jc <path>    Join channel\n  glang        Set the server default language\n  rs           Restart\n  q            Quit
+
+# End of the main help listing. {service} = the active service name.
+help_overview_footer = \nActive service: {service}\nType h <command> for detailed help (e.g. h queue)
+
+# Shown for an unrecognised command or help topic.
+help_unknown = Unknown command. Type h for the command list.
+
+help_play = p / play\n  p <query>   Search and play the first result.\n              If already playing, queues the track instead.\n              Accepts track names, track URLs, playlist URLs, album URLs.\n  p           Toggle play/pause when no query given.\n              If paused: resumes. If playing: pauses.\nExamples:\n  p photograph\n  p spotify:track:6rqhFgbbKwnb9MLmUQDhG6
+
+help_stop = s / stop\nStop playback and clear the queue.
+
+help_next = n / next\nSkip to the next track.\nIf radio is on and nothing is left, fetches recommendations.
+
+help_prev = o / prev\nGo back to the previous track.\nMore than 3 seconds into a track, it restarts that track instead - press it again to go further back. Use replay to always restart.
+
+help_replay = replay / rp\nRestart the current track from the beginning.
+
+help_current = c / current\nShow the currently playing track with position, duration, and active modes.
+
+help_queue = queue\n  queue          Show the current track and what is coming.\n  queue clear    Remove all upcoming tracks (keeps current).\n  queue rm <N>   Remove the Nth upcoming track.\n                 N=1 is the next track after the current one.\nAlready played tracks are not listed.\nExamples:\n  queue rm 1     Remove the next upcoming track\n  queue rm 3     Remove the 3rd upcoming track\n  queue clear    Clear everything after the current track
+
+help_mode = mode [r|rq|off]\n  mode r     Repeat current track\n  mode rq    Repeat entire queue (loop)\n  mode off   Turn repeat off\n  mode       Show what is active\nShuffle is separate: see 'h shuffle'.
+
+help_shuffle = shuffle [on|off]\n  shuffle       Turn shuffle on or off\n  shuffle on    Force it on\n  shuffle off   Force it off\nShuffles the upcoming tracks, leaving anything you queued by name in the order you asked for. Works together with repeat.
+
+help_volume = v / volume [0-100]\n  v          Show current volume\n  v 50       Set volume to 50%\n  v50        Set volume to 50% (no space)\n  volume 30  Set volume to 30%\nVolume is capped by the configured max volume.
+
+help_seek = sf / sb [seconds]\n  sf         Seek forward 10 seconds (default)\n  sb         Seek backward 10 seconds (default)\n  sf30       Seek forward 30 seconds\n  sb 5       Seek backward 5 seconds
+
+help_search = search <query>\n  Search and show results. Then:\n  <number>   Pick a result to play/queue\n  a / cancel Dismiss search results\nExample:\n  search photograph\n  2          Play the 2nd result
+
+help_radio = radio [on|off]\n  radio on   Enable radio mode. When a single track finishes\n             and nothing is left, automatically fetches\n             recommendations based on the last track.\n             Does not trigger for playlists or albums.\n  radio off  Disable radio mode.\n  radio      Show current radio status.
+
+help_link = link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.
+
+help_stats = stats\nShow bot uptime, tracks played this session, queue length, and volume.
+
+help_jc = jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room
+
+help_lang = lang [code]\nShow available languages, or set your own.\nYour choice is remembered by username.\nlang clear removes your choice (follow the server default).\nExample: lang de
+
+help_glang = glang <code>\nSet the server default language (admin).\nUsers who picked their own language with lang keep it.
+
+help_cn = cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot
+
+help_gender = gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb
+
+help_service = /sp / /yt\n  /sp     Switch active service to Spotify.\n  /yt     Switch active service to YouTube.\nCommands like p, search, n, o target the active service.\nSwitching does not interrupt playback. Use s to stop.
+
+help_restart = rs / restart\nRestart the bot. Saves config before exit.
+
+help_quit = q / quit\nShut down the bot. Saves config before exit.

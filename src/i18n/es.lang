@@ -105,3 +105,73 @@ end_of_queue = Fin de la cola
 invalid_pick = Selección inválida o sin resultados de búsqueda
 channel_not_found = Canal no encontrado: {path}
 failed_to_start = Error al iniciar la pista: {track}
+
+# Help text
+#
+# One entry per help topic. Long lines: \n marks a line break in the
+# message the user sees. Command names and their arguments stay in English,
+# because they are what the user has to type.
+
+# The main help listing: playback, queue and mode sections.
+help_overview_playback = Reproduccion:\n  p <consulta>   Buscar y reproducir una pista, lista o album\n  p               Alternar reproducir/pausar\n  s               Detener y vaciar la cola\n  n               Pista siguiente\n  o               Pista anterior\n  replay          Reiniciar la pista actual\n  c               Informacion de la pista actual\n\nCola:\n  queue           Mostrar la cola\n  queue clear     Quitar las pistas pendientes\n  queue rm <N>    Quitar la pista pendiente N\n\nModos:\n  mode [r|rq|off]     Modo de repeticion\n  shuffle [on|off]    Mezclar las pistas pendientes
+
+# Extra help lines shown only when Spotify is the active service.
+help_overview_spotify =   radio [on|off]      Activar radio (recomendaciones automaticas)\n  liked               Reproducir tus canciones guardadas (tambien: fav)
+
+# The rest of the main help listing: audio, search, service, bot.
+help_overview_rest = \nAudio:\n  v [0-100]       Ver o ajustar el volumen\n  sf/sb [N]       Avanzar/retroceder N segundos\n\nBusqueda:\n  search <consulta>  Buscar y elegir de los resultados\n  <numero>        Elegir un resultado\n  a / cancel      Cancelar la busqueda\n\nServicio:\n  /sp             Cambiar a Spotify\n  /yt             Cambiar a YouTube\n\nBot:\n  link         URL de la pista actual\n  stats        Tiempo activo y estadisticas de la sesion\n  lang         Ver o elegir tu idioma\n  cn <nombre>  Cambiar el apodo\n  gender       Genero del bot\n  info         Informacion del bot
+
+# Help lines shown only to admins.
+help_overview_admin =   jc <ruta>    Entrar a un canal\n  glang        Idioma predeterminado del servidor\n  rs           Reiniciar\n  q            Salir
+
+# End of the main help listing. {service} = the active service name.
+help_overview_footer = \nServicio activo: {service}\nEscribe h <comando> para ayuda detallada (por ejemplo h queue)
+
+# Shown for an unrecognised command or help topic.
+help_unknown = Comando desconocido. Escribe h para ver la lista de comandos.
+
+help_play = p / play\n  p <consulta>  Buscar y reproducir el primer resultado.\n                Si ya suena algo, la pista se anade a la cola.\n                Acepta nombres, enlaces de pistas, listas y albumes.\n  p             Sin consulta, alterna reproducir/pausar.\n                En pausa: reanuda. Sonando: pausa.\nEjemplos:\n  p photograph\n  p spotify:track:6rqhFgbbKwnb9MLmUQDhG6
+
+help_stop = s / stop\nDetener la reproduccion y vaciar la cola.
+
+help_next = n / next\nPasar a la pista siguiente.\nSi la radio esta activa y no queda nada, busca recomendaciones.
+
+help_prev = o / prev\nVolver a la pista anterior.\nPasados 3 segundos de la pista, la reinicia en su lugar; pulsalo otra vez para retroceder de verdad. Usa replay para reiniciar siempre.
+
+help_replay = replay / rp\nReiniciar la pista actual desde el principio.
+
+help_current = c / current\nMostrar la pista actual con su posicion, duracion y modos activos.
+
+help_queue = queue\n  queue          Mostrar la pista actual y lo que viene.\n  queue clear    Quitar todas las pistas pendientes (mantiene la actual).\n  queue rm <N>   Quitar la pista pendiente numero N.\n                 N=1 es la pista siguiente a la actual.\nLas pistas ya reproducidas no aparecen.\nEjemplos:\n  queue rm 1     Quitar la siguiente pista pendiente\n  queue rm 3     Quitar la tercera pista pendiente\n  queue clear    Quitar todo lo posterior a la pista actual
+
+help_mode = mode [r|rq|off]\n  mode r     Repetir la pista actual\n  mode rq    Repetir toda la cola (bucle)\n  mode off   Desactivar la repeticion\n  mode       Mostrar lo que esta activo\nLa mezcla es aparte: mira 'h shuffle'.
+
+help_shuffle = shuffle [on|off]\n  shuffle       Activar o desactivar la mezcla\n  shuffle on    Forzar activada\n  shuffle off   Forzar desactivada\nMezcla las pistas pendientes y respeta el orden de las que pediste por nombre. Funciona junto con la repeticion.
+
+help_volume = v / volume [0-100]\n  v          Ver el volumen actual\n  v 50       Poner el volumen al 50%\n  v50        Poner el volumen al 50% (sin espacio)\n  volume 30  Poner el volumen al 30%\nEl volumen esta limitado por el maximo configurado.
+
+help_seek = sf / sb [segundos]\n  sf         Avanzar 10 segundos (por defecto)\n  sb         Retroceder 10 segundos (por defecto)\n  sf30       Avanzar 30 segundos\n  sb 5       Retroceder 5 segundos
+
+help_search = search <consulta>\n  Buscar y mostrar resultados. Despues:\n  <numero>   Elegir un resultado para reproducir o encolar\n  a / cancel Descartar los resultados\nEjemplo:\n  search photograph\n  2          Reproducir el segundo resultado
+
+help_radio = radio [on|off]\n  radio on   Activar la radio. Cuando termina una pista suelta\n             y no queda nada, busca recomendaciones\n             basadas en la ultima pista.\n             No se activa con listas ni albumes.\n  radio off  Desactivar la radio.\n  radio      Ver el estado de la radio.
+
+help_link = link / url\nObtener el enlace de la pista actual.\nAbrelo en la aplicacion del servicio o compartelo.
+
+help_stats = stats\nTiempo activo del bot, pistas reproducidas en la sesion, tamano de la cola y volumen.
+
+help_jc = jc <ruta>\nEntrar a un canal de TeamTalk por su ruta.\nEjemplo: jc /Music Room
+
+help_lang = lang [codigo]\nVer los idiomas disponibles o elegir el tuyo.\nTu eleccion se recuerda por nombre de usuario.\nlang clear borra tu eleccion (sigue el idioma del servidor).\nEjemplo: lang de
+
+help_glang = glang <codigo>\nFijar el idioma predeterminado del servidor (admin).\nQuien haya elegido su idioma con lang lo conserva.
+
+help_cn = cn <nombre>\nCambiar el apodo del bot.\nEjemplo: cn DJ Bot
+
+help_gender = gender <male|female|neutral>\nFijar el genero del bot (afecta al avatar de TT).\nAlias: m, f, n, man, woman, nb
+
+help_service = /sp / /yt\n  /sp     Cambiar el servicio activo a Spotify.\n  /yt     Cambiar el servicio activo a YouTube.\nComandos como p, search, n y o usan el servicio activo.\nCambiar de servicio no interrumpe la reproduccion. Usa s para detener.
+
+help_restart = rs / restart\nReiniciar el bot. Guarda la configuracion antes de salir.
+
+help_quit = q / quit\nApagar el bot. Guarda la configuracion antes de salir.

@@ -780,7 +780,7 @@ impl CommandDispatcher {
                 let active = self.state.lock().active_service;
                 let is_admin = self.is_caller_admin(client, sender_id, username);
                 if args.is_empty() {
-                    let text = help_text(active, is_admin);
+                    let text = help_text(&self.i18n, sender_id, active, is_admin);
                     self.reply(client, sender_id, &text);
                 } else {
                     let topic = args.trim().to_lowercase();
@@ -788,41 +788,38 @@ impl CommandDispatcher {
                     if !is_admin
                         && matches!(topic.as_str(), "q" | "quit" | "rs" | "restart" | "jc" | "glang")
                     {
-                        self.reply(
-                            client,
-                            sender_id,
-                            "Unknown command. Type h for the command list.",
-                        );
+                        self.reply_t(client, sender_id, Key::HelpUnknown, &[]);
                         return true;
                     }
-                    let detail: &str = match topic.as_str() {
-                        "p" | "play" => HELP_PLAY,
-                        "s" | "stop" => "s / stop\nStop playback and clear the queue.",
-                        "n" | "next" => "n / next\nSkip to the next track in the queue.\nIf radio is on and queue is empty, fetches recommendations.",
-                        "o" | "prev" => "o / prev\nGo back to the previous track in the queue.",
-                        "replay" | "rp" => "replay / rp\nRestart the current track from the beginning.",
-                        "c" | "current" => "c / current\nShow the currently playing track with position, duration, and active modes.",
-                        "queue" => HELP_QUEUE,
-                        "mode" => HELP_MODE,
-                        "shuffle" => HELP_SHUFFLE,
-                        "v" | "volume" => HELP_VOLUME,
-                        "sf" | "sb" | "seek" => HELP_SEEK,
-                        "search" => HELP_SEARCH,
-                        "radio" if active == Service::Spotify => HELP_RADIO,
+                    let key = match topic.as_str() {
+                        "p" | "play" => Key::HelpPlay,
+                        "s" | "stop" => Key::HelpStop,
+                        "n" | "next" => Key::HelpNext,
+                        "o" | "prev" => Key::HelpPrev,
+                        "replay" | "rp" => Key::HelpReplay,
+                        "c" | "current" => Key::HelpCurrent,
+                        "queue" => Key::HelpQueue,
+                        "mode" => Key::HelpMode,
+                        "shuffle" => Key::HelpShuffle,
+                        "v" | "volume" => Key::HelpVolume,
+                        "sf" | "sb" | "seek" => Key::HelpSeek,
+                        "search" => Key::HelpSearch,
+                        "radio" if active == Service::Spotify => Key::HelpRadio,
                         "radio" => return true, // silent on non-Spotify
-                        "link" | "url" => "link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.",
-                        "stats" => "stats\nShow bot uptime, tracks played this session, queue length, and volume.",
-                        "jc" => "jc <path>\nJoin a TeamTalk channel by path.\nExample: jc /Music Room",
-                        "lang" => "lang [code]\nShow available languages, or set your own.\nYour choice is remembered by username.\nlang clear removes your choice (follow the server default).\nExample: lang de",
-                        "glang" => "glang <code>\nSet the server default language (admin).\nUsers who picked their own language with lang keep it.",
-                        "cn" => "cn <name>\nChange the bot's nickname.\nExample: cn DJ Bot",
-                        "gender" => "gender <male|female|neutral>\nSet the bot's gender (affects TT avatar).\nAliases: m, f, n, man, woman, nb",
-                        "sp" | "spotify" | "yt" | "youtube" => HELP_SERVICE,
-                        "rs" | "restart" => "rs / restart\nRestart the bot. Saves config before exit.",
-                        "q" | "quit" => "q / quit\nShut down the bot. Saves config before exit.",
-                        _ => "Unknown command. Type h for the command list.",
+                        "link" | "url" => Key::HelpLink,
+                        "stats" => Key::HelpStats,
+                        "jc" => Key::HelpJc,
+                        "lang" => Key::HelpLang,
+                        "glang" => Key::HelpGlang,
+                        "cn" => Key::HelpCn,
+                        "gender" => Key::HelpGender,
+                        "sp" | "spotify" | "yt" | "youtube" => Key::HelpService,
+                        "rs" | "restart" => Key::HelpRestart,
+                        "q" | "quit" => Key::HelpQuit,
+                        _ => Key::HelpUnknown,
                     };
-                    self.reply(client, sender_id, detail);
+                    let detail = self.i18n.tr(sender_id, key, &[]);
+                    self.reply(client, sender_id, &detail);
                 }
             }
 
@@ -833,150 +830,26 @@ impl CommandDispatcher {
     }
 }
 
-/// Build help text for the currently active service.
-/// Spotify-only sections (radio) are omitted on YouTube.
-fn help_text(active: Service, is_admin: bool) -> String {
-    let mut out = String::from(
-        "Playback:\n\
-         \x20 p <query>      Search and play a track, playlist, or album\n\
-         \x20 p               Toggle play/pause\n\
-         \x20 s               Stop playback and clear queue\n\
-         \x20 n               Next track\n\
-         \x20 o               Previous track\n\
-         \x20 replay          Restart current track\n\
-         \x20 c               Show current track info\n\
-         \n\
-         Queue:\n\
-         \x20 queue           Show the queue\n\
-         \x20 queue clear     Clear upcoming tracks\n\
-         \x20 queue rm <N>    Remove Nth upcoming track\n\
-         \n\
-         Modes:\n\
-         \x20 mode [r|rq|off]     Set repeat mode\n\
-         \x20 shuffle [on|off]    Shuffle the upcoming tracks\n",
-    );
+/// Build help text for the currently active service, in the caller's language.
+/// Spotify-only sections (radio, liked) are omitted on YouTube.
+fn help_text(i18n: &I18n, user_id: i32, active: Service, is_admin: bool) -> String {
+    let mut out = i18n.tr(user_id, Key::HelpOverviewPlayback, &[]);
     if active == Service::Spotify {
-        out.push_str("  radio [on|off]      Toggle radio (auto-recommendations)\n");
-        out.push_str("  liked               Play your Liked Songs (also: fav)\n");
+        out.push('\n');
+        out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
     }
-    out.push_str(
-        "\n\
-         Audio:\n\
-         \x20 v [0-100]       Get or set volume\n\
-         \x20 sf/sb [N]       Seek forward/backward N seconds\n\
-         \n\
-         Search:\n\
-         \x20 search <query>  Search and pick from results\n\
-         \x20 <number>        Pick a search result\n\
-         \x20 a / cancel      Cancel search\n\
-         \n\
-         Service:\n\
-         \x20 /sp             Switch to Spotify\n\
-         \x20 /yt             Switch to YouTube\n\
-         \n\
-         Bot:\n\
-         \x20 link         Get URL for current track\n\
-         \x20 stats        Show bot uptime and session stats\n\
-         \x20 lang         Show or set your language\n\
-         \x20 cn <name>    Change nickname\n\
-         \x20 gender       Set bot gender\n\
-         \x20 info         Bot info\n",
-    );
+    out.push('\n');
+    out.push_str(&i18n.tr(user_id, Key::HelpOverviewRest, &[]));
     if is_admin {
-        out.push_str(
-            "\x20 jc <path>    Join channel\n\
-             \x20 glang        Set the server default language\n\
-             \x20 rs           Restart\n\
-             \x20 q            Quit\n",
-        );
+        out.push('\n');
+        out.push_str(&i18n.tr(user_id, Key::HelpOverviewAdmin, &[]));
     }
-    out.push_str(
-        "\n\
-         Active service: ",
-    );
-    out.push_str(active.name());
-    out.push_str("\nType h <command> for detailed help (e.g. h queue)");
+    out.push('\n');
+    out.push_str(&i18n.tr(user_id, Key::HelpOverviewFooter, &[
+        ("service", active.name().to_string()),
+    ]));
     out
 }
-
-const HELP_SERVICE: &str = "\
-/sp / /yt
-  /sp     Switch active service to Spotify.
-  /yt     Switch active service to YouTube.
-Commands like p, search, n, o target the active service.
-Switching does not interrupt playback. Use s to stop.";
-
-const HELP_PLAY: &str = "\
-p / play
-  p <query>   Search Spotify and play the first result.
-              If already playing, queues the track instead.
-              Accepts track names, Spotify URLs, playlist URLs, album URLs.
-  p           Toggle play/pause when no query given.
-              If paused: resumes. If playing: pauses.
-Examples:
-  p photograph
-  p spotify:track:6rqhFgbbKwnb9MLmUQDhG6
-  p https://open.spotify.com/playlist/...";
-
-const HELP_QUEUE: &str = "\
-queue
-  queue          Show all tracks in the queue with positions.
-  queue clear    Remove all upcoming tracks (keeps current).
-  queue rm <N>   Remove the Nth upcoming track.
-                 N=1 is the next track after the current one.
-Examples:
-  queue rm 1     Remove the next upcoming track
-  queue rm 3     Remove the 3rd upcoming track
-  queue clear    Clear everything after current track";
-
-const HELP_MODE: &str = "\
-mode [r|rq|off]
-  mode r     Repeat current track
-  mode rq    Repeat entire queue (loop)
-  mode off   Turn repeat off
-  mode       Show what is active
-Shuffle is separate: see 'h shuffle'.";
-
-const HELP_SHUFFLE: &str = "\
-shuffle [on|off]
-  shuffle       Turn shuffle on or off
-  shuffle on    Force it on
-  shuffle off   Force it off
-Shuffles the upcoming tracks, leaving anything you queued by name in the
-order you asked for. Works together with repeat.";
-
-const HELP_VOLUME: &str = "\
-v / volume [0-100]
-  v          Show current volume
-  v 50       Set volume to 50%
-  v50        Set volume to 50% (no space)
-  volume 30  Set volume to 30%
-Volume is capped by the configured max volume.";
-
-const HELP_SEEK: &str = "\
-sf / sb [seconds]
-  sf         Seek forward 10 seconds (default)
-  sb         Seek backward 10 seconds (default)
-  sf30       Seek forward 30 seconds
-  sb 5       Seek backward 5 seconds";
-
-const HELP_SEARCH: &str = "\
-search <query>
-  Search Spotify and show results. Then:
-  <number>   Pick a result to play/queue
-  a / cancel Dismiss search results
-Example:
-  search photograph
-  2          Play the 2nd result";
-
-const HELP_RADIO: &str = "\
-radio [on|off]
-  radio on   Enable radio mode. When a single track finishes
-             and the queue is empty, automatically fetches
-             Spotify recommendations based on the last track.
-             Does not trigger for playlists or albums.
-  radio off  Disable radio mode.
-  radio      Show current radio status.";
 
 #[cfg(test)]
 mod tests {
@@ -989,10 +862,68 @@ mod tests {
 
     // -- help_text admin gating --
 
+    /// An i18n runtime over the embedded catalogs, in a scratch config dir.
+    fn test_i18n(lang: &str) -> I18n {
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_help_{}_{lang}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        I18n::load(&dir, lang)
+    }
+
+    #[rstest]
+    #[case("en")]
+    #[case("es")]
+    #[case("pt")]
+    #[case("ru")]
+    fn every_language_has_its_own_help(#[case] lang: &str) {
+        // A missing key falls back to English, so identical output means the
+        // translation is absent rather than merely similar.
+        let i18n = test_i18n(lang);
+        let english = help_text(&test_i18n("en"), 0, Service::Spotify, true);
+        let translated = help_text(&i18n, 0, Service::Spotify, true);
+        assert!(!translated.is_empty());
+        if lang == "en" {
+            assert_eq!(translated, english);
+        } else {
+            assert_ne!(translated, english, "{lang} help is falling back to English");
+        }
+        // Command names stay in English in every language: they are typed.
+        assert!(translated.contains("queue rm"), "{lang}: command names must survive translation");
+        assert!(translated.contains("shuffle"), "{lang}: shuffle must be listed");
+    }
+
+    #[rstest]
+    #[case("en")]
+    #[case("es")]
+    #[case("pt")]
+    #[case("ru")]
+    fn every_language_has_per_topic_help(#[case] lang: &str) {
+        let i18n = test_i18n(lang);
+        let english = test_i18n("en");
+        for key in [Key::HelpQueue, Key::HelpMode, Key::HelpShuffle, Key::HelpPrev, Key::HelpRadio] {
+            let text = i18n.tr(0, key, &[]);
+            assert!(!text.is_empty(), "{lang}: {key:?} is empty");
+            // The catalogs store one line per entry with \n escapes; if those
+            // survive to the user the help arrives as one unreadable line.
+            assert!(text.contains('\n'), "{lang}: {key:?} has no line breaks: {text}");
+            assert!(!text.contains("\\n"), "{lang}: {key:?} has unescaped \\n: {text}");
+            if lang != "en" {
+                assert_ne!(
+                    text,
+                    english.tr(0, key, &[]),
+                    "{lang}: {key:?} is falling back to English"
+                );
+            }
+        }
+    }
+
     #[test]
     fn help_hides_admin_commands_from_non_admins() {
+        let i18n = test_i18n("en");
         // Admins see the gated jc/rs/q lines.
-        let admin = help_text(Service::Spotify, true);
+        let admin = help_text(&i18n, 0, Service::Spotify, true);
         assert!(admin.contains("jc <path>"), "admin help should list jc");
         assert!(admin.contains("Join channel"), "admin help should list jc");
         assert!(admin.contains("Restart\n"), "admin help should list rs/Restart");
@@ -1000,7 +931,7 @@ mod tests {
         assert!(admin.contains("glang"), "admin help should list glang");
 
         // Non-admins must not even see that those commands exist.
-        let plain = help_text(Service::Spotify, false);
+        let plain = help_text(&i18n, 0, Service::Spotify, false);
         assert!(!plain.contains("jc <path>"), "non-admin help must hide jc");
         assert!(!plain.contains("Join channel"), "non-admin help must hide jc");
         assert!(!plain.contains("Restart\n"), "non-admin help must hide rs");

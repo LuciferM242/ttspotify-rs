@@ -105,3 +105,73 @@ end_of_queue = Fim da fila
 invalid_pick = Escolha inválida ou sem resultados de busca
 channel_not_found = Canal não encontrado: {path}
 failed_to_start = Falha ao iniciar a faixa: {track}
+
+# Help text
+#
+# One entry per help topic. Long lines: \n marks a line break in the
+# message the user sees. Command names and their arguments stay in English,
+# because they are what the user has to type.
+
+# The main help listing: playback, queue and mode sections.
+help_overview_playback = Reproducao:\n  p <consulta>   Buscar e tocar uma faixa, playlist ou album\n  p               Alternar tocar/pausar\n  s               Parar e limpar a fila\n  n               Proxima faixa\n  o               Faixa anterior\n  replay          Reiniciar a faixa atual\n  c               Informacoes da faixa atual\n\nFila:\n  queue           Mostrar a fila\n  queue clear     Remover as faixas seguintes\n  queue rm <N>    Remover a N-esima faixa seguinte\n\nModos:\n  mode [r|rq|off]     Modo de repeticao\n  shuffle [on|off]    Embaralhar as faixas seguintes
+
+# Extra help lines shown only when Spotify is the active service.
+help_overview_spotify =   radio [on|off]      Ativar radio (recomendacoes automaticas)\n  liked               Tocar suas musicas curtidas (tambem: fav)
+
+# The rest of the main help listing: audio, search, service, bot.
+help_overview_rest = \nAudio:\n  v [0-100]       Ver ou ajustar o volume\n  sf/sb [N]       Avancar/voltar N segundos\n\nBusca:\n  search <consulta>  Buscar e escolher nos resultados\n  <numero>        Escolher um resultado\n  a / cancel      Cancelar a busca\n\nServico:\n  /sp             Mudar para o Spotify\n  /yt             Mudar para o YouTube\n\nBot:\n  link         URL da faixa atual\n  stats        Tempo ativo e estatisticas da sessao\n  lang         Ver ou escolher seu idioma\n  cn <nome>    Mudar o apelido\n  gender       Genero do bot\n  info         Informacoes do bot
+
+# Help lines shown only to admins.
+help_overview_admin =   jc <caminho> Entrar em um canal\n  glang        Idioma padrao do servidor\n  rs           Reiniciar\n  q            Sair
+
+# End of the main help listing. {service} = the active service name.
+help_overview_footer = \nServico ativo: {service}\nDigite h <comando> para ajuda detalhada (por exemplo h queue)
+
+# Shown for an unrecognised command or help topic.
+help_unknown = Comando desconhecido. Digite h para ver a lista de comandos.
+
+help_play = p / play\n  p <consulta>  Buscar e tocar o primeiro resultado.\n                Se ja estiver tocando, a faixa vai para a fila.\n                Aceita nomes, links de faixas, playlists e albuns.\n  p             Sem consulta, alterna tocar/pausar.\n                Pausado: retoma. Tocando: pausa.\nExemplos:\n  p photograph\n  p spotify:track:6rqhFgbbKwnb9MLmUQDhG6
+
+help_stop = s / stop\nParar a reproducao e limpar a fila.
+
+help_next = n / next\nPular para a proxima faixa.\nSe o radio estiver ligado e nao sobrar nada, busca recomendacoes.
+
+help_prev = o / prev\nVoltar para a faixa anterior.\nApos 3 segundos de faixa, ela reinicia; use de novo para voltar mesmo. Use replay para sempre reiniciar.
+
+help_replay = replay / rp\nReiniciar a faixa atual desde o comeco.
+
+help_current = c / current\nMostrar a faixa atual com posicao, duracao e modos ativos.
+
+help_queue = queue\n  queue          Mostrar a faixa atual e o que vem a seguir.\n  queue clear    Remover todas as faixas seguintes (mantem a atual).\n  queue rm <N>   Remover a N-esima faixa seguinte.\n                 N=1 e a faixa logo apos a atual.\nFaixas ja tocadas nao aparecem.\nExemplos:\n  queue rm 1     Remover a proxima faixa\n  queue rm 3     Remover a terceira faixa seguinte\n  queue clear    Limpar tudo depois da faixa atual
+
+help_mode = mode [r|rq|off]\n  mode r     Repetir a faixa atual\n  mode rq    Repetir a fila inteira (loop)\n  mode off   Desligar a repeticao\n  mode       Mostrar o que esta ativo\nO embaralhamento e separado: veja 'h shuffle'.
+
+help_shuffle = shuffle [on|off]\n  shuffle       Ligar ou desligar o embaralhamento\n  shuffle on    Forcar ligado\n  shuffle off   Forcar desligado\nEmbaralha as faixas seguintes e mantem na ordem as que voce pediu pelo nome. Funciona junto com a repeticao.
+
+help_volume = v / volume [0-100]\n  v          Ver o volume atual\n  v 50       Ajustar o volume para 50%\n  v50        Ajustar para 50% (sem espaco)\n  volume 30  Ajustar para 30%\nO volume e limitado pelo maximo configurado.
+
+help_seek = sf / sb [segundos]\n  sf         Avancar 10 segundos (padrao)\n  sb         Voltar 10 segundos (padrao)\n  sf30       Avancar 30 segundos\n  sb 5       Voltar 5 segundos
+
+help_search = search <consulta>\n  Buscar e mostrar resultados. Depois:\n  <numero>   Escolher um resultado para tocar ou enfileirar\n  a / cancel Descartar os resultados\nExemplo:\n  search photograph\n  2          Tocar o segundo resultado
+
+help_radio = radio [on|off]\n  radio on   Ligar o radio. Quando uma faixa avulsa termina\n             e nao sobra nada, busca recomendacoes\n             com base na ultima faixa.\n             Nao vale para playlists ou albuns.\n  radio off  Desligar o radio.\n  radio      Ver o estado do radio.
+
+help_link = link / url\nObter o link da faixa atual.\nAbra no aplicativo do servico ou compartilhe.
+
+help_stats = stats\nTempo ativo do bot, faixas tocadas na sessao, tamanho da fila e volume.
+
+help_jc = jc <caminho>\nEntrar em um canal do TeamTalk pelo caminho.\nExemplo: jc /Music Room
+
+help_lang = lang [codigo]\nVer os idiomas disponiveis ou escolher o seu.\nSua escolha e lembrada pelo nome de usuario.\nlang clear apaga sua escolha (segue o padrao do servidor).\nExemplo: lang de
+
+help_glang = glang <codigo>\nDefinir o idioma padrao do servidor (admin).\nQuem escolheu o proprio idioma com lang continua com ele.
+
+help_cn = cn <nome>\nMudar o apelido do bot.\nExemplo: cn DJ Bot
+
+help_gender = gender <male|female|neutral>\nDefinir o genero do bot (afeta o avatar do TT).\nApelidos: m, f, n, man, woman, nb
+
+help_service = /sp / /yt\n  /sp     Mudar o servico ativo para Spotify.\n  /yt     Mudar o servico ativo para YouTube.\nComandos como p, search, n e o usam o servico ativo.\nMudar de servico nao interrompe a reproducao. Use s para parar.
+
+help_restart = rs / restart\nReiniciar o bot. Salva a configuracao antes de sair.
+
+help_quit = q / quit\nDesligar o bot. Salva a configuracao antes de sair.
