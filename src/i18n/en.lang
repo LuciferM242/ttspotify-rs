@@ -97,6 +97,15 @@ mode_shuffle = Shuffle enabled
 # Shown when all playback modes turn off.
 mode_off = All modes disabled
 
+# Shown when shuffle is turned off.
+shuffle_off = Shuffle disabled
+
+# Shown when the shuffle command is given something other than on/off.
+shuffle_usage = Usage: shuffle [on|off]
+
+# Shown when the previous-track command has no earlier track to return to.
+nothing_behind = Nothing to go back to.
+
 # Shown when the mode command is used without a valid option. {modes} = the current mode status.
 mode_usage = {modes}\nUsage: mode [r|rq|s|off]
 

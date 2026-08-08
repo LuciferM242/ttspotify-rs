@@ -1687,7 +1687,7 @@ async fn command_processor(
                             }
                         }
                     }
-                    PrevAction::NothingBehind => reply_t(user_id, Key::EndOfQueue, &[]),
+                    PrevAction::NothingBehind => reply_t(user_id, Key::NothingBehind, &[]),
                 }
             }
 
@@ -1727,15 +1727,27 @@ async fn command_processor(
             BotCommand::SetMode { mode, user_id: _ } => {
                 let mut s = state.lock();
                 use crate::bot::state::RepeatMode;
-                // The modes are alternatives: picking one clears the others.
-                let (repeat, shuffle) = match mode {
-                    PlaybackMode::RepeatTrack => (RepeatMode::Track, false),
-                    PlaybackMode::RepeatQueue => (RepeatMode::Queue, false),
-                    PlaybackMode::Shuffle => (RepeatMode::Off, true),
-                    PlaybackMode::Off => (RepeatMode::Off, false),
+                // Repeat only: shuffle is its own toggle and is left alone.
+                s.repeat = match mode {
+                    PlaybackMode::RepeatTrack => RepeatMode::Track,
+                    PlaybackMode::RepeatQueue => RepeatMode::Queue,
+                    PlaybackMode::Off => RepeatMode::Off,
                 };
-                s.repeat = repeat;
-                s.shuffle = shuffle;
+            }
+
+            BotCommand::SetShuffle { enable, user_id: _ } => {
+                {
+                    let mut s = state.lock();
+                    s.shuffle = enable;
+                    if enable {
+                        // Reorder what is already queued, rather than only
+                        // affecting tracks added from here on.
+                        s.shuffle_now();
+                    }
+                }
+                config_store.update(|cfg| {
+                    cfg.shuffle = enable;
+                });
             }
 
             BotCommand::RadioToggle { enable, user_id: _ } => {

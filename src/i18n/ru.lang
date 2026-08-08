@@ -44,6 +44,15 @@ mode_repeat_track = Повтор трека включён
 mode_repeat_queue = Повтор очереди включён
 mode_shuffle = Перемешивание включено
 mode_off = Все режимы выключены
+
+# Shown when shuffle is turned off.
+shuffle_off = Перемешивание выключено
+
+# Shown when the shuffle command is given something other than on/off.
+shuffle_usage = Использование: shuffle [on|off]
+
+# Shown when the previous-track command has no earlier track to return to.
+nothing_behind = Возвращаться не к чему.
 mode_usage = {modes}\nИспользование: mode [r|rq|s|off]
 
 # Поиск и выбор

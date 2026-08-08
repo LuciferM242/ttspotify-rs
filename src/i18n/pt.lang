@@ -44,6 +44,15 @@ mode_repeat_track = Repetir faixa ativado
 mode_repeat_queue = Repetir fila ativado
 mode_shuffle = Modo aleatório ativado
 mode_off = Todos os modos desativados
+
+# Shown when shuffle is turned off.
+shuffle_off = Reproducao aleatoria desativada
+
+# Shown when the shuffle command is given something other than on/off.
+shuffle_usage = Uso: shuffle [on|off]
+
+# Shown when the previous-track command has no earlier track to return to.
+nothing_behind = Nao ha nada anterior.
 mode_usage = {modes}\nUso: mode [r|rq|s|off]
 
 # Busca e escolha

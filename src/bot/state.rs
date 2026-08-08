@@ -239,6 +239,11 @@ impl PlayerState {
             requester: requester.clone(),
             allow_recommend,
         }));
+        // With shuffle on, a playlist added now must land shuffled too —
+        // otherwise it plays in order and shuffle looks broken.
+        if self.shuffle {
+            self.queue.shuffle_source();
+        }
     }
 
     /// Whether either repeat mode is on. Repeat means "keep playing what is
@@ -681,6 +686,39 @@ mod tests {
             format!("{repeat:?}-shuffle-{shuffle}"),
             state.mode_display()
         );
+    }
+
+    // -- shuffle --
+
+    #[test]
+    fn a_playlist_added_while_shuffle_is_on_lands_shuffled() {
+        // Otherwise shuffle only affects what was queued before it was turned
+        // on, and the next playlist plays straight through.
+        let mut ordered = true;
+        for _ in 0..20 {
+            let mut state = PlayerState::new();
+            state.shuffle = true;
+            fill(&mut state, 8);
+            let ids: Vec<String> = state.upcoming().map(|e| e.track.id().to_string()).collect();
+            let in_order: Vec<String> = (1..8).map(|i| i.to_string()).collect();
+            if ids != in_order {
+                ordered = false;
+                break;
+            }
+        }
+        assert!(!ordered, "20 additions in a row all kept their original order");
+    }
+
+    #[test]
+    fn shuffle_keeps_every_queued_track() {
+        let mut state = PlayerState::new();
+        state.shuffle = true;
+        fill(&mut state, 8);
+        let mut ids: Vec<String> = state.upcoming().map(|e| e.track.id().to_string()).collect();
+        ids.push(state.current().unwrap().track.id().to_string());
+        ids.sort();
+        let expected: Vec<String> = (0..8).map(|i| i.to_string()).collect();
+        assert_eq!(ids, expected, "shuffling must not lose or duplicate tracks");
     }
 
     // -- modes --

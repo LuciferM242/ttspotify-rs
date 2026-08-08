@@ -25,6 +25,7 @@ pub enum BotCommand {
     Seek { offset_ms: i32, user_id: i32 },
     SetVolume { percent: u8, user_id: i32 },
     SetMode { mode: PlaybackMode, user_id: i32 },
+    SetShuffle { enable: bool, user_id: i32 },
     RadioToggle { enable: bool, user_id: i32 },
     QueueClear { user_id: i32 },
     QueueRemove { index: usize, user_id: i32 },
@@ -53,11 +54,12 @@ pub enum BotCommand {
     TrackEnded { generation: u64, error: Option<String> },
 }
 
+/// What happens when a track ends. Shuffle is a separate toggle, the way it is
+/// in Spotify, so it can be combined with either repeat mode.
 #[derive(Debug)]
 pub enum PlaybackMode {
     RepeatTrack,
     RepeatQueue,
-    Shuffle,
     Off,
 }
 
@@ -203,6 +205,17 @@ fn parse_seek(cmd: &str, args: &str) -> Option<SeekParse> {
         }
     };
     Some(SeekParse::Seconds(direction * secs))
+}
+
+/// Parse the argument to `shuffle`. No argument toggles, so the answer depends
+/// on `currently_on`. `None` means the argument was not understood.
+fn parse_shuffle(args: &str, currently_on: bool) -> Option<bool> {
+    match args.trim().to_lowercase().as_str() {
+        "" => Some(!currently_on),
+        "on" | "1" | "yes" | "true" => Some(true),
+        "off" | "0" | "no" | "false" => Some(false),
+        _ => None,
+    }
 }
 
 /// Sanitize an error for display to a user: collapse to a single line and cap
@@ -497,10 +510,6 @@ impl CommandDispatcher {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatQueue, user_id: sender_id });
                         self.reply_t(client, sender_id, Key::ModeRepeatQueue, &[]);
                     }
-                    "s" | "shuffle" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::Shuffle, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeShuffle, &[]);
-                    }
                     "off" | "o" | "none" => {
                         self.send(BotCommand::SetMode { mode: PlaybackMode::Off, user_id: sender_id });
                         self.reply_t(client, sender_id, Key::ModeOff, &[]);
@@ -512,6 +521,19 @@ impl CommandDispatcher {
                         self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
                     }
                 }
+            }
+
+            "shuffle" => {
+                // A toggle of its own rather than a mode, so it can be combined
+                // with repeat.
+                let currently_on = self.state.lock().shuffle;
+                let Some(enable) = parse_shuffle(args, currently_on) else {
+                    self.reply_t(client, sender_id, Key::ShuffleUsage, &[]);
+                    return true;
+                };
+                self.send(BotCommand::SetShuffle { enable, user_id: sender_id });
+                let key = if enable { Key::ShuffleOn } else { Key::ShuffleOff };
+                self.reply_t(client, sender_id, key, &[]);
             }
 
             // (volume and seek are handled before this match via parse_volume /
@@ -782,6 +804,7 @@ impl CommandDispatcher {
                         "c" | "current" => "c / current\nShow the currently playing track with position, duration, and active modes.",
                         "queue" => HELP_QUEUE,
                         "mode" => HELP_MODE,
+                        "shuffle" => HELP_SHUFFLE,
                         "v" | "volume" => HELP_VOLUME,
                         "sf" | "sb" | "seek" => HELP_SEEK,
                         "search" => HELP_SEARCH,
@@ -829,7 +852,8 @@ fn help_text(active: Service, is_admin: bool) -> String {
          \x20 queue rm <N>    Remove Nth upcoming track\n\
          \n\
          Modes:\n\
-         \x20 mode [r|rq|s|off]   Set repeat/shuffle mode\n",
+         \x20 mode [r|rq|off]     Set repeat mode\n\
+         \x20 shuffle [on|off]    Shuffle the upcoming tracks\n",
     );
     if active == Service::Spotify {
         out.push_str("  radio [on|off]      Toggle radio (auto-recommendations)\n");
@@ -906,12 +930,20 @@ Examples:
   queue clear    Clear everything after current track";
 
 const HELP_MODE: &str = "\
-mode [r|rq|s|off]
+mode [r|rq|off]
   mode r     Repeat current track
   mode rq    Repeat entire queue (loop)
-  mode s     Shuffle (random order from upcoming tracks)
-  mode off   Disable all modes
-  mode       Show current mode";
+  mode off   Turn repeat off
+  mode       Show what is active
+Shuffle is separate: see 'h shuffle'.";
+
+const HELP_SHUFFLE: &str = "\
+shuffle [on|off]
+  shuffle       Turn shuffle on or off
+  shuffle on    Force it on
+  shuffle off   Force it off
+Shuffles the upcoming tracks, leaving anything you queued by name in the
+order you asked for. Works together with repeat.";
 
 const HELP_VOLUME: &str = "\
 v / volume [0-100]
@@ -949,6 +981,7 @@ radio [on|off]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn cmd(name: &str, args: &str) -> Input {
         Input::Command { name: name.to_string(), args: args.to_string() }
@@ -1051,6 +1084,31 @@ mod tests {
         assert_eq!(parse_seek("sblah", ""), None);
         assert_eq!(parse_seek("sfx", ""), None);
         assert_eq!(parse_seek("stop", ""), None);
+    }
+
+    // -- parse_shuffle --
+
+    #[rstest]
+    // No argument flips whatever it currently is.
+    #[case("", false, Some(true))]
+    #[case("", true, Some(false))]
+    #[case("  ", true, Some(false))]
+    // Explicit forms ignore the current setting.
+    #[case("on", true, Some(true))]
+    #[case("ON", false, Some(true))]
+    #[case("off", false, Some(false))]
+    #[case(" Off ", true, Some(false))]
+    #[case("yes", false, Some(true))]
+    #[case("no", true, Some(false))]
+    // Anything else is a usage error rather than a silent toggle.
+    #[case("maybe", false, None)]
+    #[case("onn", false, None)]
+    fn parse_shuffle_forms(
+        #[case] args: &str,
+        #[case] currently_on: bool,
+        #[case] expected: Option<bool>,
+    ) {
+        assert_eq!(parse_shuffle(args, currently_on), expected);
     }
 
     #[test]

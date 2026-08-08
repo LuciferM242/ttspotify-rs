@@ -1,7 +1,23 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- "shuffle" is now its own command: "shuffle" turns it on or off, "shuffle on"
+  and "shuffle off" force it either way. It can be combined with repeat, the
+  way it works in a normal music player.
+- Tracks you ask for by name now play before the rest of a playlist or radio,
+  instead of going to the back of the queue - Spotify's "next in queue" ahead
+  of "next from".
+
 ### Changed
+- Shuffle now plays every queued track exactly once, in a random order.
+  Previously it jumped to a random track and the ones it jumped over never
+  played at all.
+- "mode s" is gone; use "shuffle". "mode" now sets repeat only
+  (mode r, mode rq, mode off) and no longer switches shuffle off.
+- "o" (previous) restarts the current track if you are more than three seconds
+  into it, and only steps back a track if you press it early - the way the
+  Previous button behaves in Spotify. "replay" still always restarts.
 - Searching for something that was searched in the last few minutes now
   answers instantly instead of going back out to Spotify or YouTube.
 - The queue now shows the current track and what is coming, instead of every

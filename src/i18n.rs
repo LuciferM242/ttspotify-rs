@@ -90,9 +90,12 @@ keys! {
     // Modes
     ModeRepeatTrack => "mode_repeat_track",
     ModeRepeatQueue => "mode_repeat_queue",
-    ModeShuffle => "mode_shuffle",
+    ShuffleOn => "mode_shuffle",
+    ShuffleOff => "shuffle_off",
     ModeOff => "mode_off",
     ModeUsage => "mode_usage",
+    ShuffleUsage => "shuffle_usage",
+    NothingBehind => "nothing_behind",
     // Search and pick
     SearchUsage => "search_usage",
     SearchResultsHeader => "search_results_header",
