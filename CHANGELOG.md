@@ -1,6 +1,19 @@
 # Changelog
 
 ## [Unreleased]
+### Changed
+- The data folder is now organised into subfolders instead of one flat pile:
+  config/ for your configs and cookies.txt, lang/ for translations, state/ for
+  things the bot remembers, auth/ for saved logins, cache/ for anything it can
+  fetch again, and logs/. Your existing files are moved there automatically the
+  first time you start this version; nothing is deleted or overwritten. A short
+  README.txt in the folder explains what each one is - the short version is
+  that deleting cache/ is always safe, and auth/ should never be shared.
+- Linux: because configs moved into config/, an already-installed service file
+  still points at the old location. The bot follows the move on its own so
+  nothing stops working, and logs a reminder; re-run --install-service (or say
+  yes when an update offers to refresh the service file) to update it properly.
+
 ### Added
 - "shuffle" is now its own command: "shuffle" turns it on or off, "shuffle on"
   and "shuffle off" force it either way. It can be combined with repeat, the

@@ -55,7 +55,7 @@ impl YouTubeMetadata {
         // litters the repo root.
         let client = RustyPipe::builder()
             .no_botguard()
-            .storage_dir(crate::config::config_dir())
+            .storage_dir(crate::paths::cache_dir())
             .build()
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
         // Resolve bundled paths but don't require them — falling back to PATH

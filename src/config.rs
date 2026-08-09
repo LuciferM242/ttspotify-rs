@@ -62,6 +62,12 @@ pub fn config_dir() -> PathBuf {
 /// Read and validate a candidate config file. Returns the parsed config only if
 /// it deserializes AND has the essential fields (`host`, `username`) filled — so
 /// empty files, junk, and bare `{}` placeholders are rejected.
+/// Whether `path` holds a usable bot config. Used by the layout migration to
+/// tell a real config from a stray JSON file it must not touch.
+pub fn is_bot_config(path: &Path) -> bool {
+    load_valid_config(path).is_some()
+}
+
 fn load_valid_config(path: &Path) -> Option<BotConfig> {
     let text = std::fs::read_to_string(path).ok()?;
     let cfg: BotConfig = serde_json::from_str(&text).ok()?;
@@ -77,9 +83,37 @@ fn load_valid_config(path: &Path) -> Option<BotConfig> {
 /// with logins.
 pub const EXIT_CONFIG_ERROR: i32 = 78;
 
-/// List config files in the config directory, skipping non-bot files.
+/// List config files, skipping non-bot files.
 pub fn list_configs() -> Vec<(String, PathBuf)> {
-    list_configs_in(&config_dir())
+    list_configs_in(&crate::paths::configs_dir())
+}
+
+/// Resolve a `--config` path that may have been written before configs moved
+/// into `config/`.
+///
+/// An installed systemd unit bakes the config path into its ExecStart line, and
+/// we cannot rewrite a unit on the user's behalf. Rather than let every existing
+/// service die on the release that moves the file, accept the old path and look
+/// for the same name in the new home.
+pub fn resolve_config_path(given: &str) -> PathBuf {
+    let path = PathBuf::from(given);
+    if path.exists() {
+        return path;
+    }
+    let Some(name) = path.file_name() else {
+        return path;
+    };
+    let moved = crate::paths::configs_dir().join(name);
+    if moved.exists() {
+        tracing::warn!(
+            "Config not at {}; using {} instead. Your service file still points at the \
+             old location - re-run --install-service to update it.",
+            path.display(),
+            moved.display()
+        );
+        return moved;
+    }
+    path
 }
 
 /// Scan `dir` for bot config files. Skips the name skip-list (auth/session
@@ -150,7 +184,7 @@ fn top_up_configs_in(dir: &Path) -> usize {
 /// Top up every config in the default config dir with any newly-added keys.
 /// Best-effort; per-file errors are logged and skipped, never propagated.
 pub fn top_up_configs() {
-    let _ = top_up_configs_in(&config_dir());
+    let _ = top_up_configs_in(&crate::paths::configs_dir());
 }
 
 /// How the bot decides who may run admin-gated commands.

@@ -337,7 +337,7 @@ pub fn open_config_dialog(
                 return;
             }
 
-            let path = config_dir().join(format!("{name}.json"));
+            let path = crate::paths::configs_dir().join(format!("{name}.json"));
 
             // Check overwrite
             if path.exists() {

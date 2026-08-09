@@ -341,7 +341,7 @@ pub fn installed_language_codes(config_dir: &Path) -> Vec<String> {
     for (code, _) in EMBEDDED_LANGS {
         codes.push((*code).to_string());
     }
-    if let Ok(entries) = std::fs::read_dir(config_dir.join("lang")) {
+    if let Ok(entries) = std::fs::read_dir(crate::paths::lang_dir_in(config_dir)) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("lang") {
@@ -414,6 +414,10 @@ impl LangPrefs {
                 return;
             }
         };
+        // The folder may not exist yet on a fresh install.
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let tmp = self.path.with_extension("json.tmp");
         if let Err(e) =
             std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &self.path))
@@ -505,7 +509,7 @@ impl I18n {
         for (code, text) in EMBEDDED_LANGS {
             catalog.add_language(code, parse_lang(text));
         }
-        let lang_dir = config_dir.join("lang");
+        let lang_dir = crate::paths::lang_dir_in(config_dir);
         export_english_template(&lang_dir);
         if let Ok(entries) = std::fs::read_dir(&lang_dir) {
             for entry in entries.flatten() {
@@ -553,7 +557,9 @@ impl I18n {
         }
         I18n {
             catalog,
-            prefs: Mutex::new(LangPrefs::load(config_dir.join("lang_prefs.json"))),
+            prefs: Mutex::new(LangPrefs::load(
+                crate::paths::state_dir_in(config_dir).join("lang_prefs.json"),
+            )),
             default_lang: Mutex::new(default_lang),
             session: Mutex::new(HashMap::new()),
         }

@@ -6,6 +6,7 @@ pub mod error;
 pub mod gui;
 pub mod i18n;
 pub mod logging;
+pub mod paths;
 pub mod player;
 #[cfg(target_os = "linux")]
 pub mod service;

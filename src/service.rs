@@ -23,7 +23,7 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 2;
+const UNIT_FILE_VERSION: u32 = 3;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -181,7 +181,8 @@ pub fn install_service() -> Result<(), BotError> {
 fn write_unit_file() -> Result<PathBuf, BotError> {
     let exe_path = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("Cannot determine executable path: {e}")))?;
-    let config_base = config_dir();
+    let config_base = crate::paths::configs_dir();
+    let data_root = config_dir();
 
     let systemd = systemd_dir();
     std::fs::create_dir_all(&systemd)?;
@@ -200,7 +201,7 @@ fn write_unit_file() -> Result<PathBuf, BotError> {
     );
 
     let tools_dir = crate::youtube::setup::resolve_paths().ok().map(|p| p.lib_dir);
-    let unit = unit_file_contents(&exec_start, &config_base, tools_dir.as_deref());
+    let unit = unit_file_contents(&exec_start, &data_root, tools_dir.as_deref());
 
     std::fs::write(&service_path, unit)?;
 

@@ -160,17 +160,28 @@ async fn main() -> Result<(), BotError> {
         }
     }
 
+    // Sort a legacy flat data folder into config/state/cache/auth before
+    // anything reads from it. Logging is not up yet, so the report is logged
+    // below once it is.
+    let layout_migration = tt_spotify_bot::paths::migrate_data_layout();
+
     let config_path = args.config.unwrap_or_else(|| {
         let configs = tt_spotify_bot::config::list_configs();
         if let Some((_, path)) = configs.first() {
             path.to_string_lossy().into_owned()
         } else {
-            tt_spotify_bot::config::config_dir().join("config.json")
+            tt_spotify_bot::paths::configs_dir().join("config.json")
                 .to_string_lossy().into_owned()
         }
     });
 
+    // An old systemd unit may still name the pre-move location.
+    let config_path = tt_spotify_bot::config::resolve_config_path(&config_path)
+        .to_string_lossy()
+        .into_owned();
+
     let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
+    tt_spotify_bot::paths::log_migration(&layout_migration);
 
     // Carries the current channel across restarts (in memory); the config
     // default is used on a fresh process start.
@@ -284,7 +295,7 @@ fn main() {
             .filter(|s| !s.starts_with('-'));
 
         let (config, path) = if let Some(name) = name_arg {
-            let p = tt_spotify_bot::config::config_dir().join(format!("{name}.json"));
+            let p = tt_spotify_bot::paths::configs_dir().join(format!("{name}.json"));
             if p.exists() {
                 let cfg = tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or(""))
                     .unwrap_or_default();

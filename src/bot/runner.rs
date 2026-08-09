@@ -689,7 +689,9 @@ pub async fn run_bot(
 /// report's log self-identifies exactly what was running.
 fn log_startup_versions() {
     let app = env!("CARGO_PKG_VERSION");
-    let sdk = std::fs::read_to_string("TEAMTALK_DLL/TEAMTALK_SDK_VERSION.txt")
+    let sdk = std::fs::read_to_string(
+        crate::tt::sdk::pinned_sdk_dir().join("TEAMTALK_SDK_VERSION.txt"),
+    )
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

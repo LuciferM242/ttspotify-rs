@@ -10,7 +10,7 @@ use std::rc::Rc;
 use wxdragon::prelude::*;
 use wxdragon::timer::Timer;
 
-use crate::config::{config_dir, BotConfig};
+use crate::config::BotConfig;
 use crate::gui::config_dialog;
 use crate::gui::icon::create_icon;
 use crate::gui::manager::{BotManager, BotStatus};
@@ -34,9 +34,14 @@ const ACTION_CONFIG: i32 = 4;
 
 /// Run the tray application. This blocks until the user exits.
 pub fn run() {
+    // Sort a legacy flat data folder before anything reads from it. The
+    // report is logged once logging exists, a line below.
+    let layout_migration = crate::paths::migrate_data_layout();
+
     // Init tray-level logging (file only, no console)
-    let log_dir = config_dir().join("logs");
+    let log_dir = crate::paths::logs_dir();
     let _log_guard = crate::logging::init_file_logging(&log_dir, "tray");
+    crate::paths::log_migration(&layout_migration);
 
     let _ = wxdragon::main(|_| {
         // Hidden frame keeps the wxDragon event loop alive.
@@ -326,7 +331,7 @@ fn handle_menu_action(
                         mgr.borrow_mut().restart_nonblocking(&name);
                     }
                     ACTION_LOGS => {
-                        let log_path = config_dir().join("logs").join(format!("{name}.log"));
+                        let log_path = crate::paths::logs_dir().join(format!("{name}.log"));
                         open_file(&log_path);
                     }
                     ACTION_CONFIG => {

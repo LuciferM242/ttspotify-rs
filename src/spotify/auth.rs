@@ -68,12 +68,14 @@ impl Default for SpotifyAuth {
 
 impl SpotifyAuth {
     pub fn new() -> Self {
-        let base = crate::config::config_dir();
-        let cache_dir = base.join("spotify_cache");
+        // Credentials are secret and kept apart from the caches, which are
+        // safe to delete at any time.
+        let credentials_dir = crate::paths::auth_dir();
+        let cache_dir = crate::paths::cache_dir().join("spotify_cache");
         let audio_cache_dir = cache_dir.join("audio");
 
         let cache = Cache::new(
-            Some(base),
+            Some(credentials_dir),
             Some(cache_dir),
             Some(audio_cache_dir),
             None,

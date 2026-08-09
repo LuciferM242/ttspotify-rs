@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 /// is proof the directory is an SDK download of ours and safe to move.
 const SDK_MARKER: &str = "TEAMTALK_SDK_VERSION.txt";
 
-/// The pinned SDK location: `<config_dir>/TEAMTALK_DLL`.
+/// The pinned SDK location: `<config_dir>/cache/TEAMTALK_DLL`. It is a
+/// download, so it lives with the other things that can be fetched again.
 pub fn pinned_sdk_dir() -> PathBuf {
-    crate::config::config_dir().join("TEAMTALK_DLL")
+    crate::paths::cache_dir().join("TEAMTALK_DLL")
 }
 
 /// Pin the SDK directory for the teamtalk crate (unless the user already set
@@ -36,6 +37,8 @@ pub fn pin_sdk_dir() {
 /// directory (the old systemd behavior, where the service started in $HOME).
 fn legacy_sdk_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    // Where the SDK sat before the data folder grew a cache/ subfolder.
+    candidates.push(crate::config::config_dir().join("TEAMTALK_DLL"));
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join("TEAMTALK_DLL"));
     }

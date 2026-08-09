@@ -607,7 +607,7 @@ fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), BotError> 
 /// Windows: `<config_dir>/cookies.txt` — same dir as `config.json`.
 /// Linux/macOS: `~/.config/ttspotify/cookies.txt`.
 pub fn default_cookies_path() -> PathBuf {
-    crate::config::config_dir().join("cookies.txt")
+    crate::paths::configs_dir().join("cookies.txt")
 }
 
 /// Look up an executable on PATH. Returns `Some(path)` if found,

@@ -350,7 +350,7 @@ fn run_bot_instance(
     name: String,
 ) {
     // Per-instance log file (e.g. logs/myserver.log)
-    let log_dir = crate::config::config_dir().join("logs");
+    let log_dir = crate::paths::logs_dir();
     let (dispatch, _log_guard) = crate::logging::create_instance_logging(&log_dir, &name);
     let _dispatch_guard = tracing::dispatcher::set_default(&dispatch);
 

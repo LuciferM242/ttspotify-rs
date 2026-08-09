@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::config::config_dir;
 use crate::error::BotError;
 
 fn default_true() -> bool {
@@ -28,7 +27,7 @@ impl Default for AppSettings {
 }
 
 pub fn settings_path() -> PathBuf {
-    config_dir().join("settings.json")
+    crate::paths::state_dir().join("settings.json")
 }
 
 /// Load settings, falling back to defaults if the file is missing or unreadable.
