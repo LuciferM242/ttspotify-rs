@@ -218,12 +218,63 @@ pub fn migrate_layout(root: &Path, is_config: &dyn Fn(&Path) -> bool) -> Migrati
         move_into(&path, &root.join("config"), &mut migration);
     }
 
+    migrate_logs(&root.join("logs"), &mut migration);
+
     // Only claim the new layout if everything landed; a partial move must be
     // retried next start rather than silently forgotten.
     if migration.failures().next().is_none() {
         write_layout_version(root);
     }
     migration
+}
+
+/// Sort `logs/<date>.<instance>.log` into `logs/<instance>/<date>.log`.
+///
+/// Every instance used to write into one directory, where the rotating
+/// appender prunes by counting the files next to it — so a busy instance could
+/// age out a quiet one's history. A folder each also makes "open my log" a
+/// single obvious file rather than a name to reconstruct.
+fn migrate_logs(logs_dir: &Path, migration: &mut Migration) {
+    for entry in std::fs::read_dir(logs_dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some((date, rest)) = split_dated_log_name(name) else {
+            continue; // Not one of ours: leave it be.
+        };
+        let dest = logs_dir.join(rest);
+        let to = dest.join(format!("{date}.log"));
+        if to.exists() {
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&dest) {
+            migration.moves.push(Moved::Failed { from: path, reason: e.to_string() });
+            continue;
+        }
+        match std::fs::rename(&path, &to) {
+            Ok(()) => migration.moves.push(Moved::Ok { from: path, to }),
+            Err(e) => migration.moves.push(Moved::Failed { from: path, reason: e.to_string() }),
+        }
+    }
+}
+
+/// Split `2026-08-08.myserver.log` into `("2026-08-08", "myserver")`. Returns
+/// `None` for anything not shaped like one of our rotated log files.
+fn split_dated_log_name(name: &str) -> Option<(&str, &str)> {
+    let stem = name.strip_suffix(".log")?;
+    let (date, instance) = stem.split_once('.')?;
+    let looks_like_a_date = date.len() == 10
+        && date.chars().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() }
+        });
+    if !looks_like_a_date || instance.is_empty() {
+        return None;
+    }
+    Some((date, instance))
 }
 
 fn move_into(from: &Path, dest_dir: &Path, migration: &mut Migration) {
@@ -317,6 +368,33 @@ mod tests {
         // Nothing left loose.
         assert!(!root.join("myserver.json").exists());
         assert!(!root.join("credentials.json").exists());
+    }
+
+    #[test]
+    fn old_log_files_are_sorted_into_per_instance_folders() {
+        let root = scratch("logs");
+        write(&root.join("logs").join("2026-08-08.myserver.log"), "a");
+        write(&root.join("logs").join("2026-08-09.myserver.log"), "b");
+        write(&root.join("logs").join("2026-08-08.tray.log"), "c");
+
+        migrate_layout(&root, &any_json_is_config);
+
+        assert!(root.join("logs/myserver/2026-08-08.log").exists());
+        assert!(root.join("logs/myserver/2026-08-09.log").exists());
+        assert!(root.join("logs/tray/2026-08-08.log").exists());
+        assert!(!root.join("logs/2026-08-08.myserver.log").exists());
+    }
+
+    #[test]
+    fn a_log_file_that_is_not_ours_is_left_alone() {
+        let root = scratch("foreignlog");
+        write(&root.join("logs").join("notes.txt"), "x");
+        write(&root.join("logs").join("weird.log"), "y");
+
+        migrate_layout(&root, &any_json_is_config);
+
+        assert!(root.join("logs/notes.txt").exists());
+        assert!(root.join("logs/weird.log").exists(), "no date prefix: not ours to rename");
     }
 
     #[test]

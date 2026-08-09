@@ -9,6 +9,9 @@
   first time you start this version; nothing is deleted or overwritten. A short
   README.txt in the folder explains what each one is - the short version is
   that deleting cache/ is always safe, and auth/ should never be shared.
+- Each bot now logs into its own folder (logs/<name>/), one file per day.
+  Existing logs are moved there automatically. Keeping them apart means a busy
+  bot can no longer age out a quiet one's history when old logs are pruned.
 - Linux: because configs moved into config/, an already-installed service file
   still points at the old location. The bot follows the move on its own so
   nothing stops working, and logs a reminder; re-run --install-service (or say
@@ -40,6 +43,10 @@
   were different.
 
 ### Fixed
+- Tray: "Logs" now opens the log it meant to. It was building a filename that
+  never existed, so the menu item did nothing.
+- The startup line that records which TeamTalk SDK is in use said "unknown" on
+  Windows since 0.7.0; it was looking in the wrong folder.
 - "n" no longer says the queue has ended while tracks are sitting in it. When
   radio refilled a queue that had run out, the bot started playing the new
   batch but still considered nothing to be playing, so skipping found nothing

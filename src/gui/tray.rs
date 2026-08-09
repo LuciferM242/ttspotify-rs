@@ -331,8 +331,13 @@ fn handle_menu_action(
                         mgr.borrow_mut().restart_nonblocking(&name);
                     }
                     ACTION_LOGS => {
-                        let log_path = crate::paths::logs_dir().join(format!("{name}.log"));
-                        open_file(&log_path);
+                        // Files are <date>.log inside the instance's folder;
+                        // fall back to the folder itself when it has none yet.
+                        let dir = crate::logging::instance_log_dir(&name);
+                        match crate::logging::newest_log_file(&dir) {
+                            Some(path) => open_file(&path),
+                            None => open_file(&dir),
+                        }
                     }
                     ACTION_CONFIG => {
                         if let Some(path) = mgr.borrow().config_path(&name) {

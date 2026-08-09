@@ -23,14 +23,38 @@ static PANIC_LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// Derive the log file path from a config file path.
 /// Returns (log_dir, log_filename).
 fn log_path_from_config(config_path: &str) -> (PathBuf, String) {
-    let path = Path::new(config_path);
-    let stem = path.file_stem()
+    let stem = Path::new(config_path)
+        .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("bot");
-    let log_dir = path.parent()
-        .unwrap_or(Path::new("."))
-        .join("logs");
-    (log_dir, format!("{stem}.log"))
+    // Each instance gets its own folder: the rotating appender prunes by
+    // counting the files beside it, so sharing one directory made every
+    // instance's retention depend on how noisy its neighbours were. Deriving
+    // the folder from the config file's parent would also follow configs into
+    // config/ and bury the logs there.
+    (instance_log_dir(stem), "log".to_string())
+}
+
+/// Where one instance's logs live: `logs/<name>/`.
+pub fn instance_log_dir(name: &str) -> PathBuf {
+    crate::paths::logs_dir().join(name)
+}
+
+/// The most recent log file for an instance, for "open my log" menu items.
+/// Files are named `<date>.log`, so the newest sorts last.
+pub fn newest_log_file(log_dir: &Path) -> Option<PathBuf> {
+    let mut newest: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(log_dir).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        match &newest {
+            Some(best) if path.file_name() <= best.file_name() => {}
+            _ => newest = Some(path),
+        }
+    }
+    newest
 }
 
 /// Create a daily-rotating file appender and non-blocking writer. If the file
@@ -138,7 +162,7 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
 /// Logs to {log_dir}/{name}.log with thread names for per-instance identification.
 /// Returns a guard that must be kept alive for the file logger to flush.
 pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
-    let (file_writer, guard) = create_file_writer(log_dir, &format!("{name}.log"));
+    let (file_writer, guard) = create_file_writer(&log_dir.join(name), "log");
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
@@ -160,7 +184,7 @@ pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
 /// target thread to activate it. Threads without a thread-local subscriber fall
 /// back to the global one (tray.log).
 pub fn create_instance_logging(log_dir: &Path, name: &str) -> (tracing::Dispatch, WorkerGuard) {
-    let (file_writer, guard) = create_file_writer(log_dir, &format!("{name}.log"));
+    let (file_writer, guard) = create_file_writer(&log_dir.join(name), "log");
 
     let subscriber = tracing_subscriber::registry()
         .with(default_env_filter())
@@ -173,4 +197,45 @@ pub fn create_instance_logging(log_dir: &Path, name: &str) -> (tracing::Dispatch
         );
 
     (tracing::Dispatch::new(subscriber), guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("ttspotify_logging_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn newest_log_file_picks_the_latest_date() {
+        let dir = scratch("newest");
+        for day in ["2026-08-01.log", "2026-08-09.log", "2026-07-30.log"] {
+            std::fs::write(dir.join(day), "x").unwrap();
+        }
+        let newest = newest_log_file(&dir).expect("a log should be found");
+        assert_eq!(newest.file_name().unwrap(), "2026-08-09.log");
+    }
+
+    #[test]
+    fn newest_log_file_is_none_for_an_empty_or_missing_folder() {
+        let dir = scratch("empty");
+        assert!(newest_log_file(&dir).is_none());
+        assert!(newest_log_file(&dir.join("nope")).is_none());
+    }
+
+    #[test]
+    fn each_instance_logs_into_its_own_folder() {
+        // Shared directories made one instance's retention depend on how noisy
+        // its neighbours were.
+        let (dir_a, name_a) = log_path_from_config("/anywhere/config/alpha.json");
+        let (dir_b, _) = log_path_from_config("/anywhere/config/beta.json");
+        assert_ne!(dir_a, dir_b);
+        assert!(dir_a.ends_with("alpha"), "got {}", dir_a.display());
+        assert_eq!(name_a, "log");
+    }
 }
