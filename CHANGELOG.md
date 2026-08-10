@@ -1,6 +1,14 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+- YouTube support now installs Deno, the JavaScript runtime yt-dlp needs to
+  work out YouTube's playback links. Since yt-dlp 2025.11.12 some tracks and
+  qualities are simply unavailable without one, which looks like a YouTube
+  fault rather than a missing tool. If you already have Deno installed that one
+  is used and nothing is downloaded. "Update tools" keeps it current, and the
+  startup log now says which runtime is in use.
+
 ### Changed
 - The data folder is now organised into subfolders instead of one flat pile:
   config/ for your configs and cookies.txt, lang/ for translations, state/ for
