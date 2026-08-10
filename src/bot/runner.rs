@@ -172,19 +172,37 @@ fn spawn_drained_advance(
 /// Whether reaching this point in the queue should pull in more radio
 /// recommendations.
 ///
+/// Why radio is staying out of it, or `None` when it should extend the queue.
+///
 /// Radio extends the queue when playback reaches the last entry. Repeat means
 /// "keep playing what is already here", and the two used to fight: repeat-track
-/// never moves the index, so `at_end` stayed true and seeded a fetch on every
-/// loop, and repeat-queue never got to wrap because radio kept extending past
-/// the end — which silently turned repeat-queue into a no-op and grew the queue
-/// for as long as the bot played.
-fn radio_should_extend(
+/// never moved on, so the queue always looked exhausted and seeded a fetch on
+/// every loop, and repeat-queue never got to wrap because radio kept extending
+/// past the end - which silently turned repeat-queue into a no-op and grew the
+/// queue for as long as the bot played.
+///
+/// The reason is returned rather than a bare bool because "radio did nothing"
+/// is as confusing to diagnose as "radio fired when I did not expect it", and
+/// neither used to leave a trace in the log.
+fn radio_skip_reason(
     radio_on: bool,
     allow_recommend: bool,
     at_end: bool,
     repeat_active: bool,
-) -> bool {
-    radio_on && allow_recommend && at_end && !repeat_active
+) -> Option<&'static str> {
+    if !radio_on {
+        return Some("radio is off");
+    }
+    if !allow_recommend {
+        return Some("the current track came from a playlist or album");
+    }
+    if repeat_active {
+        return Some("a repeat mode is on");
+    }
+    if !at_end {
+        return Some("there are still tracks queued");
+    }
+    None
 }
 
 /// Whether an auto-advance (sent when a track ended or failed) is stale: the
@@ -1570,9 +1588,18 @@ async fn command_processor(
                             let s = state.lock();
                             let at_end = s.upcoming_len() == 0;
                             let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                            radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active())
+                            match radio_skip_reason(s.radio_enabled, allow, at_end, s.repeat_active()) {
+                                Some(reason) => {
+                                    tracing::debug!("Radio: not extending the queue - {reason}");
+                                    false
+                                }
+                                None => true,
+                            }
                         };
                         if seed_radio {
+                            tracing::info!(
+                                "Radio: nothing queued after this track; recommendations in {radio_delay}s"
+                            );
                             schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
                         }
                     }
@@ -1586,23 +1613,32 @@ async fn command_processor(
                         if let Some(seed) = pre_seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
                                 reply_t(user_id, Key::RadioFetching, &[]);
+                                tracing::info!("Radio: queue ran out, fetching recommendations from seed {seed}");
                                 match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
                                     Ok(tracks) if !tracks.is_empty() => {
                                         let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
                                         // A station reseeded from the same song
                                         // hands back re-releases of it under
                                         // fresh ids; drop those before playing.
-                                        let started = {
+                                        let (added, started) = {
                                             let mut s = state.lock();
                                             let fresh = s.filter_unqueued_similar(tracks);
+                                            let added = fresh.len();
                                             s.enqueue_source(fresh, "Radio".to_string(), true);
                                             // Adding to an idle queue starts the
                                             // first track, so this is what is
                                             // now playing.
-                                            s.current().map(|e| (e.track.uri().to_string(), e.track.display_name()))
+                                            (
+                                                added,
+                                                s.current().map(|e| (e.track.uri().to_string(), e.track.display_name())),
+                                            )
                                         };
                                         match started {
                                             Some((first_uri, first_name)) => {
+                                                tracing::info!(
+                                                    "Radio: added {} track(s), now playing {first_name}",
+                                                    added
+                                                );
                                                 if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
                                                     resumed = true;
                                                     reply_t(user_id, Key::RadioPlaying, &[
@@ -1613,13 +1649,20 @@ async fn command_processor(
                                             }
                                             // Every recommendation was a song
                                             // already played this session.
-                                            None => reply_t(user_id, Key::RadioNoRecs, &[]),
+                                            None => {
+                                                tracing::info!(
+                                                    "Radio: every recommendation was already played this session"
+                                                );
+                                                reply_t(user_id, Key::RadioNoRecs, &[]);
+                                            }
                                         }
                                     }
                                     Ok(_) => {
+                                        tracing::info!("Radio: no recommendations came back for this seed");
                                         reply_t(user_id, Key::RadioNoRecs, &[]);
                                     }
                                     Err(e) => {
+                                        tracing::warn!("Radio: recommendation fetch failed: {e}");
                                         reply_t(user_id, Key::RadioFailed, &[
                                             ("error", crate::bot::commands::user_error(&e)),
                                         ]);
@@ -1965,7 +2008,13 @@ async fn command_processor(
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
                     let at_end = s.upcoming_len() == 0;
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
-                    let extend = radio_should_extend(s.radio_enabled, allow, at_end, s.repeat_active());
+                    let extend = match radio_skip_reason(s.radio_enabled, allow, at_end, s.repeat_active()) {
+                        Some(reason) => {
+                            tracing::debug!("Radio: skipping scheduled fetch - {reason}");
+                            false
+                        }
+                        None => true,
+                    };
                     (extend, s.status != PlaybackStatus::Idle, cur_uri)
                 };
 
@@ -2134,7 +2183,7 @@ mod tests {
     use crate::track::Track;
     use rstest::rstest;
 
-    // -- radio_should_extend --
+    // -- radio_skip_reason --
 
     #[rstest]
     // The ordinary case: radio on, single-track play, queue exhausted.
@@ -2152,10 +2201,30 @@ mod tests {
         #[case] allow_recommend: bool,
         #[case] at_end: bool,
         #[case] repeat_active: bool,
-        #[case] expected: bool,
+        #[case] should_extend: bool,
+    ) {
+        let extends =
+            radio_skip_reason(radio_on, allow_recommend, at_end, repeat_active).is_none();
+        assert_eq!(extends, should_extend);
+    }
+
+    #[rstest]
+    // Each reason is reported specifically: "radio did nothing" was previously
+    // indistinguishable from "radio is off" when reading a log back.
+    #[case(false, true, true, false, Some("radio is off"))]
+    #[case(true, false, true, false, Some("the current track came from a playlist or album"))]
+    #[case(true, true, true, true, Some("a repeat mode is on"))]
+    #[case(true, true, false, false, Some("there are still tracks queued"))]
+    #[case(true, true, true, false, None)]
+    fn radio_skip_reason_names_the_specific_cause(
+        #[case] radio_on: bool,
+        #[case] allow_recommend: bool,
+        #[case] at_end: bool,
+        #[case] repeat_active: bool,
+        #[case] expected: Option<&str>,
     ) {
         assert_eq!(
-            radio_should_extend(radio_on, allow_recommend, at_end, repeat_active),
+            radio_skip_reason(radio_on, allow_recommend, at_end, repeat_active),
             expected
         );
     }
