@@ -21,6 +21,14 @@ const BGUTIL_VERSION: &str = "v0.8.1";
 /// Lives next to the bgutil binary in `lib/`.
 const BGUTIL_VERSION_FILE: &str = ".bgutil-version";
 
+/// Records which Deno we installed, so --update-tools can compare.
+const DENO_VERSION_FILE: &str = ".deno-version";
+
+/// Oldest Deno yt-dlp's EJS solver supports. An older one on PATH is ignored
+/// rather than used, because the failure it produces looks like a YouTube
+/// problem rather than a runtime problem.
+const MIN_DENO_VERSION: (u32, u32, u32) = (2, 3, 0);
+
 /// Resolved on-disk paths for all three components.
 #[derive(Debug, Clone)]
 pub struct YoutubeSetupPaths {
@@ -32,6 +40,10 @@ pub struct YoutubeSetupPaths {
     pub bgutil_pot: PathBuf,
     /// `lib/yt-dlp-plugins` (the dir we pass to `--plugin-dirs`).
     pub plugin_dir: PathBuf,
+    /// `lib/deno` or `lib/deno.exe`: the JavaScript runtime yt-dlp needs to
+    /// solve YouTube's player challenges. Only present when we installed it;
+    /// a system-wide Deno is used as-is.
+    pub deno: PathBuf,
 }
 
 /// Pick the directory the YouTube tools live in.
@@ -52,11 +64,11 @@ fn pick_tools_dir(legacy: PathBuf, legacy_has_tools: bool, data_dir: Option<Path
 
 /// Everything our installer puts into the tools dir. Used by the migration to
 /// move exactly our items and nothing else.
-fn tool_item_names() -> [&'static str; 4] {
+fn tool_item_names() -> [&'static str; 6] {
     if cfg!(windows) {
-        ["yt-dlp.exe", "bgutil-pot.exe", "yt-dlp-plugins", BGUTIL_VERSION_FILE]
+        ["yt-dlp.exe", "bgutil-pot.exe", "yt-dlp-plugins", BGUTIL_VERSION_FILE, "deno.exe", DENO_VERSION_FILE]
     } else {
-        ["yt-dlp", "bgutil-pot", "yt-dlp-plugins", BGUTIL_VERSION_FILE]
+        ["yt-dlp", "bgutil-pot", "yt-dlp-plugins", BGUTIL_VERSION_FILE, "deno", DENO_VERSION_FILE]
     }
 }
 
@@ -160,15 +172,16 @@ pub fn resolve_paths() -> Result<YoutubeSetupPaths, BotError> {
         let has_tools = legacy_lib.join("yt-dlp").is_file() || legacy_lib.join("bgutil-pot").is_file();
         pick_tools_dir(legacy_lib, has_tools, dirs::data_dir())
     };
-    let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
-        ("yt-dlp.exe", "bgutil-pot.exe")
+    let (yt_dlp_name, bgutil_name, deno_name) = if cfg!(windows) {
+        ("yt-dlp.exe", "bgutil-pot.exe", "deno.exe")
     } else {
-        ("yt-dlp", "bgutil-pot")
+        ("yt-dlp", "bgutil-pot", "deno")
     };
     Ok(YoutubeSetupPaths {
         yt_dlp: lib_dir.join(yt_dlp_name),
         bgutil_pot: lib_dir.join(bgutil_name),
         plugin_dir: lib_dir.join("yt-dlp-plugins"),
+        deno: lib_dir.join(deno_name),
         lib_dir,
     })
 }
@@ -183,6 +196,9 @@ pub fn is_installed(paths: &YoutubeSetupPaths) -> bool {
 pub struct ToolVersions {
     pub yt_dlp: Option<String>,
     pub bgutil: Option<String>,
+    /// The JavaScript runtime yt-dlp uses for YouTube. `None` means none was
+    /// found, which is why formats can go missing.
+    pub js_runtime: Option<String>,
 }
 
 /// Detect installed YouTube tool versions: `yt-dlp --version` (bundled first,
@@ -219,7 +235,22 @@ pub fn installed_tool_versions() -> ToolVersions {
         }
     });
 
-    ToolVersions { yt_dlp, bgutil }
+    let js_runtime = paths.as_ref().and_then(|p| match find_js_runtime(p) {
+        JsRuntime::Bundled(exe) => Some(
+            deno_version_of(&exe)
+                .map(|(a, b, c)| format!("deno {a}.{b}.{c} (bundled)"))
+                .unwrap_or_else(|| "deno (bundled)".to_string()),
+        ),
+        JsRuntime::OnPath => Some(
+            which("deno")
+                .and_then(|exe| deno_version_of(&exe))
+                .map(|(a, b, c)| format!("deno {a}.{b}.{c} (system)"))
+                .unwrap_or_else(|| "deno (system)".to_string()),
+        ),
+        JsRuntime::Missing => None,
+    });
+
+    ToolVersions { yt_dlp, bgutil, js_runtime }
 }
 
 /// Download + install yt-dlp, bgutil-pot, and the plugin zip.
@@ -299,11 +330,205 @@ pub async fn install(
     let _ = fs::remove_file(&zip_path);
     progress("  Plugin extracted.");
 
+    // 4. JavaScript runtime. Since yt-dlp 2025.11.12 YouTube's player
+    // challenges are solved by running its own JavaScript, so without a
+    // runtime formats go missing. Deno is the one yt-dlp enables by default,
+    // and it sandboxes that untrusted code away from the file system and
+    // network. Skipped when the machine already has a usable one.
+    match find_js_runtime(paths) {
+        JsRuntime::OnPath => {
+            progress("  JavaScript runtime: using the Deno already installed on this system.");
+        }
+        JsRuntime::Bundled(path) => {
+            progress(&format!("  JavaScript runtime: already installed ({}).", path.display()));
+        }
+        JsRuntime::Missing => {
+            progress("Downloading Deno (JavaScript runtime for YouTube)...");
+            if let Err(e) = install_deno(&client, paths, &progress).await {
+                // Not fatal: YouTube still plays, just with fewer formats.
+                tracing::warn!("Deno install failed: {e}");
+                progress(&format!(
+                    "  Could not install Deno ({e}). YouTube will still work, but some formats may be unavailable."
+                ));
+            }
+        }
+    }
+
     // Record what we just installed so --update-tools can compare later.
     let _ = fs::write(paths.lib_dir.join(BGUTIL_VERSION_FILE), BGUTIL_VERSION);
 
     progress(&format!("YouTube support ready in {}", paths.lib_dir.display()));
     Ok(())
+}
+
+/// The Deno release asset for this platform. Deno ships one zip per target,
+/// each holding a single binary.
+fn deno_asset_name() -> &'static str {
+    if cfg!(windows) {
+        if cfg!(target_arch = "aarch64") {
+            "deno-aarch64-pc-windows-msvc.zip"
+        } else {
+            "deno-x86_64-pc-windows-msvc.zip"
+        }
+    } else if cfg!(target_arch = "aarch64") {
+        "deno-aarch64-unknown-linux-gnu.zip"
+    } else {
+        "deno-x86_64-unknown-linux-gnu.zip"
+    }
+}
+
+/// Pull a version out of `deno --version` output, whose first line reads
+/// `deno 2.9.5 (stable, release, x86_64-pc-windows-msvc)`.
+fn parse_deno_version(output: &str) -> Option<(u32, u32, u32)> {
+    let first = output.lines().next()?;
+    let version = first.split_whitespace().nth(1)?;
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    // A pre-release suffix ("3.0.0-rc.1") still counts as that patch level.
+    let patch = parts
+        .next()
+        .unwrap_or("0")
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Whether a Deno is new enough for yt-dlp's solver.
+fn deno_is_supported(version: (u32, u32, u32)) -> bool {
+    version >= MIN_DENO_VERSION
+}
+
+/// Ask a Deno binary its version.
+fn deno_version_of(exe: &Path) -> Option<(u32, u32, u32)> {
+    let out = std::process::Command::new(exe).arg("--version").output().ok()?;
+    parse_deno_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A usable JavaScript runtime, preferring one already on the system so an
+/// install does not download 100 MB somebody already has.
+///
+/// Returns the path only when we must tell yt-dlp about it: a Deno on PATH is
+/// found by yt-dlp itself.
+pub enum JsRuntime {
+    /// Found on PATH; yt-dlp picks it up with no arguments.
+    OnPath,
+    /// Ours, in `lib/`; yt-dlp must be pointed at it.
+    Bundled(PathBuf),
+    /// Nothing usable. YouTube still works, but formats will be missing.
+    Missing,
+}
+
+/// Find a JavaScript runtime for yt-dlp: ours if installed, else a new enough
+/// one on PATH.
+pub fn find_js_runtime(paths: &YoutubeSetupPaths) -> JsRuntime {
+    if paths.deno.is_file() {
+        return JsRuntime::Bundled(paths.deno.clone());
+    }
+    if let Some(system) = which("deno") {
+        match deno_version_of(&system) {
+            Some(v) if deno_is_supported(v) => return JsRuntime::OnPath,
+            Some(v) => tracing::info!(
+                "Ignoring Deno {}.{}.{} on PATH: yt-dlp needs {}.{}.{} or newer",
+                v.0, v.1, v.2, MIN_DENO_VERSION.0, MIN_DENO_VERSION.1, MIN_DENO_VERSION.2
+            ),
+            None => tracing::debug!("Could not read the version of the Deno on PATH"),
+        }
+    }
+    JsRuntime::Missing
+}
+
+/// Download Deno into `lib/`, verified against the release's sha256sum file.
+async fn install_deno(
+    client: &reqwest::Client,
+    paths: &YoutubeSetupPaths,
+    progress: &impl Fn(&str),
+) -> Result<(), BotError> {
+    let asset = deno_asset_name();
+    let base = format!("https://github.com/denoland/deno/releases/latest/download/{asset}");
+    // Deno publishes one checksum file per asset.
+    let hash = match fetch_text(client, &format!("{base}.sha256sum")).await {
+        Ok(text) => text.split_whitespace().next().map(str::to_string),
+        Err(e) => {
+            tracing::warn!("Could not fetch the Deno checksum: {e}");
+            None
+        }
+    };
+    let zip_path = paths.lib_dir.join("deno.zip");
+    download_verified(client, &base, &zip_path, hash.as_deref(), false).await?;
+    extract_single_file(&zip_path, &paths.deno)?;
+    let _ = fs::remove_file(&zip_path);
+    make_executable(&paths.deno)?;
+
+    let version = deno_version_of(&paths.deno)
+        .map(|(a, b, c)| format!("{a}.{b}.{c}"))
+        .unwrap_or_else(|| "unknown".to_string());
+    let _ = fs::write(paths.lib_dir.join(DENO_VERSION_FILE), &version);
+    progress(&format!("  Deno {version} installed."));
+    Ok(())
+}
+
+/// Pull the one binary out of a single-file archive.
+fn extract_single_file(zip_path: &Path, dest: &Path) -> Result<(), BotError> {
+    let file = fs::File::open(zip_path)
+        .map_err(|e| BotError::Config(format!("open zip: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| BotError::Config(format!("read zip: {e}")))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| BotError::Config(format!("zip entry {i}: {e}")))?;
+        if entry.is_dir() {
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| BotError::Config(format!("mkdir {}: {e}", parent.display())))?;
+        }
+        let mut out = fs::File::create(dest)
+            .map_err(|e| BotError::Config(format!("create {}: {e}", dest.display())))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| BotError::Config(format!("write {}: {e}", dest.display())))?;
+        return Ok(());
+    }
+    Err(BotError::Config("the Deno archive was empty".to_string()))
+}
+
+/// Install or refresh the JavaScript runtime as part of --update-tools.
+///
+/// Does nothing when the system provides one: that Deno is somebody else's to
+/// update. Ours is replaced with the current release, which is the only way to
+/// keep pace with the player challenges yt-dlp has to solve.
+pub async fn update_js_runtime(
+    paths: &YoutubeSetupPaths,
+    progress: impl Fn(&str),
+) -> Result<(), BotError> {
+    if let JsRuntime::OnPath = find_js_runtime(paths) {
+        progress("  Using the Deno installed on this system; nothing to update.");
+        return Ok(());
+    }
+    let before = installed_deno_version(paths);
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
+    install_deno(&client, paths, &progress).await?;
+    match (before, installed_deno_version(paths)) {
+        (Some(old), Some(new)) if old == new => progress(&format!("  Deno already on {new}.")),
+        (Some(old), Some(new)) => progress(&format!("  Deno updated from {old} to {new}.")),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The Deno we installed, if any.
+pub fn installed_deno_version(paths: &YoutubeSetupPaths) -> Option<String> {
+    fs::read_to_string(paths.lib_dir.join(DENO_VERSION_FILE))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Pinned version we'd lay down on a fresh install. Read by --update-tools
@@ -790,5 +1015,70 @@ short  ignored.bin";
         // Missing asset -> None; malformed short hash -> not matched.
         assert_eq!(parse_sums_file(text, "nope.exe"), None);
         assert_eq!(parse_sums_file(text, "ignored.bin"), None);
+    }
+}
+
+#[cfg(test)]
+mod deno_tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    // The real shape of `deno --version` output.
+    #[case("deno 2.9.5 (stable, release, x86_64-pc-windows-msvc)\nv8 14.2\ntypescript 5.9", Some((2, 9, 5)))]
+    #[case("deno 2.3.0", Some((2, 3, 0)))]
+    // Pre-releases count as their patch level rather than failing to parse.
+    #[case("deno 3.0.0-rc.1 (canary)", Some((3, 0, 0)))]
+    #[case("deno 2.4", Some((2, 4, 0)))]
+    // Anything else must not be mistaken for a version.
+    #[case("", None)]
+    #[case("bash: deno: command not found", None)]
+    #[case("node v22.1.0", None)]
+    fn parse_deno_version_reads_the_first_line(
+        #[case] output: &str,
+        #[case] expected: Option<(u32, u32, u32)>,
+    ) {
+        assert_eq!(parse_deno_version(output), expected);
+    }
+
+    #[rstest]
+    // yt-dlp's EJS solver needs 2.3.0 or newer.
+    #[case((2, 3, 0), true)]
+    #[case((2, 9, 5), true)]
+    #[case((3, 0, 0), true)]
+    // An older Deno is worse than none: it fails in a way that reads as a
+    // YouTube problem, so it must be rejected rather than used.
+    #[case((2, 2, 9), false)]
+    #[case((1, 46, 0), false)]
+    fn only_new_enough_deno_is_accepted(
+        #[case] version: (u32, u32, u32),
+        #[case] supported: bool,
+    ) {
+        assert_eq!(deno_is_supported(version), supported);
+    }
+
+    #[test]
+    fn the_deno_asset_matches_this_platform() {
+        let asset = deno_asset_name();
+        assert!(asset.starts_with("deno-"), "got {asset}");
+        assert!(asset.ends_with(".zip"), "Deno ships zips: {asset}");
+        if cfg!(windows) {
+            assert!(asset.contains("pc-windows-msvc"), "got {asset}");
+        } else {
+            assert!(asset.contains("unknown-linux-gnu"), "got {asset}");
+        }
+        if cfg!(target_arch = "aarch64") {
+            assert!(asset.starts_with("deno-aarch64"), "got {asset}");
+        } else {
+            assert!(asset.starts_with("deno-x86_64"), "got {asset}");
+        }
+    }
+
+    #[test]
+    fn resolved_paths_include_the_runtime_beside_the_other_tools() {
+        let paths = resolve_paths().expect("paths resolve");
+        assert_eq!(paths.deno.parent(), Some(paths.lib_dir.as_path()));
+        let name = paths.deno.file_name().unwrap().to_string_lossy().to_string();
+        assert_eq!(name, if cfg!(windows) { "deno.exe" } else { "deno" });
     }
 }

@@ -418,6 +418,18 @@ pub fn run_update_tools() -> Result<(), BotError> {
         })?;
     }
 
+    // 3. JavaScript runtime: yt-dlp needs one to solve YouTube's player
+    // challenges, and it changes often enough to be worth refreshing.
+    println!();
+    println!("Checking the JavaScript runtime (Deno)...");
+    if let Err(e) = run_blocking_async(|| async {
+        let paths = setup::resolve_paths()?;
+        setup::update_js_runtime(&paths, |line| println!("  {line}")).await
+    }) {
+        println!("  Could not update Deno: {e}");
+        println!("  YouTube will still work, but some formats may be unavailable.");
+    }
+
     println!();
     println!("  Done.");
     Ok(())

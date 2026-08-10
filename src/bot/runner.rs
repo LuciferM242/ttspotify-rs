@@ -717,8 +717,12 @@ fn log_startup_versions() {
     let tools = crate::youtube::setup::installed_tool_versions();
     let yt = tools.yt_dlp.as_deref().unwrap_or("not installed");
     let bg = tools.bgutil.as_deref().unwrap_or("not installed");
+    // Without a JavaScript runtime yt-dlp cannot solve YouTube's player
+    // challenges, and formats quietly go missing - worth seeing in any log
+    // that comes with a bug report.
+    let js = tools.js_runtime.as_deref().unwrap_or("none (some YouTube formats unavailable)");
     tracing::info!(
-        "Versions — app: v{app}, TeamTalk SDK: {sdk}, yt-dlp: {yt}, bgutil-pot: {bg}"
+        "Versions — app: v{app}, TeamTalk SDK: {sdk}, yt-dlp: {yt}, bgutil-pot: {bg}, JS runtime: {js}"
     );
 }
 

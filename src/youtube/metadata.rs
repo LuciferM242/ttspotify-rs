@@ -258,6 +258,16 @@ impl YouTubeMetadata {
                     b.bgutil_pot.display()
                 ));
             }
+            // Since yt-dlp 2025.11.12, YouTube's player challenges are solved
+            // by running its JavaScript, and without a runtime some formats
+            // are unavailable. A Deno on PATH is found by yt-dlp itself; ours
+            // has to be pointed at.
+            if let crate::youtube::setup::JsRuntime::Bundled(deno) =
+                crate::youtube::setup::find_js_runtime(b)
+            {
+                cmd.arg("--js-runtimes");
+                cmd.arg(format!("deno:{}", deno.display()));
+            }
         }
 
         // Cookies (optional, helps with rate-limited / age-restricted videos).

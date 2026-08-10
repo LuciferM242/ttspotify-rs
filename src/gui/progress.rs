@@ -137,6 +137,13 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
         rt.block_on(setup::install_bgutil_version(&paths, &latest, |l| progress(l)))
             .map_err(|e| e.to_string())?;
     }
+
+    // The JavaScript runtime yt-dlp needs for YouTube's player challenges.
+    progress("Checking the JavaScript runtime (Deno)...");
+    if let Err(e) = rt.block_on(setup::update_js_runtime(&paths, |l| progress(l))) {
+        // Not fatal: YouTube keeps working with fewer formats available.
+        progress(&format!("Could not update Deno: {e}"));
+    }
     Ok(())
 }
 
