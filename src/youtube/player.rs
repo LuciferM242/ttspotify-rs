@@ -8,7 +8,7 @@
 //! the source seekable, so seek is a native symphonia call — instant in both
 //! directions with no yt-dlp respawn.
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -243,69 +243,88 @@ async fn play_track(
         }
     });
 
-    // Read the entire compressed stream into memory, honoring stop and a size cap.
+    // Pump yt-dlp's output into a buffer the decoder reads at the same time,
+    // so playback starts on the first bytes instead of after the whole track
+    // has downloaded. Everything downloaded is kept, so seeking back is still
+    // instant; seeking forward waits for the bytes.
+    let (writer, reader) = crate::youtube::stream::channel();
     let ctrl_for_read = ctrl.clone();
-    let download = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, String> {
-        let mut buf = Vec::new();
+    let download_writer = writer.clone();
+    let download = tokio::task::spawn_blocking(move || {
         let mut chunk = [0u8; 64 * 1024];
+        let mut total = 0usize;
         loop {
             if ctrl_for_read.stopped.load(Ordering::Relaxed) {
-                return Ok(Vec::new());
+                download_writer.finish();
+                return;
             }
             match stdout.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if buf.len() + n > MAX_TRACK_BYTES {
-                        return Err("track exceeds maximum buffer size".to_string());
+                    total += n;
+                    if total > MAX_TRACK_BYTES {
+                        download_writer.fail("track exceeds maximum buffer size");
+                        return;
                     }
-                    buf.extend_from_slice(&chunk[..n]);
+                    download_writer.append(&chunk[..n]);
                 }
-                Err(e) => return Err(format!("read yt-dlp output: {e}")),
+                Err(e) => {
+                    download_writer.fail(format!("read yt-dlp output: {e}"));
+                    return;
+                }
             }
         }
-        Ok(buf)
-    })
-    .await
-    .map_err(|e| format!("download worker join: {e}"))?;
+        download_writer.finish();
+    });
+
+    // Decoding runs alongside the download, not after it.
+    let ctrl_for_cleanup = ctrl.clone();
+    let decode = tokio::task::spawn_blocking(move || {
+        decode_and_stream(reader, audio_tx, ctrl, state, pipeline_pos_ms)
+    });
+
+    let decode_result = decode.await.map_err(|e| format!("decode worker join: {e}"))?;
+    // Decoding is over either way, so nothing is waiting on the rest of the
+    // download: tell it to stop so a failure is reported now rather than after
+    // the remaining minutes of audio have been fetched.
+    ctrl_for_cleanup.stopped.store(true, Ordering::Relaxed);
+    let _ = download.await;
 
     let exit_status = watcher_handle.join().ok().flatten();
     let stderr_text = stderr_handle.join().unwrap_or_default();
 
-    let bytes = match download {
-        Ok(b) => b,
-        Err(e) => {
-            let yt_err = stderr_text.lines()
-                .find(|l| l.to_lowercase().contains("error"))
-                .unwrap_or_else(|| stderr_text.lines().last().unwrap_or(""));
-            let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
-            return Err(format!(
-                "{e} (yt-dlp exit={exit_code}, stderr: {})",
-                yt_err.chars().take(300).collect::<String>()
-            ));
+    if let Err(e) = decode_result {
+        // A decode error is usually yt-dlp's error wearing a disguise: it
+        // failed, we got a truncated stream, and symphonia complained about
+        // that instead. Report what yt-dlp said.
+        let yt_err = stderr_text
+            .lines()
+            .find(|l| l.to_lowercase().contains("error"))
+            .unwrap_or_else(|| stderr_text.lines().last().unwrap_or(""));
+        let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
+        if yt_err.is_empty() {
+            return Err(e);
         }
-    };
-
-    // Stopped mid-download, or nothing came back.
-    if ctrl.stopped.load(Ordering::Relaxed) || bytes.is_empty() {
-        return Ok(());
+        return Err(format!(
+            "{e} (yt-dlp exit={exit_code}, stderr: {})",
+            yt_err.chars().take(300).collect::<String>()
+        ));
     }
-
-    tokio::task::spawn_blocking(move || decode_and_stream(bytes, audio_tx, ctrl, state, pipeline_pos_ms))
-        .await
-        .map_err(|e| format!("decode worker join: {e}"))?
+    Ok(())
 }
 
-/// Decode + resample the buffered compressed audio. Runs on a blocking worker.
-/// The source is a seekable in-memory buffer, so `ctrl.seek_requested` is served
-/// by a native symphonia seek (both directions, instant).
+/// Decode + resample the compressed audio as it arrives. Runs on a blocking
+/// worker. The source keeps everything it has read, so `ctrl.seek_requested` is
+/// served by a native symphonia seek: instantly backwards, and forwards as soon
+/// as the download reaches that point.
 fn decode_and_stream(
-    bytes: Vec<u8>,
+    reader: crate::youtube::stream::StreamReader,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
-    let source: Box<dyn MediaSource> = Box::new(Cursor::new(bytes));
+    let source: Box<dyn MediaSource> = Box::new(reader);
     let mss = MediaSourceStream::new(source, Default::default());
 
     let mut hint = Hint::new();
