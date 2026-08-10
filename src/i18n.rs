@@ -66,8 +66,6 @@ keys! {
     // Playback
     Searching => "searching",
     LoadingTrack => "loading_track",
-    Resuming => "resuming",
-    Paused => "paused",
     NothingToPlay => "nothing_to_play",
     RestartingTrack => "restarting_track",
     LoadingLiked => "loading_liked",
@@ -949,8 +947,8 @@ mod tests {
         assert!(i18n.is_available("es"));
         assert!(i18n.is_available("ru"));
         assert_eq!(
-            i18n.tr_in("pt", Key::Paused, &[]),
-            "Pausado"
+            i18n.tr_in("pt", Key::QueueCleared, &[]),
+            "Fila limpa"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -965,10 +963,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("lang")).unwrap();
         // A one-line pt.lang: overrides that key, keeps the rest of the
         // bundled Portuguese (merge, not replace).
-        std::fs::write(dir.join("lang").join("pt.lang"), "paused = Em pausa\n").unwrap();
+        std::fs::write(dir.join("lang").join("pt.lang"), "queue_cleared = Fila apagada\n").unwrap();
         let i18n = I18n::load(&dir, "en");
-        assert_eq!(i18n.tr_in("pt", Key::Paused, &[]), "Em pausa"); // overridden
-        assert_eq!(i18n.tr_in("pt", Key::Resuming, &[]), "Retomando"); // still bundled
+        assert_eq!(i18n.tr_in("pt", Key::QueueCleared, &[]), "Fila apagada"); // overridden
+        assert_eq!(i18n.tr_in("pt", Key::LoadingTrack, &[]), "Carregando faixa..."); // still bundled
         let _ = std::fs::remove_dir_all(&dir);
     }
 

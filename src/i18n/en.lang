@@ -21,12 +21,6 @@ searching = Searching...
 # Shown when play/pause is pressed while a track is still loading.
 loading_track = Loading track...
 
-# Shown when paused playback resumes.
-resuming = Resuming
-
-# Shown when playback is paused.
-paused = Paused
-
 # Shown when there is nothing to play or resume.
 nothing_to_play = Nothing to play. Use: p <query>
 

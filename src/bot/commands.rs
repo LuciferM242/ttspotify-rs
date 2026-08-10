@@ -397,13 +397,16 @@ impl CommandDispatcher {
                         PlaybackStatus::Loading => {
                             self.reply_t(client, sender_id, Key::LoadingTrack, &[]);
                         }
+                        // No reply either way: the music stopping or starting
+                        // says it faster than a message can, and every other
+                        // reply the bot sends carries something the audio does
+                        // not. The branches below speak because nothing audible
+                        // happens in them.
                         PlaybackStatus::Paused => {
                             self.send(BotCommand::Play { user_id: sender_id });
-                            self.reply_t(client, sender_id, Key::Resuming, &[]);
                         }
                         PlaybackStatus::Playing => {
                             self.send(BotCommand::Pause { user_id: sender_id });
-                            self.reply_t(client, sender_id, Key::Paused, &[]);
                         }
                         PlaybackStatus::Idle => {
                             self.reply_t(client, sender_id, Key::NothingToPlay, &[]);
