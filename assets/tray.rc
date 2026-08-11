@@ -1,0 +1,5 @@
+// Application icon. The first icon by numeric ID becomes the exe's icon in
+// Explorer and the taskbar, and IDI_TRAY is what the tray loads at runtime.
+#define IDI_TRAY 1
+
+IDI_TRAY ICON "tray.ico"

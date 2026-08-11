@@ -115,6 +115,7 @@ winsafe = { version = "0.0.28", features = ["gui", "shell"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
+embed-resource = "3.0.11"
 
 [[bin]]
 name = "tt-spotify-bot"
