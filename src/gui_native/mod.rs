@@ -4,4 +4,5 @@
 //! Lives alongside it until every dialog is ported, because wx and winsafe each
 //! want to own the thread's message loop and cannot both drive one.
 
+pub mod menu;
 pub mod tooltip;
