@@ -51,6 +51,15 @@
   were different.
 
 ### Fixed
+- When Spotify refuses a track's audio key, the bot now says so instead of
+  reporting "Track unavailable". The track was never the problem: the account
+  could not decrypt it, usually because it is not premium or is streaming on
+  another device. The log also records the account type when the session
+  connects, so this is answerable at a glance.
+- Failed Spotify tracks no longer flood the log. A track that cannot be
+  decrypted reaches the decoder as noise, which reported every byte of it -
+  10,000 warnings and 781 KB of log for three tracks, burying the one line
+  that explained anything.
 - Tray: "Logs" now opens the log it meant to. It was building a filename that
   never existed, so the menu item did nothing.
 - The startup line that records which TeamTalk SDK is in use said "unknown" on
