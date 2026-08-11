@@ -126,9 +126,151 @@ pub fn install_panic_hook() {
     }));
 }
 
+/// Default log filter.
+///
+/// symphonia is held at `error` because a track that fails to decrypt reaches
+/// it as noise, and it reports every byte of that: one failed track produced
+/// 8,626 "skipping junk at N bytes" and 1,430 "invalid mpeg audio header"
+/// lines, 781 KB of log for three tracks. The failure itself is still reported
+/// by librespot at error level, which is the line worth keeping.
+///
+/// `RUST_LOG` overrides this wholesale, so debugging a decode problem is still
+/// possible with `RUST_LOG=symphonia_core=debug`.
+const DEFAULT_FILTER: &str = "info,\
+    symphonia_core=error,\
+    symphonia_bundle_mp3=error,\
+    symphonia_format_isomp4=error,\
+    symphonia_metadata=error";
+
 fn default_env_filter() -> EnvFilter {
-    EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"))
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER))
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_filter_parses() {
+        // EnvFilter::new panics on a malformed directive, and this one is only
+        // built when RUST_LOG is unset, so a typo would crash every ordinary
+        // startup while a developer with RUST_LOG set saw nothing wrong.
+        let filter = EnvFilter::new(DEFAULT_FILTER);
+        let rendered = filter.to_string();
+        assert!(rendered.contains("symphonia_core"), "got: {rendered}");
+    }
+
+    #[test]
+    fn symphonia_is_quieter_than_everything_else() {
+        // The point of the filter: the decode spam is suppressed while normal
+        // logging stays at info.
+        assert!(DEFAULT_FILTER.starts_with("info"));
+        for target in [
+            "symphonia_core",
+            "symphonia_bundle_mp3",
+            "symphonia_format_isomp4",
+            "symphonia_metadata",
+        ] {
+            assert!(
+                DEFAULT_FILTER.contains(&format!("{target}=error")),
+                "{target} is not held at error, so its decode spam returns"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod audio_key_watch_tests {
+    use super::*;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// The watched failure state is process-wide, so these tests would
+    /// otherwise arm each other's flag while running in parallel.
+    static SERIALISE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// Run `body` with only the watch layer installed, from a clean state and
+    /// with no other test in this module running.
+    fn with_watch(body: impl FnOnce()) -> parking_lot::MutexGuard<'static, ()> {
+        let guard = SERIALISE.lock();
+        crate::spotify::audio_key::reset_for_test();
+        let subscriber = tracing_subscriber::registry().with(AudioKeyWatch);
+        tracing::subscriber::with_default(subscriber, body);
+        guard
+    }
+
+    #[test]
+    fn a_librespot_key_failure_is_seen_through_the_layer() {
+        // The whole mechanism end to end: the layer must actually extract the
+        // message text from an event. If tracing ever changes how the message
+        // field is recorded, this fails rather than silently never matching.
+        let _guard = with_watch(|| {
+            tracing::error!("error audio key 0 1");
+        });
+        assert!(
+            crate::spotify::audio_key::failed_recently(),
+            "the layer did not recognise librespot's key failure"
+        );
+    }
+
+    #[test]
+    fn the_warning_form_is_seen_too() {
+        let _guard = with_watch(|| {
+            tracing::warn!(
+                "Unable to load key, continuing without decryption: Service unavailable {{ audio key error }}"
+            );
+        });
+        assert!(crate::spotify::audio_key::failed_recently());
+    }
+
+    #[test]
+    fn ordinary_logging_does_not_arm_the_blame() {
+        let _guard = with_watch(|| {
+            tracing::warn!("skipping junk at 4096 bytes");
+            tracing::error!("Unable to read audio file: end of stream");
+            tracing::info!("error audio key 0 1"); // below warn: ignored
+        });
+        assert!(
+            !crate::spotify::audio_key::failed_recently(),
+            "a skip was blamed on the audio key with no key failure"
+        );
+    }
+}
+
+/// Watches librespot's own log for a refused audio key.
+///
+/// librespot reports this only as a log line: it warns, then streams the
+/// undecryptable bytes anyway, so the reason never reaches us as a player
+/// event. Catching it here lets the skip message name the real cause instead
+/// of blaming the track.
+struct AudioKeyWatch;
+
+impl<S: tracing::Subscriber> Layer<S> for AudioKeyWatch {
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        use tracing::field::{Field, Visit};
+
+        // Key failures are logged at warn or error; skip the rest cheaply.
+        if !matches!(
+            *event.metadata().level(),
+            tracing::Level::WARN | tracing::Level::ERROR
+        ) {
+            return;
+        }
+
+        struct MessageVisitor(String);
+        impl Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+        if crate::spotify::audio_key::is_audio_key_failure(&visitor.0) {
+            crate::spotify::audio_key::note_failure();
+        }
+    }
 }
 
 /// Initialize logging with both stdout and file output.
@@ -148,6 +290,7 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
 
     tracing_subscriber::registry()
         .with(default_env_filter())
+        .with(AudioKeyWatch)
         .with(stdout_layer)
         .with(file_layer)
         .init();
@@ -172,6 +315,7 @@ pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
 
     tracing_subscriber::registry()
         .with(default_env_filter())
+        .with(AudioKeyWatch)
         .with(file_layer)
         .init();
 
@@ -188,6 +332,7 @@ pub fn create_instance_logging(log_dir: &Path, name: &str) -> (tracing::Dispatch
 
     let subscriber = tracing_subscriber::registry()
         .with(default_env_filter())
+        .with(AudioKeyWatch)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_target(false)
