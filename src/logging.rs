@@ -223,6 +223,25 @@ mod audio_key_watch_tests {
     }
 
     #[test]
+    fn a_key_failure_logged_through_the_log_crate_is_seen() {
+        // The path that actually matters in production: librespot uses the
+        // `log` crate, not tracing, so its records reach the layer through
+        // tracing-log's bridge. Testing only native tracing events would leave
+        // the real path unverified, and a bridge that named the message field
+        // differently would make this fix silently do nothing.
+        // The real subscribers are built with `.init()`, which installs this
+        // bridge; `with_default` alone does not, so the test must install it.
+        let _ = tracing_log::LogTracer::init();
+        let _guard = with_watch(|| {
+            log::error!("error audio key 0 1");
+        });
+        assert!(
+            crate::spotify::audio_key::failed_recently(),
+            "a librespot log record did not reach the watcher"
+        );
+    }
+
+    #[test]
     fn ordinary_logging_does_not_arm_the_blame() {
         let _guard = with_watch(|| {
             tracing::warn!("skipping junk at 4096 bytes");
