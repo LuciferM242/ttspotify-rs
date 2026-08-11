@@ -2155,7 +2155,14 @@ async fn player_event_loop(
                 }
             }
             PlayerEvent::Unavailable { track_id, .. } => {
-                tracing::warn!("Track unavailable: {track_id:?}, skipping");
+                // librespot reports a refused audio key as an ordinary decode
+                // failure, so without this check the log blames the track for
+                // an account or session problem.
+                let after_key_failure = crate::spotify::audio_key::failed_recently();
+                tracing::warn!(
+                    "Skipping {track_id:?}: {}",
+                    crate::spotify::audio_key::skip_reason(after_key_failure)
+                );
                 if !state.lock().try_arm_auto_advance() {
                     tracing::debug!("Unavailable: an advance is already in flight, not sending a second");
                     continue;

@@ -136,6 +136,7 @@ impl SpotifyAuth {
         match session.connect(credentials, true).await {
             Ok(()) => {
                 tracing::info!("Spotify session established");
+                log_account_type(session);
                 Ok(())
             }
             Err(e) => {
@@ -145,6 +146,7 @@ impl SpotifyAuth {
                 session.connect(credentials, true).await
                     .map_err(|e| BotError::SpotifyAuth(format!("OAuth login also failed: {e}")))?;
                 tracing::info!("Spotify session established via OAuth re-authentication");
+                log_account_type(session);
                 Ok(())
             }
         }
@@ -224,6 +226,22 @@ impl SpotifyAuth {
         Ok(Credentials::with_access_token(&token.access_token))
     }
 
+}
+
+/// Log what kind of account just signed in, so a log answers "is this Premium?"
+/// outright. Playback needs Premium; without it Spotify refuses the audio key
+/// and librespot streams undecryptable bytes, which only shows up much later as
+/// a decode failure.
+fn log_account_type(session: &Session) {
+    use crate::spotify::account::{classify, describe, AccountType};
+
+    let data = session.user_data();
+    let account = classify(session.get_user_attribute("type").as_deref());
+    let line = describe(&account, &data.country);
+    match account {
+        AccountType::Other(_) => tracing::warn!("{line}"),
+        _ => tracing::info!("{line}"),
+    }
 }
 
 #[cfg(test)]
