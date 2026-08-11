@@ -6,3 +6,4 @@
 
 pub mod menu;
 pub mod tooltip;
+pub mod tray;
