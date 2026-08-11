@@ -111,6 +111,7 @@ codegen-units = 1
 wxdragon = "0.9"
 # Per-user autostart via the HKCU Run registry key.
 winreg = "0.52"
+winsafe = { version = "0.0.28", features = ["gui", "shell"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
