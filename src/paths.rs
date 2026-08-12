@@ -432,6 +432,32 @@ mod tests {
     }
 
     #[test]
+    fn an_existing_log_is_never_overwritten_either() {
+        // The log sorter has its own overwrite guard, separate from the one
+        // covering config files, and a lost log is lost history: the only
+        // record of what a bot did. Someone who sorted their logs by hand must
+        // not have them replaced by whatever was left in the flat folder.
+        let root = scratch("logcollide");
+        write(&root.join("logs").join("2026-08-01.myserver.log"), "loose");
+        write(
+            &root.join("logs").join("myserver").join("2026-08-01.log"),
+            "already sorted",
+        );
+
+        migrate_layout(&root, &any_json_is_config);
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("logs/myserver/2026-08-01.log")).unwrap(),
+            "already sorted",
+            "the sorted log was overwritten"
+        );
+        assert!(
+            root.join("logs/2026-08-01.myserver.log").exists(),
+            "the loose copy is kept, not destroyed"
+        );
+    }
+
+    #[test]
     fn an_already_new_layout_is_left_alone() {
         let root = scratch("fresh");
         write(&root.join("config").join("myserver.json"), "{}");
