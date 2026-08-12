@@ -3,3 +3,37 @@
 #define IDI_TRAY 1
 
 IDI_TRAY ICON "tray.ico"
+
+// ---------------------------------------------------------------------------
+// Dialogs.
+//
+// These are resource templates rather than hand-placed controls on purpose.
+// Windows derives tab order, mnemonics (Alt+letter), Enter/Escape handling and
+// DPI scaling from the template, and standard controls in a real dialog are
+// what screen readers are built to read. Placing controls by hand means
+// reimplementing all of that, and getting tab order wrong is exactly what a
+// screen reader user notices first.
+//
+// Numeric style values are used instead of #include <windows.h> so the build
+// does not depend on the SDK headers being on the resource compiler's path.
+// ---------------------------------------------------------------------------
+
+#define IDOK     1
+#define IDCANCEL 2
+
+#define IDD_SETTINGS       100
+#define IDC_CHECK_UPDATES  101
+#define IDC_AUTOSTART      102
+
+// WS_POPUP 0x80000000 | WS_CAPTION 0x00C00000 | WS_SYSMENU 0x00080000
+//   | DS_MODALFRAME 0x00000080 | DS_CENTER 0x00000800 | DS_SETFONT 0x00000040
+IDD_SETTINGS DIALOGEX 0, 0, 250, 82
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Settings"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    AUTOCHECKBOX    "Check for &updates on startup", IDC_CHECK_UPDATES, 12, 14, 226, 12
+    AUTOCHECKBOX    "Launch on Windows &startup",     IDC_AUTOSTART,     12, 32, 226, 12
+    DEFPUSHBUTTON   "Save",                           IDOK,             136, 60,  50, 14
+    PUSHBUTTON      "Cancel",                         IDCANCEL,         192, 60,  50, 14
+END

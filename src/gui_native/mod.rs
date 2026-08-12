@@ -6,5 +6,6 @@
 
 pub mod facts;
 pub mod menu;
+pub mod settings_dialog;
 pub mod tooltip;
 pub mod tray;

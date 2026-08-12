@@ -183,7 +183,7 @@ fn register_events(
                     // Left click and Enter both open the menu: with no main
                     // window to show, there is no more useful primary action,
                     // and a dead click reads as a broken icon.
-                    show_menu(wnd2.hwnd(), &tray, w::POINT::with(x, y));
+                    show_menu(wnd2.hwnd(), &wnd2, &tray, w::POINT::with(x, y));
                 }
                 _ => {}
             }
@@ -286,7 +286,7 @@ fn update_tooltip(hwnd: &w::HWND, tray: &Tray) {
 }
 
 /// Build and show the popup menu, then act on what was chosen.
-fn show_menu(hwnd: &w::HWND, tray: &Rc<Tray>, at: w::POINT) {
+fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POINT) {
     let statuses = tray.manager.borrow().statuses();
     let bots: Vec<(String, String, bool)> = statuses
         .iter()
@@ -328,7 +328,7 @@ fn show_menu(hwnd: &w::HWND, tray: &Rc<Tray>, at: w::POINT) {
     match picked {
         Ok(Some(id)) => {
             if let Some(action) = model.action(id as u16) {
-                handle_action(hwnd, tray, action.clone());
+                handle_action(hwnd, wnd, tray, action.clone());
             }
         }
         Ok(None) => {} // dismissed
@@ -368,7 +368,12 @@ fn build_hmenu(entries: &[MenuEntry]) -> w::SysResult<w::HMENU> {
 }
 
 /// Carry out a chosen menu command.
-fn handle_action(hwnd: &w::HWND, tray: &Rc<Tray>, action: MenuAction) {
+fn handle_action(
+    hwnd: &w::HWND,
+    wnd: &gui::WindowMain,
+    tray: &Rc<Tray>,
+    action: MenuAction,
+) {
     match action {
         MenuAction::Exit => {
             let _ = hwnd.DestroyWindow();
@@ -394,7 +399,7 @@ fn handle_action(hwnd: &w::HWND, tray: &Rc<Tray>, action: MenuAction) {
         MenuAction::AddServer => not_yet_ported(hwnd, "Add Server"),
         MenuAction::YoutubeInstall => not_yet_ported(hwnd, "Install YouTube tools"),
         MenuAction::YoutubeUpdate => not_yet_ported(hwnd, "Update YouTube tools"),
-        MenuAction::Settings => not_yet_ported(hwnd, "Settings"),
+        MenuAction::Settings => crate::gui_native::settings_dialog::show(wnd),
     }
 }
 
