@@ -10,6 +10,17 @@
   startup log now says which runtime is in use.
 
 ### Changed
+- The Windows tray and its windows are now plain Windows ones, built with the
+  system's own dialogs instead of a bundled toolkit. They should feel and read
+  the same, with better keyboard and screen-reader behaviour: every window has
+  proper tab order, Alt shortcuts on the labels, and Enter and Escape work
+  throughout. The download is smaller and starts faster.
+- The tray icon can now be reached from the keyboard as well as the mouse, and
+  its menu opens with Enter or the Applications key.
+- The tray icon reappears by itself if Windows Explorer restarts. Previously it
+  vanished until the app was restarted.
+- Installing or updating the YouTube tools, and downloading an update, no longer
+  make the tray stop responding while they run.
 - The data folder is now organised into subfolders instead of one flat pile:
   config/ for your configs and cookies.txt, lang/ for translations, state/ for
   things the bot remembers, auth/ for saved logins, cache/ for anything it can
@@ -62,6 +73,8 @@
   that explained anything.
 - Tray: "Logs" now opens the log it meant to. It was building a filename that
   never existed, so the menu item did nothing.
+- Tray: clicking a bot's Stop or Restart could act on a different bot if the
+  list changed while the menu was open.
 - The startup line that records which TeamTalk SDK is in use said "unknown" on
   Windows since 0.7.0; it was looking in the wrong folder.
 - "n" no longer says the queue has ended while tracks are sitting in it. When
