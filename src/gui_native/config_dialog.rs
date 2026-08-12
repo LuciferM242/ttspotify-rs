@@ -38,12 +38,14 @@ const IDC_CHANPASS: u16 = 619;
 const IDC_GENDER: u16 = 620;
 const IDC_SERVICE: u16 = 621;
 const IDC_LICNAME: u16 = 622;
-const IDC_LANGUAGE: u16 = 626;
-
-const IDD_CFG_AUDIO: u16 = 640;
 const IDC_LICKEY: u16 = 623;
 const IDC_COOKIES: u16 = 624;
 const IDC_COOKIES_BROWSE: u16 = 625;
+const IDC_LANGUAGE: u16 = 626;
+const IDC_ADMIN_MODE: u16 = 627;
+const IDC_ADMIN_USERS: u16 = 628;
+
+const IDD_CFG_AUDIO: u16 = 640;
 const IDC_QUALITY: u16 = 641;
 const IDC_NORMALIZE: u16 = 642;
 const IDC_VOLUME: u16 = 643;
@@ -56,8 +58,6 @@ const IDC_RADIO_ENABLED: u16 = 661;
 const IDC_RADIO_BATCH: u16 = 662;
 const IDC_RADIO_DELAY: u16 = 663;
 const IDC_SEARCH_LIMIT: u16 = 664;
-const IDC_ADMIN_MODE: u16 = 627;
-const IDC_ADMIN_USERS: u16 = 628;
 
 const IDD_NAME: u16 = 500;
 const IDC_NAME_EDIT: u16 = 501;
@@ -83,12 +83,14 @@ struct ServerPage {
     service: gui::ComboBox,
     language: gui::ComboBox,
     license_name: gui::Edit,
+    license_key: gui::Edit,
+    cookies: gui::Edit,
+    admin_mode: gui::ComboBox,
+    admin_users: gui::Edit,
 }
 
 /// Controls on the Audio page.
 struct AudioPage {
-    license_key: gui::Edit,
-    cookies: gui::Edit,
     quality: gui::ComboBox,
     normalize: gui::CheckBox,
     volume: gui::Edit,
@@ -103,8 +105,6 @@ struct RadioPage {
     batch: gui::Edit,
     delay: gui::Edit,
     search_limit: gui::Edit,
-    admin_mode: gui::ComboBox,
-    admin_users: gui::Edit,
 }
 
 /// Open the config editor.
@@ -136,11 +136,13 @@ pub fn show(
         service: gui::ComboBox::new_dlg(&server_pg, IDC_SERVICE, (gui::Horz::None, gui::Vert::None)),
         language: gui::ComboBox::new_dlg(&server_pg, IDC_LANGUAGE, (gui::Horz::None, gui::Vert::None)),
         license_name: gui::Edit::new_dlg(&server_pg, IDC_LICNAME, (gui::Horz::Resize, gui::Vert::None)),
+        license_key: gui::Edit::new_dlg(&server_pg, IDC_LICKEY, (gui::Horz::Resize, gui::Vert::None)),
+        cookies: gui::Edit::new_dlg(&server_pg, IDC_COOKIES, (gui::Horz::Resize, gui::Vert::None)),
+        admin_mode: gui::ComboBox::new_dlg(&server_pg, IDC_ADMIN_MODE, (gui::Horz::Resize, gui::Vert::None)),
+        admin_users: gui::Edit::new_dlg(&server_pg, IDC_ADMIN_USERS, (gui::Horz::Resize, gui::Vert::Resize)),
     });
 
     let audio = Rc::new(AudioPage {
-        license_key: gui::Edit::new_dlg(&audio_pg, IDC_LICKEY, (gui::Horz::Resize, gui::Vert::None)),
-        cookies: gui::Edit::new_dlg(&audio_pg, IDC_COOKIES, (gui::Horz::Resize, gui::Vert::None)),
         quality: gui::ComboBox::new_dlg(&audio_pg, IDC_QUALITY, (gui::Horz::None, gui::Vert::None)),
         normalize: gui::CheckBox::new_dlg(&audio_pg, IDC_NORMALIZE, (gui::Horz::None, gui::Vert::None)),
         volume: gui::Edit::new_dlg(&audio_pg, IDC_VOLUME, (gui::Horz::None, gui::Vert::None)),
@@ -148,15 +150,13 @@ pub fn show(
         jitter: gui::Edit::new_dlg(&audio_pg, IDC_JITTER, (gui::Horz::None, gui::Vert::None)),
         ramp: gui::Edit::new_dlg(&audio_pg, IDC_RAMP, (gui::Horz::None, gui::Vert::None)),
     });
-    let browse = gui::Button::new_dlg(&audio_pg, IDC_COOKIES_BROWSE, (gui::Horz::Repos, gui::Vert::None));
+    let browse = gui::Button::new_dlg(&server_pg, IDC_COOKIES_BROWSE, (gui::Horz::Repos, gui::Vert::None));
 
     let radio = Rc::new(RadioPage {
         radio_enabled: gui::CheckBox::new_dlg(&radio_pg, IDC_RADIO_ENABLED, (gui::Horz::None, gui::Vert::None)),
         batch: gui::Edit::new_dlg(&radio_pg, IDC_RADIO_BATCH, (gui::Horz::None, gui::Vert::None)),
         delay: gui::Edit::new_dlg(&radio_pg, IDC_RADIO_DELAY, (gui::Horz::None, gui::Vert::None)),
         search_limit: gui::Edit::new_dlg(&radio_pg, IDC_SEARCH_LIMIT, (gui::Horz::None, gui::Vert::None)),
-        admin_mode: gui::ComboBox::new_dlg(&radio_pg, IDC_ADMIN_MODE, (gui::Horz::Resize, gui::Vert::None)),
-        admin_users: gui::Edit::new_dlg(&radio_pg, IDC_ADMIN_USERS, (gui::Horz::Resize, gui::Vert::Resize)),
     });
 
     let _tab = gui::Tab::new_dlg(
@@ -166,7 +166,7 @@ pub fn show(
         &[
             ("Server", server_pg.clone()),
             ("Audio", audio_pg.clone()),
-            ("Radio && admin", radio_pg.clone()),
+            ("Radio && search", radio_pg.clone()),
         ],
     );
 
@@ -196,7 +196,7 @@ pub fn show(
             let lang_refs: Vec<&str> = languages.iter().map(String::as_str).collect();
             let _ = server.language.items().add(&lang_refs);
             let _ = audio.quality.items().add(&QUALITIES);
-            let _ = radio.admin_mode.items().add(&ADMIN_MODE_LABELS);
+            let _ = server.admin_mode.items().add(&ADMIN_MODE_LABELS);
 
             let _ = server.host.set_text(&form.host);
             let _ = server.tcp_port.set_text(&form.tcp_port.to_string());
@@ -212,8 +212,8 @@ pub fn show(
             select_or_first(&server.language, &lang_refs, &form.default_language);
             let _ = server.license_name.set_text(&form.license_name);
 
-            let _ = audio.license_key.set_text(&form.license_key);
-            let _ = audio.cookies.set_text(&form.youtube_cookies_file);
+            let _ = server.license_key.set_text(&form.license_key);
+            let _ = server.cookies.set_text(&form.youtube_cookies_file);
             select_or_first(&audio.quality, &QUALITIES, &form.spotify_quality);
             audio.normalize.set_check(form.spotify_enable_normalization);
             let _ = audio.volume.set_text(&form.volume.to_string());
@@ -225,13 +225,31 @@ pub fn show(
             let _ = radio.batch.set_text(&form.radio_batch_size.to_string());
             let _ = radio.delay.set_text(&form.radio_delay);
             let _ = radio.search_limit.set_text(&form.search_limit.to_string());
-            radio.admin_mode.items().select(Some(form.admin_mode_index));
-            let _ = radio.admin_users.set_text(&form.admin_users);
+            server.admin_mode.items().select(Some(form.admin_mode_index));
+            let _ = server.admin_users.set_text(&form.admin_users);
             // The username list is meaningless in the modes that ignore it.
-            radio
+            server
                 .admin_users
                 .hwnd()
                 .EnableWindow(mode_uses_username_list(form.admin_mode_index));
+
+            // Tab order follows z-order among siblings. The tab pages are
+            // created at run time and land below Save and Cancel, which were
+            // declared in the template, so tabbing went straight from the tab
+            // strip to the buttons and only then into the fields. Moving the
+            // buttons to the bottom of the z-order puts them last, where they
+            // belong: you should reach what you are saving before you reach
+            // Save.
+            for id in [IDOK, IDCANCEL] {
+                if let Ok(btn) = dlg2.hwnd().GetDlgItem(id) {
+                    let _ = btn.SetWindowPos(
+                        w::HwndPlace::Place(co::HWND_PLACE::BOTTOM),
+                        w::POINT::default(),
+                        w::SIZE::default(),
+                        co::SWP::NOMOVE | co::SWP::NOSIZE | co::SWP::NOACTIVATE,
+                    );
+                }
+            }
 
             Ok(true)
         });
@@ -239,10 +257,10 @@ pub fn show(
 
     // --- Admin mode changes what the username list is for ---
     {
-        let radio2 = radio.clone();
-        radio.admin_mode.on().cbn_sel_change(move || {
-            let idx = radio2.admin_mode.items().selected_index().unwrap_or(3);
-            radio2
+        let server2 = server.clone();
+        server.admin_mode.on().cbn_sel_change(move || {
+            let idx = server2.admin_mode.items().selected_index().unwrap_or(3);
+            server2
                 .admin_users
                 .hwnd()
                 .EnableWindow(mode_uses_username_list(idx));
@@ -252,11 +270,11 @@ pub fn show(
 
     // --- Browse for a cookies file ---
     {
-        let audio2 = audio.clone();
+        let server2 = server.clone();
         let dlg2 = dlg.clone();
         browse.on().bn_clicked(move || {
-            if let Some(picked) = pick_cookies_file(dlg2.hwnd()) {
-                let _ = audio2.cookies.set_text(&picked);
+            if let Some(picked) = pick_cookies_file(dlg2.hwnd(), &server2.cookies.text().unwrap_or_default()) {
+                let _ = server2.cookies.set_text(&picked);
             }
             Ok(())
         });
@@ -352,11 +370,11 @@ fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> Confi
         bot_gender: combo_text(&server.gender),
         default_service: combo_text(&server.service),
         license_name: text(&server.license_name),
-        license_key: text(&audio.license_key),
-        youtube_cookies_file: text(&audio.cookies),
+        license_key: text(&server.license_key),
+        youtube_cookies_file: text(&server.cookies),
         default_language: combo_text(&server.language),
-        admin_mode_index: radio.admin_mode.items().selected_index().unwrap_or(3),
-        admin_users: text(&radio.admin_users),
+        admin_mode_index: server.admin_mode.items().selected_index().unwrap_or(3),
+        admin_users: text(&server.admin_users),
         spotify_quality: combo_text(&audio.quality),
         spotify_enable_normalization: audio.normalize.is_checked(),
         volume: number(&audio.volume, 50),
@@ -465,14 +483,73 @@ fn ask_for_name(parent: &(impl GuiParent + 'static)) -> Option<String> {
     name
 }
 
-/// Pick a cookies file.
-fn pick_cookies_file(parent: &w::HWND) -> Option<String> {
-    let _ = parent;
-    // Shown as a plain prompt rather than a shell dialog: the file is pasted
-    // from a browser extension far more often than it is browsed to, and a
-    // COM file dialog inside a modal page is a large amount of machinery for
-    // a field that is usually left empty.
-    None
+/// Pick a cookies file with the standard Windows file dialog.
+///
+/// `cookies.txt` is normally produced by a browser extension and lands in the
+/// Downloads folder, so browsing to it is the usual way to set this, not typing
+/// the path.
+fn pick_cookies_file(parent: &w::HWND, current: &str) -> Option<String> {
+    // winsafe's GUI setup does not initialise COM, and the shell dialog is a
+    // COM object. Apartment-threaded is what shell UI requires. The guard
+    // uninitialises when it drops, so this leaves the process as it found it.
+    let _com = match w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE) {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::error!("Could not initialise COM for the file dialog: {e}");
+            return None;
+        }
+    };
+
+    let picked = (|| -> w::HrResult<Option<String>> {
+        let dlg = w::CoCreateInstance::<w::IFileOpenDialog>(
+            &co::CLSID::FileOpenDialog,
+            None::<&w::IUnknown>,
+            co::CLSCTX::INPROC_SERVER,
+        )?;
+
+        dlg.SetOptions(
+            dlg.GetOptions()?
+                // A path the bot cannot open would be worse than none, so only
+                // real files that exist can be chosen.
+                | co::FOS::FORCEFILESYSTEM
+                | co::FOS::FILEMUSTEXIST
+                | co::FOS::PATHMUSTEXIST,
+        )?;
+        dlg.SetTitle("Select your YouTube cookies file")?;
+        dlg.SetFileTypes(&[("Cookie files", "*.txt"), ("All files", "*.*")])?;
+        dlg.SetFileTypeIndex(1)?;
+
+        // Start where the current value points, so re-picking opens next to the
+        // old choice instead of somewhere arbitrary.
+        if !current.trim().is_empty() {
+            let path = std::path::Path::new(current.trim());
+            if let Some(dir) = path.parent().filter(|d| d.is_dir()) {
+                if let Ok(item) = w::SHCreateItemFromParsingName::<w::IShellItem>(
+                    &dir.to_string_lossy(),
+                    None::<&w::IBindCtx>,
+                ) {
+                    let _ = dlg.SetFolder(&item);
+                }
+            }
+            if let Some(name) = path.file_name() {
+                let _ = dlg.SetFileName(&name.to_string_lossy());
+            }
+        }
+
+        if dlg.Show(parent)? {
+            Ok(Some(dlg.GetResult()?.GetDisplayName(co::SIGDN::FILESYSPATH)?))
+        } else {
+            Ok(None) // cancelled
+        }
+    })();
+
+    match picked {
+        Ok(path) => path,
+        Err(e) => {
+            tracing::error!("File dialog failed: {e}");
+            None
+        }
+    }
 }
 
 /// Offer to install the YouTube tools after a new config is created.

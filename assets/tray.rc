@@ -110,6 +110,9 @@ END
 // A host dialog holding a tab control, plus one child dialog per tab. Child
 // dialogs (WS_CHILD, DS_CONTROL) are how Windows builds tabbed property pages,
 // and each page keeps its own tab order so a screen reader walks it normally.
+//
+// Tab contents match what the wx editor had: everything about reaching and
+// identifying the server on Server, playback on Audio, radio on Radio.
 #define IDD_CONFIG        600
 #define IDC_CFG_TAB       601
 
@@ -147,86 +150,87 @@ END
 #define IDC_RADIO_DELAY   663
 #define IDC_SEARCH_LIMIT  664
 
-IDD_CONFIG DIALOGEX 0, 0, 330, 292
+IDD_CONFIG DIALOGEX 0, 0, 330, 392
 STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
 CAPTION "Configuration"
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
-    CONTROL         "", IDC_CFG_TAB, "SysTabControl32", 0x00010000, 6, 6, 318, 258
-    DEFPUSHBUTTON   "Save",   IDOK,     216, 272, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 272, 272, 50, 14
+    CONTROL         "", IDC_CFG_TAB, "SysTabControl32", 0x00010000, 6, 6, 318, 352
+    DEFPUSHBUTTON   "Save",   IDOK,     216, 368, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 272, 368, 50, 14
 END
 
 // WS_CHILD 0x40000000 | DS_CONTROL 0x0400 | DS_SETFONT 0x40 | WS_TABSTOP 0x00010000
-IDD_CFG_SERVER DIALOGEX 0, 0, 306, 238
+// Edit styles: ES_AUTOHSCROLL 0x0080, ES_PASSWORD 0x0020, ES_NUMBER 0x2000,
+// ES_MULTILINE 0x0004, ES_AUTOVSCROLL 0x0040. Common: WS_TABSTOP 0x00010000,
+// WS_BORDER 0x00800000, WS_VSCROLL 0x00200000. Combo: CBS_DROPDOWNLIST 0x0003.
+IDD_CFG_SERVER DIALOGEX 0, 0, 306, 330
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
-    LTEXT           "&Host:",             -1, 6,   6, 96, 10
-    EDITTEXT        IDC_HOST,                 106,  4, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "&TCP port:",         -1, 6,  24, 96, 10
-    EDITTEXT        IDC_TCP_PORT,             106, 22,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "&UDP port:",         -1, 6,  42, 96, 10
-    EDITTEXT        IDC_UDP_PORT,             106, 40,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    AUTOCHECKBOX    "&Encrypted connection", IDC_ENCRYPTED, 106, 58, 194, 12
-    LTEXT           "User&name:",         -1, 6,  76, 96, 10
-    EDITTEXT        IDC_USERNAME,             106, 74, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "&Password:",         -1, 6,  94, 96, 10
-    // ES_PASSWORD 0x0020
-    EDITTEXT        IDC_PASSWORD,             106, 92, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
-    LTEXT           "&Bot nickname:",     -1, 6, 112, 96, 10
-    EDITTEXT        IDC_BOTNAME,              106,110, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "&Channel:",          -1, 6, 130, 96, 10
-    EDITTEXT        IDC_CHANNEL,              106,128, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "C&hannel password:", -1, 6, 148, 96, 10
-    EDITTEXT        IDC_CHANPASS,             106,146, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
-    LTEXT           "Bot &gender:",       -1, 6, 166, 96, 10
-    // CBS_DROPDOWNLIST 0x0003 | WS_VSCROLL 0x00200000
-    COMBOBOX        IDC_GENDER,               106,164,  90, 60, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Default &service:",  -1, 6, 184, 96, 10
-    COMBOBOX        IDC_SERVICE,              106,182,  90, 60, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Default &language:", -1, 6, 202, 96, 10
-    COMBOBOX        IDC_LANGUAGE,             106,200,  90, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "License na&me:",     -1, 6, 220, 96, 10
-    EDITTEXT        IDC_LICNAME,              106,218, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Host:",              -1,  6,   6, 96, 10
+    EDITTEXT        IDC_HOST,                  106,   4, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&TCP port:",          -1,  6,  22, 96, 10
+    EDITTEXT        IDC_TCP_PORT,              106,  20,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "&UDP port:",          -1,  6,  38, 96, 10
+    EDITTEXT        IDC_UDP_PORT,              106,  36,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    AUTOCHECKBOX    "&Encrypted connection", IDC_ENCRYPTED, 106, 52, 194, 12
+    LTEXT           "User&name:",          -1,  6,  70, 96, 10
+    EDITTEXT        IDC_USERNAME,              106,  68, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Password:",          -1,  6,  86, 96, 10
+    EDITTEXT        IDC_PASSWORD,              106,  84, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
+    LTEXT           "&Bot nickname:",      -1,  6, 102, 96, 10
+    EDITTEXT        IDC_BOTNAME,               106, 100, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Channel:",           -1,  6, 118, 96, 10
+    EDITTEXT        IDC_CHANNEL,               106, 116, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "C&hannel password:",  -1,  6, 134, 96, 10
+    EDITTEXT        IDC_CHANPASS,              106, 132, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
+    LTEXT           "Bot &gender:",        -1,  6, 150, 96, 10
+    COMBOBOX        IDC_GENDER,                106, 148,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Default &service:",   -1,  6, 166, 96, 10
+    COMBOBOX        IDC_SERVICE,               106, 164,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Default &language:",  -1,  6, 182, 96, 10
+    COMBOBOX        IDC_LANGUAGE,              106, 180,  90, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "License na&me:",      -1,  6, 198, 96, 10
+    EDITTEXT        IDC_LICNAME,               106, 196, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "License &key:",       -1,  6, 214, 96, 10
+    EDITTEXT        IDC_LICKEY,                106, 212, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "YouTube c&ookies file:", -1, 6, 230, 96, 10
+    EDITTEXT        IDC_COOKIES,               106, 228, 148, 13, 0x0080 | 0x00010000 | 0x00800000
+    PUSHBUTTON      "B&rowse...", IDC_COOKIES_BROWSE, 258, 228, 42, 13
+    LTEXT           "&Admin mode:",        -1,  6, 246, 96, 10
+    COMBOBOX        IDC_ADMIN_MODE,            106, 244, 194, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 264, 294, 10
+    EDITTEXT        IDC_ADMIN_USERS,             6, 276, 294, 48,
+                    0x0004 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
 END
 
-IDD_CFG_AUDIO DIALOGEX 0, 0, 306, 238
+IDD_CFG_AUDIO DIALOGEX 0, 0, 306, 330
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
-    LTEXT           "License &key:",      -1, 6,   6, 96, 10
-    EDITTEXT        IDC_LICKEY,               106,  4, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "YouTube c&ookies file:", -1, 6, 24, 96, 10
-    EDITTEXT        IDC_COOKIES,              106, 22, 148, 13, 0x0080 | 0x00010000 | 0x00800000
-    PUSHBUTTON      "&Browse...", IDC_COOKIES_BROWSE, 258, 22, 42, 13
-    LTEXT           "Spotify &quality:",  -1, 6,  46, 96, 10
-    COMBOBOX        IDC_QUALITY,              106, 44,  90, 60, 0x0003 | 0x00200000 | 0x00010000
-    AUTOCHECKBOX    "Enable &normalization", IDC_NORMALIZE, 106, 62, 194, 12
-    LTEXT           "Default &volume:",   -1, 6,  80, 96, 10
-    EDITTEXT        IDC_VOLUME,               106, 78,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "&Max volume:",       -1, 6,  98, 96, 10
-    EDITTEXT        IDC_MAX_VOLUME,           106, 96,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "&Jitter buffer (ms):", -1, 6, 116, 96, 10
-    EDITTEXT        IDC_JITTER,               106,114,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "Volume &ramp step:", -1, 6, 134, 96, 10
-    EDITTEXT        IDC_RAMP,                 106,132,  60, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "Spotify &quality:",   -1,  6,   6, 96, 10
+    COMBOBOX        IDC_QUALITY,               106,   4,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    AUTOCHECKBOX    "Enable &normalization", IDC_NORMALIZE, 106, 22, 194, 12
+    LTEXT           "Default &volume:",    -1,  6,  40, 96, 10
+    EDITTEXT        IDC_VOLUME,                106,  38,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "&Max volume:",        -1,  6,  56, 96, 10
+    EDITTEXT        IDC_MAX_VOLUME,            106,  54,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "&Jitter buffer (ms):", -1, 6,  72, 96, 10
+    EDITTEXT        IDC_JITTER,                106,  70,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "Volume &ramp step:",  -1,  6,  88, 96, 10
+    EDITTEXT        IDC_RAMP,                  106,  86,  60, 13, 0x0080 | 0x00010000 | 0x00800000
 END
 
-IDD_CFG_RADIO DIALOGEX 0, 0, 306, 238
+IDD_CFG_RADIO DIALOGEX 0, 0, 306, 330
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
     AUTOCHECKBOX    "&Radio enabled", IDC_RADIO_ENABLED, 106, 6, 194, 12
-    LTEXT           "Radio &batch size:", -1, 6,  24, 96, 10
-    EDITTEXT        IDC_RADIO_BATCH,          106, 22,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "Radio &delay (s):", -1, 6,  42, 96, 10
-    EDITTEXT        IDC_RADIO_DELAY,          106, 40,  60, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "&Search limit:",    -1, 6,  60, 96, 10
-    EDITTEXT        IDC_SEARCH_LIMIT,         106, 58,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
-    LTEXT           "&Admin mode:",      -1, 6,  84, 96, 10
-    COMBOBOX        IDC_ADMIN_MODE,           106, 82, 194, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 104, 294, 10
-    EDITTEXT        IDC_ADMIN_USERS,          6, 118, 294, 100,
-                    0x0004 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
+    LTEXT           "Radio &batch size:",  -1,  6,  24, 96, 10
+    EDITTEXT        IDC_RADIO_BATCH,           106,  22,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "Radio &delay (s):",   -1,  6,  40, 96, 10
+    EDITTEXT        IDC_RADIO_DELAY,           106,  38,  60, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Search limit:",      -1,  6,  56, 96, 10
+    EDITTEXT        IDC_SEARCH_LIMIT,          106,  54,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
 END
