@@ -266,13 +266,6 @@ impl BotManager {
         inst.shutdown = Some(shutdown);
     }
 
-    pub fn stop_all(&mut self) {
-        let names: Vec<String> = self.instances.keys().cloned().collect();
-        for name in names {
-            self.stop(&name);
-        }
-    }
-
     /// Signal all bots to stop without blocking. Use this from the GUI
     /// thread (e.g. on_destroy) to avoid freezing the event loop.
     pub fn stop_all_nonblocking(&mut self) {

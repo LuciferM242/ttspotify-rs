@@ -91,12 +91,6 @@ impl SpotifyAuth {
         }
     }
 
-    /// Override headless detection (e.g. from CLI flag or env var).
-    #[allow(dead_code)]
-    pub fn set_headless(&mut self, headless: bool) {
-        self.headless = headless;
-    }
-
     /// Check if cached Spotify credentials exist (without connecting).
     pub fn has_cached_credentials(&self) -> bool {
         self.cache.as_ref().is_some_and(|c| c.credentials().is_some())

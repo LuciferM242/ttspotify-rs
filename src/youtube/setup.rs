@@ -531,12 +531,6 @@ pub fn installed_deno_version(paths: &YoutubeSetupPaths) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Pinned version we'd lay down on a fresh install. Read by --update-tools
-/// to know what to download if the sidecar is missing.
-pub fn pinned_bgutil_version() -> &'static str {
-    BGUTIL_VERSION
-}
-
 /// Returns the bgutil version actually installed on disk (read from the
 /// sidecar). Falls back to the pinned const if the sidecar is missing,
 /// which covers older installs that predate the sidecar.
