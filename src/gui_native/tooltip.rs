@@ -91,11 +91,10 @@ fn compose_tooltip(statuses: &[(String, BotStatus)]) -> String {
         parts.push(format!("{stopped} stopped"));
     }
 
-    if parts.is_empty() {
-        format!("TT Spotify - {} bots", statuses.len())
-    } else {
-        format!("TT Spotify - {}", parts.join(", "))
-    }
+    // No empty-parts fallback: the match above is exhaustive and every variant
+    // increments a counter, so with bots present `parts` always has something.
+    // wx carried a "{n} bots" branch here that could never run.
+    format!("TT Spotify - {}", parts.join(", "))
 }
 
 #[cfg(test)]
@@ -129,6 +128,60 @@ mod tests {
         ]);
         // The playing bot counts as connected too, so 2 connected of 3.
         assert_eq!(build_tooltip(&s), "TT Spotify - 2 connected, 1 playing, 1 stopped");
+    }
+
+    #[test]
+    fn several_servers_are_summarised_in_a_fixed_order() {
+        // The multi-server line the tray shows most of the time. Order is
+        // fixed so the text does not reshuffle as bots change state, which
+        // would make it hard to read at a glance.
+        let s = bots(&[
+            ("a", BotStatus::Stopped),
+            ("b", BotStatus::Error("boom".into())),
+            ("c", BotStatus::Playing("song".into())),
+            ("d", BotStatus::Connecting),
+            ("e", BotStatus::Connected),
+        ]);
+        assert_eq!(
+            build_tooltip(&s),
+            "TT Spotify - 2 connected, 1 playing, 1 starting, 1 failed, 1 stopped"
+        );
+    }
+
+    #[test]
+    fn every_status_is_counted_somewhere() {
+        // Guards the summary against a new BotStatus variant being counted
+        // nowhere and silently vanishing from the total.
+        let all = bots(&[
+            ("a", BotStatus::Stopped),
+            ("b", BotStatus::Starting),
+            ("c", BotStatus::Connecting),
+            ("d", BotStatus::Authenticating),
+            ("e", BotStatus::Connected),
+            ("f", BotStatus::Playing("x".into())),
+            ("g", BotStatus::Disconnected),
+            ("h", BotStatus::Error("x".into())),
+        ]);
+        let tip = build_tooltip(&all);
+        let counted: u32 = tip
+            .trim_start_matches("TT Spotify - ")
+            .split(", ")
+            .filter_map(|part| part.split_whitespace().next())
+            .filter_map(|n| n.parse::<u32>().ok())
+            .sum();
+        // Playing also counts as connected, so one bot is counted twice.
+        assert_eq!(counted, all.len() as u32 + 1, "got: {tip}");
+    }
+
+    #[test]
+    fn a_disconnected_server_reads_as_failed_not_stopped() {
+        // They mean different things: stopped is the user's doing, failed is
+        // not, and conflating them hides a server that needs attention.
+        let s = bots(&[
+            ("a", BotStatus::Disconnected),
+            ("b", BotStatus::Stopped),
+        ]);
+        assert_eq!(build_tooltip(&s), "TT Spotify - 1 failed, 1 stopped");
     }
 
     #[test]
