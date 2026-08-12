@@ -251,7 +251,11 @@ fn icon_data(hwnd: &w::HWND) -> w::NOTIFYICONDATA {
 
 fn add_icon(hwnd: &w::HWND, icon: &w::guard::DestroyIconGuard) {
     let mut nid = icon_data(hwnd);
-    nid.uFlags = co::NIF::ICON | co::NIF::MESSAGE | co::NIF::TIP;
+    // SHOWTIP is required, not optional: asking for NOTIFYICON_VERSION_4
+    // below suppresses the standard tooltip unless it is set, and a screen
+    // reader takes the icon's accessible name from that tooltip. Without it
+    // the icon reads as a bare "TT Spotify" with no status.
+    nid.uFlags = co::NIF::ICON | co::NIF::MESSAGE | co::NIF::TIP | co::NIF::SHOWTIP;
     nid.uCallbackMessage = unsafe { co::WM::from_raw(WM_TRAY_CALLBACK) };
     nid.hIcon = unsafe { icon.raw_copy() };
     nid.set_szTip("TT Spotify");
@@ -278,10 +282,14 @@ fn remove_icon(hwnd: &w::HWND) {
 fn update_tooltip(hwnd: &w::HWND, tray: &Tray) {
     let text = build_tooltip(&tray.manager.borrow().statuses());
     let mut nid = icon_data(hwnd);
-    nid.uFlags = co::NIF::TIP;
+    // SHOWTIP again: it is a property of the notification, so leaving it off
+    // here would re-suppress the tooltip on the first status change.
+    nid.uFlags = co::NIF::TIP | co::NIF::SHOWTIP;
     nid.set_szTip(&text);
     if let Err(e) = w::Shell_NotifyIcon(co::NIM::MODIFY, &nid) {
-        tracing::debug!("Could not update the tray tooltip: {e}");
+        // Warn, not debug: the tooltip is the only status a tray-only app
+        // shows, and the default filter would have hidden a debug line.
+        tracing::warn!("Could not update the tray tooltip: {e}");
     }
 }
 
