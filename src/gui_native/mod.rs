@@ -1,12 +1,21 @@
-//! Native Win32 tray UI, built on winsafe.
+//! Windows GUI: system tray, config editor and dialogs, on winsafe.
 //!
-//! Replaces the wxWidgets GUI in `gui/`: same behaviour, no bundled toolkit.
-//! Lives alongside it until every dialog is ported, because wx and winsafe each
-//! want to own the thread's message loop and cannot both drive one.
+//! Native Win32 throughout. Dialogs are built from resource templates in
+//! assets/tray.rc, so tab order, mnemonics, Enter/Escape and DPI scaling come
+//! from Windows rather than being reimplemented, and standard controls are what
+//! screen readers are built to read.
 
+pub mod autostart;
+pub mod config_dialog;
 pub mod config_form;
 pub mod facts;
+pub mod manager;
 pub mod menu;
+pub mod progress_dialog;
 pub mod settings_dialog;
 pub mod tooltip;
 pub mod tray;
+pub mod update_dialog;
+pub mod youtube_tools;
+
+pub use tray::run;

@@ -37,3 +37,196 @@ BEGIN
     DEFPUSHBUTTON   "Save",                           IDOK,             136, 60,  50, 14
     PUSHBUTTON      "Cancel",                         IDCANCEL,         192, 60,  50, 14
 END
+
+// --- Progress: live log for long-running installs -------------------------
+#define IDD_PROGRESS   200
+#define IDC_PROG_LOG   201
+#define IDC_PROG_CLOSE 202
+
+IDD_PROGRESS DIALOGEX 0, 0, 340, 200
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040 | 0x00040000
+CAPTION "Working"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    // ES_MULTILINE 0x0004 | ES_READONLY 0x0800 | ES_AUTOVSCROLL 0x0040
+    //   | WS_VSCROLL 0x00200000 | WS_TABSTOP 0x00010000 | WS_BORDER 0x00800000
+    EDITTEXT        IDC_PROG_LOG, 8, 8, 324, 160,
+                    0x0004 | 0x0800 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
+    DEFPUSHBUTTON   "Close", IDC_PROG_CLOSE, 282, 176, 50, 14
+END
+
+// --- Update available: release notes, then download or defer --------------
+#define IDD_UPDATE       300
+#define IDC_UPD_HEADING  301
+#define IDC_UPD_NOTES    302
+#define IDC_UPD_DOWNLOAD 303
+#define IDC_UPD_LATER    304
+
+IDD_UPDATE DIALOGEX 0, 0, 340, 220
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Update available"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "", IDC_UPD_HEADING, 8, 8, 324, 20
+    EDITTEXT        IDC_UPD_NOTES, 8, 32, 324, 152,
+                    0x0004 | 0x0800 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
+    DEFPUSHBUTTON   "Download", IDC_UPD_DOWNLOAD, 222, 192, 54, 14
+    PUSHBUTTON      "Later",    IDC_UPD_LATER,    282, 192, 50, 14
+END
+
+// --- Download progress: a bar and a cancel --------------------------------
+#define IDD_DOWNLOAD    400
+#define IDC_DL_LABEL    401
+#define IDC_DL_BAR      402
+#define IDC_DL_CANCEL   403
+
+IDD_DOWNLOAD DIALOGEX 0, 0, 240, 76
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Downloading update"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT       "Downloading...", IDC_DL_LABEL, 10, 10, 220, 10
+    CONTROL     "", IDC_DL_BAR, "msctls_progress32", 0x00000000, 10, 26, 220, 12
+    PUSHBUTTON  "Cancel", IDC_DL_CANCEL, 180, 50, 50, 14
+END
+
+// --- Name prompt for a new config -----------------------------------------
+#define IDD_NAME       500
+#define IDC_NAME_EDIT  501
+
+IDD_NAME DIALOGEX 0, 0, 220, 74
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Config name"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Enter a &name for this configuration:", -1, 10, 10, 200, 10
+    // ES_AUTOHSCROLL 0x0080
+    EDITTEXT        IDC_NAME_EDIT, 10, 24, 200, 14, 0x0080 | 0x00010000 | 0x00800000
+    DEFPUSHBUTTON   "OK",     IDOK,     106, 50, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 160, 50, 50, 14
+END
+
+// --- Config editor --------------------------------------------------------
+// A host dialog holding a tab control, plus one child dialog per tab. Child
+// dialogs (WS_CHILD, DS_CONTROL) are how Windows builds tabbed property pages,
+// and each page keeps its own tab order so a screen reader walks it normally.
+#define IDD_CONFIG        600
+#define IDC_CFG_TAB       601
+
+#define IDD_CFG_SERVER    610
+#define IDC_HOST          611
+#define IDC_TCP_PORT      612
+#define IDC_UDP_PORT      613
+#define IDC_ENCRYPTED     614
+#define IDC_USERNAME      615
+#define IDC_PASSWORD      616
+#define IDC_BOTNAME       617
+#define IDC_CHANNEL       618
+#define IDC_CHANPASS      619
+#define IDC_GENDER        620
+#define IDC_SERVICE       621
+#define IDC_LICNAME       622
+#define IDC_LICKEY        623
+#define IDC_COOKIES       624
+#define IDC_COOKIES_BROWSE 625
+#define IDC_LANGUAGE      626
+#define IDC_ADMIN_MODE    627
+#define IDC_ADMIN_USERS   628
+
+#define IDD_CFG_AUDIO     640
+#define IDC_QUALITY       641
+#define IDC_NORMALIZE     642
+#define IDC_VOLUME        643
+#define IDC_MAX_VOLUME    644
+#define IDC_JITTER        645
+#define IDC_RAMP          646
+
+#define IDD_CFG_RADIO     660
+#define IDC_RADIO_ENABLED 661
+#define IDC_RADIO_BATCH   662
+#define IDC_RADIO_DELAY   663
+#define IDC_SEARCH_LIMIT  664
+
+IDD_CONFIG DIALOGEX 0, 0, 330, 292
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Configuration"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    CONTROL         "", IDC_CFG_TAB, "SysTabControl32", 0x00010000, 6, 6, 318, 258
+    DEFPUSHBUTTON   "Save",   IDOK,     216, 272, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 272, 272, 50, 14
+END
+
+// WS_CHILD 0x40000000 | DS_CONTROL 0x0400 | DS_SETFONT 0x40 | WS_TABSTOP 0x00010000
+IDD_CFG_SERVER DIALOGEX 0, 0, 306, 238
+STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "&Host:",             -1, 6,   6, 96, 10
+    EDITTEXT        IDC_HOST,                 106,  4, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&TCP port:",         -1, 6,  24, 96, 10
+    EDITTEXT        IDC_TCP_PORT,             106, 22,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "&UDP port:",         -1, 6,  42, 96, 10
+    EDITTEXT        IDC_UDP_PORT,             106, 40,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    AUTOCHECKBOX    "&Encrypted connection", IDC_ENCRYPTED, 106, 58, 194, 12
+    LTEXT           "User&name:",         -1, 6,  76, 96, 10
+    EDITTEXT        IDC_USERNAME,             106, 74, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Password:",         -1, 6,  94, 96, 10
+    // ES_PASSWORD 0x0020
+    EDITTEXT        IDC_PASSWORD,             106, 92, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
+    LTEXT           "&Bot nickname:",     -1, 6, 112, 96, 10
+    EDITTEXT        IDC_BOTNAME,              106,110, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Channel:",          -1, 6, 130, 96, 10
+    EDITTEXT        IDC_CHANNEL,              106,128, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "C&hannel password:", -1, 6, 148, 96, 10
+    EDITTEXT        IDC_CHANPASS,             106,146, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
+    LTEXT           "Bot &gender:",       -1, 6, 166, 96, 10
+    // CBS_DROPDOWNLIST 0x0003 | WS_VSCROLL 0x00200000
+    COMBOBOX        IDC_GENDER,               106,164,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Default &service:",  -1, 6, 184, 96, 10
+    COMBOBOX        IDC_SERVICE,              106,182,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Default &language:", -1, 6, 202, 96, 10
+    COMBOBOX        IDC_LANGUAGE,             106,200,  90, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "License na&me:",     -1, 6, 220, 96, 10
+    EDITTEXT        IDC_LICNAME,              106,218, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+END
+
+IDD_CFG_AUDIO DIALOGEX 0, 0, 306, 238
+STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "License &key:",      -1, 6,   6, 96, 10
+    EDITTEXT        IDC_LICKEY,               106,  4, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "YouTube c&ookies file:", -1, 6, 24, 96, 10
+    EDITTEXT        IDC_COOKIES,              106, 22, 148, 13, 0x0080 | 0x00010000 | 0x00800000
+    PUSHBUTTON      "&Browse...", IDC_COOKIES_BROWSE, 258, 22, 42, 13
+    LTEXT           "Spotify &quality:",  -1, 6,  46, 96, 10
+    COMBOBOX        IDC_QUALITY,              106, 44,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    AUTOCHECKBOX    "Enable &normalization", IDC_NORMALIZE, 106, 62, 194, 12
+    LTEXT           "Default &volume:",   -1, 6,  80, 96, 10
+    EDITTEXT        IDC_VOLUME,               106, 78,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "&Max volume:",       -1, 6,  98, 96, 10
+    EDITTEXT        IDC_MAX_VOLUME,           106, 96,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "&Jitter buffer (ms):", -1, 6, 116, 96, 10
+    EDITTEXT        IDC_JITTER,               106,114,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "Volume &ramp step:", -1, 6, 134, 96, 10
+    EDITTEXT        IDC_RAMP,                 106,132,  60, 13, 0x0080 | 0x00010000 | 0x00800000
+END
+
+IDD_CFG_RADIO DIALOGEX 0, 0, 306, 238
+STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    AUTOCHECKBOX    "&Radio enabled", IDC_RADIO_ENABLED, 106, 6, 194, 12
+    LTEXT           "Radio &batch size:", -1, 6,  24, 96, 10
+    EDITTEXT        IDC_RADIO_BATCH,          106, 22,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "Radio &delay (s):", -1, 6,  42, 96, 10
+    EDITTEXT        IDC_RADIO_DELAY,          106, 40,  60, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "&Search limit:",    -1, 6,  60, 96, 10
+    EDITTEXT        IDC_SEARCH_LIMIT,         106, 58,  60, 13, 0x0080 | 0x00010000 | 0x00800000 | 0x2000
+    LTEXT           "&Admin mode:",      -1, 6,  84, 96, 10
+    COMBOBOX        IDC_ADMIN_MODE,           106, 82, 194, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 104, 294, 10
+    EDITTEXT        IDC_ADMIN_USERS,          6, 118, 294, 100,
+                    0x0004 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
+END

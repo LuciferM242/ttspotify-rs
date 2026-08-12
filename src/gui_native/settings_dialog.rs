@@ -8,13 +8,13 @@
 //! label; standard controls in a dialog template do not need that.
 //!
 //! Both settings are read and written by code that has nothing to do with the
-//! toolkit (`crate::settings` and `crate::gui::autostart`), so only the window
+//! toolkit (`crate::settings` and `crate::gui_native::autostart`), so only the window
 //! itself changed in the port.
 
 use winsafe::prelude::*;
 use winsafe::{co, gui};
 
-use crate::gui::autostart;
+use crate::gui_native::autostart;
 use crate::settings::{self, AppSettings};
 
 const IDD_SETTINGS: u16 = 100;

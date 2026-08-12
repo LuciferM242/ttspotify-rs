@@ -4,7 +4,7 @@
 //! must fit in 127 UTF-16 code units plus a terminator. Overlong text is cut
 //! here rather than left to the shell, which would truncate mid-character.
 
-use crate::gui::manager::BotStatus;
+use crate::gui_native::manager::BotStatus;
 
 /// Room in `szTip`, in UTF-16 code units, excluding the NUL terminator.
 pub const MAX_TIP_UTF16: usize = 127;

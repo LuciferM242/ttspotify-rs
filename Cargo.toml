@@ -110,10 +110,13 @@ codegen-units = 1
 
 # GUI (Windows tray + config editor)
 [target.'cfg(windows)'.dependencies]
-wxdragon = "0.9"
+# Win32 GUI: the tray icon, menus and dialogs. Thin, safe bindings over the
+# Windows API with no transitive dependencies and no build script, replacing
+# wxWidgets (which downloaded a prebuilt toolkit and left ~470 MB of build
+# artifacts to draw a tray icon and four dialogs).
+winsafe = { version = "0.0.28", features = ["gui", "shell"] }
 # Per-user autostart via the HKCU Run registry key.
 winreg = "0.52"
-winsafe = { version = "0.0.28", features = ["gui", "shell"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"

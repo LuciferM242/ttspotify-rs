@@ -284,6 +284,10 @@ async fn run_cli_update() -> Result<(), BotError> {
 /// tray icon. `--setup` opens the GUI config dialog directly.
 #[cfg(windows)]
 fn main() {
+    // Brings winsafe's GuiWindow/GuiEventsParent methods into scope for the
+    // setup path's throwaway owner window.
+    use winsafe::prelude::*;
+
     pin_teamtalk_sdk_version();
     tt_spotify_bot::logging::install_panic_hook();
     let args: Vec<String> = std::env::args().collect();
@@ -307,13 +311,28 @@ fn main() {
             (tt_spotify_bot::config::BotConfig::default(), None)
         };
 
-        let _ = wxdragon::main(|_| {
-            tt_spotify_bot::gui::config_dialog::open_config_dialog(config, path, |saved_path| {
-                tracing::info!("Config saved to: {}", saved_path.display());
-            });
+        // The editor is modal and owns its own message loop, so the setup
+        // path no longer starts one of its own.
+        let owner = winsafe::gui::WindowMain::new(winsafe::gui::WindowMainOpts {
+            title: "TT Spotify",
+            ex_style: winsafe::co::WS_EX::TOOLWINDOW,
+            style: winsafe::co::WS::OVERLAPPED,
+            size: (0, 0),
+            ..Default::default()
         });
+        let owner2 = owner.clone();
+        owner.on().wm_create(move |_| {
+            if let Some(saved) =
+                tt_spotify_bot::gui_native::config_dialog::show(&owner2, config.clone(), path.clone())
+            {
+                tracing::info!("Config saved to: {}", saved.display());
+            }
+            let _ = owner2.hwnd().DestroyWindow();
+            Ok(0)
+        });
+        let _ = owner.run_main(Some(winsafe::co::SW::HIDE));
         return;
     }
 
-    tt_spotify_bot::gui::run();
+    tt_spotify_bot::gui_native::run();
 }

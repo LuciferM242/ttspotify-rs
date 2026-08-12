@@ -22,7 +22,8 @@ use std::rc::Rc;
 use winsafe::prelude::*;
 use winsafe::{self as w, co, gui, msg};
 
-use crate::gui::manager::{BotManager, BotStatus};
+use crate::config::BotConfig;
+use crate::gui_native::manager::{BotManager, BotStatus};
 use crate::gui_native::facts::FactsCache;
 use crate::gui_native::menu::{BotAction, MenuAction, MenuBuilder, MenuEntry, MenuFacts};
 use crate::gui_native::tooltip::build_tooltip;
@@ -129,6 +130,17 @@ pub fn run() {
         exiting: Cell::new(false),
     });
 
+    {
+        // The updater replaces the exe and relaunches with process::exit, which
+        // skips wm_destroy, so the bots have to be stopped explicitly first.
+        let manager = tray.manager.clone();
+        crate::gui_native::update_dialog::set_prepare_relaunch(move || {
+            manager
+                .borrow_mut()
+                .stop_all_with_timeout(std::time::Duration::from_secs(3));
+        });
+    }
+
     // TaskbarCreated is broadcast when Explorer restarts; without re-adding the
     // icon it is gone for the rest of the session.
     let taskbar_created = w::RegisterWindowMessage("TaskbarCreated").unwrap_or(0);
@@ -159,7 +171,7 @@ fn register_events(
             // With an update check in flight, the timer starts the bots once
             // the user has answered; otherwise there is nothing to wait for.
             if !has_configs || tray.update_rx.is_none() {
-                start_bots(wnd2.hwnd(), &tray);
+                start_bots(&wnd2, &tray);
             }
             Ok(0)
         });
@@ -216,7 +228,7 @@ fn register_events(
             if changed {
                 update_tooltip(wnd2.hwnd(), &tray);
             }
-            poll_startup_update(wnd2.hwnd(), &tray);
+            poll_startup_update(&wnd2, &tray);
             Ok(())
         });
     }
@@ -397,28 +409,110 @@ fn handle_action(
                 tray.manager.borrow_mut().restart_nonblocking(&name);
             }
             BotAction::Logs => open_logs(hwnd, &name),
-            BotAction::Config => {
-                // Needs the config editor, which is not ported yet.
-                not_yet_ported(hwnd, "Edit Config");
-            }
+            BotAction::Config => edit_config(wnd, tray, &name),
         },
         MenuAction::SpotifyAuth => spawn_spotify_auth(tray.facts.borrow().staleness_flag()),
-        MenuAction::CheckUpdates => spawn_update_check(),
-        MenuAction::AddServer => not_yet_ported(hwnd, "Add Server"),
-        MenuAction::YoutubeInstall => not_yet_ported(hwnd, "Install YouTube tools"),
-        MenuAction::YoutubeUpdate => not_yet_ported(hwnd, "Update YouTube tools"),
+        MenuAction::CheckUpdates => check_for_updates_now(hwnd, wnd),
+        MenuAction::AddServer => add_server(wnd, tray),
+        MenuAction::YoutubeInstall => {
+            crate::gui_native::progress_dialog::run(wnd, "Install YouTube tools", |p| {
+                crate::gui_native::progress_dialog::youtube_install(p)
+            });
+            // Whether it worked or not, what is on disk may have changed.
+            tray.facts.borrow().mark_stale();
+        }
+        MenuAction::YoutubeUpdate => {
+            crate::gui_native::progress_dialog::run(wnd, "Update YouTube tools", |p| {
+                crate::gui_native::progress_dialog::youtube_update(p)
+            });
+            tray.facts.borrow().mark_stale();
+        }
         MenuAction::Settings => crate::gui_native::settings_dialog::show(wnd),
     }
 }
 
-/// Placeholder for the dialogs still to be ported. Says so plainly rather than
-/// doing nothing, which would read as a broken menu item.
-fn not_yet_ported(hwnd: &w::HWND, what: &str) {
-    let _ = hwnd.MessageBox(
-        &format!("{what} is not available in this build yet."),
-        "TT Spotify",
-        co::MB::OK | co::MB::ICONINFORMATION,
-    );
+/// Create a new config, then start whatever it produced.
+fn add_server(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    let created = crate::gui_native::config_dialog::show(wnd, BotConfig::default(), None);
+    if created.is_none() {
+        return;
+    }
+    let names = { tray.manager.borrow_mut().load_configs() };
+    let mut m = tray.manager.borrow_mut();
+    for name in &names {
+        m.start(name);
+    }
+    drop(m);
+    // A config may have signed in or installed tools.
+    tray.facts.borrow().mark_stale();
+    update_tooltip(wnd.hwnd(), tray);
+}
+
+/// Edit an existing config. A running bot is restarted so the edit takes
+/// effect; a stopped one is left stopped.
+fn edit_config(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
+    let Some(path) = tray.manager.borrow().config_path(name) else {
+        return;
+    };
+    let cfg = match BotConfig::load(path.to_str().unwrap_or("")) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = wnd.hwnd().MessageBox(
+                &format!("Could not read {}: {e}", path.display()),
+                "TT Spotify",
+                co::MB::OK | co::MB::ICONERROR,
+            );
+            return;
+        }
+    };
+    if crate::gui_native::config_dialog::show(wnd, cfg, Some(path)).is_some() {
+        let mut m = tray.manager.borrow_mut();
+        if m.is_running(name) {
+            m.restart_nonblocking(name);
+        }
+        drop(m);
+        tray.facts.borrow().mark_stale();
+        update_tooltip(wnd.hwnd(), tray);
+    }
+}
+
+/// The manual "check for updates". Runs the network call on a worker thread and
+/// waits for it without freezing: the message loop keeps running, so the tray
+/// stays responsive and its status keeps updating.
+fn check_for_updates_now(hwnd: &w::HWND, wnd: &gui::WindowMain) {
+    let (tx, rx) = crossbeam_channel::unbounded::<Result<Option<crate::update::UpdateInfo>, String>>();
+    std::thread::spawn(move || {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("tokio runtime: {e}"))
+            .and_then(|rt| rt.block_on(crate::update::check()).map_err(|e| e.to_string()));
+        let _ = tx.send(result);
+    });
+    match pump_until_ready(hwnd, &rx) {
+        Some(Ok(Some(info))) => {
+            let _ = crate::gui_native::update_dialog::show_update_available(wnd, info);
+        }
+        Some(Ok(None)) => crate::gui_native::update_dialog::show_up_to_date(hwnd),
+        Some(Err(e)) => crate::gui_native::update_dialog::show_check_error(hwnd, &e),
+        None => {}
+    }
+}
+
+/// Wait for a channel while keeping the message loop alive, so the window keeps
+/// painting and the tray keeps updating instead of appearing hung.
+fn pump_until_ready<T>(hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> Option<T> {
+    loop {
+        match rx.try_recv() {
+            Ok(v) => return Some(v),
+            Err(crossbeam_channel::TryRecvError::Disconnected) => return None,
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+        }
+        // Give Windows a slice so the window keeps painting; the tray's own
+        // timer keeps running because this is the same message loop.
+        let _ = hwnd;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 /// Open an instance's newest log, or its folder when it has none yet.
@@ -460,7 +554,8 @@ fn open_path(path: &std::path::Path) {
 }
 
 /// Load configs and start every bot, prompting to create one if none exist.
-fn start_bots(hwnd: &w::HWND, tray: &Rc<Tray>) {
+fn start_bots(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    let hwnd = wnd.hwnd();
     if tray.exiting.get() {
         return;
     }
@@ -473,7 +568,8 @@ fn start_bots(hwnd: &w::HWND, tray: &Rc<Tray>) {
             co::MB::YESNO | co::MB::ICONQUESTION,
         );
         if matches!(answer, Ok(co::DLGID::YES)) {
-            not_yet_ported(hwnd, "The config editor");
+            add_server(wnd, tray);
+            return;
         }
     } else {
         let mut m = tray.manager.borrow_mut();
@@ -485,7 +581,7 @@ fn start_bots(hwnd: &w::HWND, tray: &Rc<Tray>) {
 }
 
 /// Act on the startup update check, once.
-fn poll_startup_update(hwnd: &w::HWND, tray: &Rc<Tray>) {
+fn poll_startup_update(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
     let Some(rx) = &tray.update_rx else { return };
     if tray.update_done.get() {
         return;
@@ -494,25 +590,15 @@ fn poll_startup_update(hwnd: &w::HWND, tray: &Rc<Tray>) {
     tray.update_done.set(true);
     match result {
         Some(info) => {
-            // Announce only. Installing means downloading, verifying the
-            // signature, stopping every bot and relaunching, which belongs in
-            // the ported update dialog rather than a message box.
-            let notes = crate::update::plain_changelog(&info.changelog);
-            let notes: String = notes.chars().take(600).collect();
-            let _ = hwnd.MessageBox(
-                &format!(
-                    "A new version ({}) is available. You have v{}.\n\n{notes}",
-                    info.tag,
-                    env!("CARGO_PKG_VERSION")
-                ),
-                "TT Spotify - Update available",
-                co::MB::OK | co::MB::ICONINFORMATION,
-            );
-            // The bots start either way: a pending update must never leave the
-            // servers unattended.
-            start_bots(hwnd, tray);
+            // Offering the update gates bot startup on the user's answer. The
+            // dialog returns false only when the process is about to relaunch,
+            // in which case starting bots here would be pointless work in a
+            // dying process.
+            if crate::gui_native::update_dialog::show_update_available(wnd, info) {
+                start_bots(wnd, tray);
+            }
         }
-        None => start_bots(hwnd, tray),
+        None => start_bots(wnd, tray),
     }
 }
 
@@ -554,14 +640,7 @@ fn spawn_spotify_auth(facts_stale: std::sync::Arc<std::sync::atomic::AtomicBool>
     });
 }
 
-/// Manual update check. Result goes to the log; the tray has no window to
-/// show it in until the update dialog is ported.
-fn spawn_update_check() {
-    std::thread::spawn(|| match check_for_update() {
-        Some(info) => tracing::info!("Update available: {}", info.version),
-        None => tracing::info!("No update available"),
-    });
-}
+
 
 #[cfg(test)]
 mod hmenu_tests {

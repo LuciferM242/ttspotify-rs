@@ -3,8 +3,6 @@ pub mod bot;
 pub mod config;
 pub mod error;
 #[cfg(windows)]
-pub mod gui;
-#[cfg(windows)]
 pub mod gui_native;
 pub mod i18n;
 pub mod logging;
