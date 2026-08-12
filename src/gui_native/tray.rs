@@ -23,6 +23,7 @@ use winsafe::prelude::*;
 use winsafe::{self as w, co, gui, msg};
 
 use crate::gui::manager::{BotManager, BotStatus};
+use crate::gui_native::facts::FactsCache;
 use crate::gui_native::menu::{BotAction, MenuAction, MenuBuilder, MenuEntry, MenuFacts};
 use crate::gui_native::tooltip::build_tooltip;
 
@@ -51,6 +52,8 @@ const NOTIFYICON_VERSION_4: u32 = 4;
 struct Tray {
     manager: Rc<RefCell<BotManager>>,
     menus: RefCell<MenuBuilder>,
+    /// Spotify/YouTube state for the menu, read from disk at most occasionally.
+    facts: RefCell<FactsCache>,
     status_rx: crossbeam_channel::Receiver<(String, BotStatus)>,
     /// Kept alive for as long as the icon refers to it.
     icon: w::guard::DestroyIconGuard,
@@ -118,6 +121,7 @@ pub fn run() {
     let tray = Rc::new(Tray {
         manager,
         menus: RefCell::new(MenuBuilder::new()),
+        facts: RefCell::new(FactsCache::new()),
         status_rx,
         icon,
         update_rx,
@@ -292,12 +296,14 @@ fn show_menu(hwnd: &w::HWND, tray: &Rc<Tray>, at: w::POINT) {
         })
         .collect();
 
-    let facts = MenuFacts {
+    // Read from the cache: both of these answers come from disk, and this runs
+    // on the message loop every time the menu opens.
+    let facts = tray.facts.borrow_mut().get(|| MenuFacts {
         spotify_signed_in: crate::spotify::auth::SpotifyAuth::new().has_cached_credentials(),
         youtube_installed: crate::youtube::setup::resolve_paths()
             .map(|p| crate::youtube::setup::is_installed(&p))
             .unwrap_or(false),
-    };
+    });
     let model = tray.menus.borrow_mut().build(&bots, facts);
 
     let mut hmenu = match build_hmenu(&model.entries) {
@@ -383,7 +389,7 @@ fn handle_action(hwnd: &w::HWND, tray: &Rc<Tray>, action: MenuAction) {
                 not_yet_ported(hwnd, "Edit Config");
             }
         },
-        MenuAction::SpotifyAuth => spawn_spotify_auth(),
+        MenuAction::SpotifyAuth => spawn_spotify_auth(tray.facts.borrow().staleness_flag()),
         MenuAction::CheckUpdates => spawn_update_check(),
         MenuAction::AddServer => not_yet_ported(hwnd, "Add Server"),
         MenuAction::YoutubeInstall => not_yet_ported(hwnd, "Install YouTube tools"),
@@ -515,8 +521,8 @@ fn check_for_update() -> Option<crate::update::UpdateInfo> {
 
 /// Re-authenticate with Spotify. The browser drives the UI, so this runs
 /// silently and the result lands in the log.
-fn spawn_spotify_auth() {
-    std::thread::spawn(|| {
+fn spawn_spotify_auth(facts_stale: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
@@ -529,6 +535,9 @@ fn spawn_spotify_auth() {
             Ok(_) => tracing::info!("Spotify re-authentication successful"),
             Err(e) => tracing::error!("Spotify re-authentication failed: {e}"),
         }
+        // Signed-in state just changed; the next menu must read it again
+        // rather than showing the stale label for up to 15 seconds.
+        facts_stale.store(true, std::sync::atomic::Ordering::Relaxed);
     });
 }
 
