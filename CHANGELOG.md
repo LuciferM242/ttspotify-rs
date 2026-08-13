@@ -62,6 +62,14 @@
   were different.
 
 ### Fixed
+- A brief network problem no longer opens a browser asking you to sign in to
+  Spotify. Starting the bot before the network was ready did that once per
+  retry attempt, even though the saved login was fine. Only an actual refusal
+  from Spotify asks you to sign in again now.
+- Signing in to Spotify from the tray now tells you when it fails. It used to
+  say nothing at all, so a failed sign-in looked the same as a successful one.
+- With several bots running, one bot's Spotify problem no longer shows up in
+  another bot's log as the reason its track was skipped.
 - When Spotify refuses a track's audio key, the bot now says so instead of
   reporting "Track unavailable". The track was never the problem: the account
   could not decrypt it, usually because it is not premium or is streaming on

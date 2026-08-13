@@ -56,6 +56,10 @@ struct Tray {
     /// Spotify/YouTube state for the menu, read from disk at most occasionally.
     facts: RefCell<FactsCache>,
     status_rx: crossbeam_channel::Receiver<(String, BotStatus)>,
+    /// Outcome of a Spotify sign-in started from the menu. Reported on the
+    /// message loop, because a worker thread must not touch the UI.
+    auth_rx: crossbeam_channel::Receiver<Result<(), String>>,
+    auth_tx: crossbeam_channel::Sender<Result<(), String>>,
     /// Kept alive for as long as the icon refers to it.
     icon: w::guard::DestroyIconGuard,
     /// Result of the startup update check, when one was started.
@@ -103,6 +107,7 @@ pub fn run() {
     };
 
     let (status_tx, status_rx) = crossbeam_channel::unbounded::<(String, BotStatus)>();
+    let (auth_tx, auth_rx) = crossbeam_channel::unbounded::<Result<(), String>>();
     let manager = Rc::new(RefCell::new(BotManager::new(status_tx)));
 
     // Only gate startup on an update check when there is something to gate:
@@ -124,6 +129,8 @@ pub fn run() {
         menus: RefCell::new(MenuBuilder::new()),
         facts: RefCell::new(FactsCache::new()),
         status_rx,
+        auth_rx,
+        auth_tx,
         icon,
         update_rx,
         update_done: Cell::new(false),
@@ -229,6 +236,7 @@ fn register_events(
                 update_tooltip(wnd2.hwnd(), &tray);
             }
             poll_startup_update(&wnd2, &tray);
+            report_auth_outcome(wnd2.hwnd(), &tray);
             Ok(())
         });
     }
@@ -411,7 +419,9 @@ fn handle_action(
             BotAction::Logs => open_logs(hwnd, &name),
             BotAction::Config => edit_config(wnd, tray, &name),
         },
-        MenuAction::SpotifyAuth => spawn_spotify_auth(tray.facts.borrow().staleness_flag()),
+        MenuAction::SpotifyAuth => {
+            spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
+        }
         MenuAction::CheckUpdates => check_for_updates_now(hwnd, wnd),
         MenuAction::AddServer => add_server(wnd, tray),
         MenuAction::YoutubeInstall => {
@@ -618,21 +628,50 @@ fn check_for_update() -> Option<crate::update::UpdateInfo> {
     })
 }
 
-/// Re-authenticate with Spotify. The browser drives the UI, so this runs
-/// silently and the result lands in the log.
-fn spawn_spotify_auth(facts_stale: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+/// Tell the user when a sign-in failed.
+///
+/// Success stays quiet: the menu label becomes "Spotify: signed in", which is
+/// the confirmation. A failure has no such signal, and saying nothing left the
+/// user watching a browser close with no idea whether it had worked.
+fn report_auth_outcome(hwnd: &w::HWND, tray: &Rc<Tray>) {
+    while let Ok(result) = tray.auth_rx.try_recv() {
+        if let Err(e) = result {
+            let _ = hwnd.MessageBox(
+                &format!("Could not sign in to Spotify.
+
+{e}"),
+                "TT Spotify",
+                co::MB::OK | co::MB::ICONERROR,
+            );
+        }
+    }
+}
+
+/// Re-authenticate with Spotify. The browser drives the sign-in, so this runs
+/// on a worker thread and reports the outcome back through a channel.
+fn spawn_spotify_auth(
+    facts_stale: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    outcome: crossbeam_channel::Sender<Result<(), String>>,
+) {
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!("Spotify auth: tokio runtime failed: {e}");
+                let _ = outcome.send(Err(format!("could not start the sign-in: {e}")));
                 return;
             }
         };
         let mut auth = crate::spotify::auth::SpotifyAuth::new();
         match rt.block_on(auth.reauthenticate()) {
-            Ok(_) => tracing::info!("Spotify re-authentication successful"),
-            Err(e) => tracing::error!("Spotify re-authentication failed: {e}"),
+            Ok(_) => {
+                tracing::info!("Spotify re-authentication successful");
+                let _ = outcome.send(Ok(()));
+            }
+            Err(e) => {
+                tracing::error!("Spotify re-authentication failed: {e}");
+                let _ = outcome.send(Err(e.to_string()));
+            }
         }
         // Signed-in state just changed; the next menu must read it again
         // rather than showing the stale label for up to 15 seconds.

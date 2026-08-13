@@ -186,6 +186,7 @@ impl SpotifyAuth {
         let credentials = self.oauth_login()?;
         session.connect(credentials, true).await
             .map_err(|e| BotError::SpotifyAuth(format!("OAuth login failed: {e}")))?;
+        log_account_type(&session);
         self.session = Some(session.clone());
         Ok(session)
     }
