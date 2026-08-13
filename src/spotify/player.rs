@@ -83,7 +83,12 @@ impl SpotifyPlayer {
         audio_tx: Sender<Vec<i16>>,
     ) -> PlayerEventChannel {
         let (player, event_rx) = build_player(session, config, audio_tx);
-        *self.player.lock() = player;
+        // Swap under the lock, drop the old player outside it. Player's Drop
+        // joins its playback thread, and that thread can take a moment to exit
+        // (it must first return from a blocking sink send); holding the mutex
+        // through the join would wedge every other caller of this wrapper.
+        let old = std::mem::replace(&mut *self.player.lock(), player);
+        drop(old);
         event_rx
     }
 

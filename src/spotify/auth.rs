@@ -203,6 +203,29 @@ impl SpotifyAuth {
         }
     }
 
+    /// Connect a session using cached credentials only — never opens a browser
+    /// and never prompts. For background contexts (session recovery): there is
+    /// nobody at the keyboard, so a rejected login is an error to report, not
+    /// a reason to start an interactive flow. `connect_existing`'s rejected-
+    /// credentials arm falls back to OAuth, which from a background task would
+    /// pop a login tab out of nowhere and then block on the OAuth listener
+    /// forever if the user never completes it.
+    pub async fn connect_cached_only(&self, session: &Session) -> Result<(), BotError> {
+        let credentials = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.credentials())
+            .ok_or_else(|| {
+                BotError::SpotifyAuth("no cached Spotify credentials to reconnect with".into())
+            })?;
+        session.connect(credentials, true).await.map_err(|e| {
+            BotError::SpotifyAuth(format!("could not reconnect to Spotify: {e}"))
+        })?;
+        tracing::info!("Spotify session re-established from cached credentials");
+        log_account_type(session);
+        Ok(())
+    }
+
     pub async fn connect(&mut self) -> Result<Session, BotError> {
         let session = self.new_session();
         self.connect_existing(&session).await?;

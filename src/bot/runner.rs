@@ -306,6 +306,11 @@ pub async fn run_bot(
     // True while the pipeline has nothing left to play; end-of-track advances
     // wait on this so the buffered tail of a song reaches listeners first.
     let pipeline_drained = Arc::new(AtomicBool::new(true));
+    // Set only for the duration of a Spotify session recovery: the paused
+    // pipeline discards incoming PCM instead of holding it, so the dying
+    // librespot player's blocking sink send can never park its thread forever
+    // (whose join in Player::drop would deadlock the recovery task).
+    let recovery_drain = Arc::new(AtomicBool::new(false));
     // Realtime playback position (ms injected since last reset), written by the
     // pipeline and read by the YouTube player for accurate `c`/seek positions.
     let pipeline_pos_ms = Arc::new(AtomicU32::new(0));
@@ -321,6 +326,7 @@ pub async fn run_bot(
     let local_shutdown = Arc::new(AtomicBool::new(false));
     let pipeline_shutdown = local_shutdown.clone();
     let pipeline_pos = pipeline_pos_ms.clone();
+    let pipeline_recovery_drain = recovery_drain.clone();
     std::thread::spawn(move || {
         let mut pipeline = crate::audio::pipeline::AudioPipeline::new(
             audio_rx,
@@ -331,6 +337,7 @@ pub async fn run_bot(
             pipeline_pause,
             pipeline_stream_flush,
             pipeline_drained_flag,
+            pipeline_recovery_drain,
             pipeline_shutdown,
             pipeline_pos,
             &pipeline_config,
@@ -450,6 +457,7 @@ pub async fn run_bot(
         cmd_tx: cmd_tx.clone(),
         pause_flag: pause_flag.clone(),
         audio_reset: audio_reset.clone(),
+        recovery_drain: recovery_drain.clone(),
         guard: recovery_guard.clone(),
         recovery_notify: recovery_notify.clone(),
         local_shutdown: local_shutdown.clone(),
@@ -920,6 +928,9 @@ struct SpotifyRecovery {
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
     pause_flag: Arc<AtomicBool>,
     audio_reset: Arc<AtomicBool>,
+    /// See the pipeline's recovery_drain_flag: set while this recovery cycle
+    /// runs so the paused pipeline discards the dying player's output.
+    recovery_drain: Arc<AtomicBool>,
     guard: Arc<crate::spotify::recovery::RecoveryGuard>,
     recovery_notify: Arc<tokio::sync::Notify>,
     local_shutdown: Arc<AtomicBool>,
@@ -941,7 +952,11 @@ async fn rebuild_spotify_engine(
         ));
     }
     let session = rec.auth.new_session();
-    rec.auth.connect_existing(&session).await?;
+    // Cached credentials only. connect_existing's rejected-credentials arm
+    // falls back to an interactive OAuth flow, which from this background task
+    // would open a browser tab out of nowhere and then block the recovery
+    // supervisor forever on the OAuth listener.
+    rec.auth.connect_cached_only(&session).await?;
     // Publish the new session to metadata (shared holder) and rebuild the player.
     *rec.session_holder.lock() = session.clone();
     let event_rx = rec
@@ -982,6 +997,11 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
     // rather than suddenly playing.
     let resume_paused = resume.as_ref().map(|(_, _, p)| *p).unwrap_or(false);
     if pause_pipeline {
+        // Drain-while-paused must be armed before the pause: the dying player
+        // keeps decoding, and a full channel parks its thread in the blocking
+        // sink send — a park the rebuild's Player::drop would then join
+        // forever (audio silent, commands wedged, do_exit stuck).
+        rec.recovery_drain.store(true, Ordering::Relaxed);
         rec.pause_flag.store(true, Ordering::Relaxed);
     }
 
@@ -997,6 +1017,9 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
         match rebuild_spotify_engine(rec).await {
             Ok(event_rx) => {
                 tracing::info!("Spotify session rebuilt on attempt {}", attempt + 1);
+                // The old player is gone (rebuild dropped it); stop discarding
+                // before the new one produces anything.
+                rec.recovery_drain.store(false, Ordering::Relaxed);
                 // Restart the player event loop on the new channel; the old loop
                 // ends when the old player (and its channel) drops.
                 let st = rec.state.clone();
@@ -1008,25 +1031,53 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
                 tokio::spawn(async move {
                     player_event_loop(event_rx, st, tx, sh, notify, drained, paused).await;
                 });
-                // Resume the interrupted track slightly before where it died.
-                if let Some((uri, pos_ms, _)) = &resume {
-                    if let Ok(parsed) = librespot_core::spotify_uri::SpotifyUri::from_uri(uri) {
-                        rec.audio_reset.store(true, Ordering::Relaxed);
-                        let seek = resume_seek_ms(*pos_ms);
-                        rec.player.load_track_at(&parsed, seek);
-                        if resume_paused {
-                            // Keep it paused: pause the freshly-loaded track and
-                            // leave the pipeline paused (don't unpause below).
-                            rec.player.pause();
+                // Resume the interrupted track slightly before where it died —
+                // but only if it is still what the queue says should be
+                // playing. The backoff can take ~104s, and a stop / skip /
+                // new play processed meanwhile must win: blindly replaying the
+                // captured URI restarted stopped playback, played track A over
+                // a queue showing B, and pushed Spotify PCM into a live
+                // YouTube song.
+                let (still_current, user_paused_now) = {
+                    let s = rec.state.lock();
+                    let cur = resume.as_ref().is_some_and(|(uri, _, _)| {
+                        s.current().is_some_and(|e| e.track.uri() == uri.as_str())
+                            && s.status != PlaybackStatus::Idle
+                    });
+                    (cur, s.status == PlaybackStatus::Paused)
+                };
+                if still_current {
+                    if let Some((uri, pos_ms, _)) = &resume {
+                        if let Ok(parsed) = librespot_core::spotify_uri::SpotifyUri::from_uri(uri) {
+                            rec.audio_reset.store(true, Ordering::Relaxed);
+                            let seek = resume_seek_ms(*pos_ms);
+                            rec.player.load_track_at(&parsed, seek);
+                            if resume_paused {
+                                // Keep it paused: pause the freshly-loaded track and
+                                // leave the pipeline paused (don't unpause below).
+                                rec.player.pause();
+                            }
+                            tracing::info!(
+                                "Resumed {uri} at {seek}ms after recovery (paused={resume_paused})"
+                            );
                         }
+                    }
+                    // Unpause the pipeline only when actually resuming playback.
+                    if pause_pipeline && !resume_paused {
+                        rec.pause_flag.store(false, Ordering::Relaxed);
+                    }
+                } else {
+                    if resume.is_some() {
                         tracing::info!(
-                            "Resumed {uri} at {seek}ms after recovery (paused={resume_paused})"
+                            "Recovery: playback moved on during the rebuild; not resuming the old track"
                         );
                     }
-                }
-                // Unpause the pipeline only when actually resuming playback.
-                if pause_pipeline && !resume_paused {
-                    rec.pause_flag.store(false, Ordering::Relaxed);
+                    // Whatever command moved the queue cleared pause_flag
+                    // itself; clear it here too unless the user is currently
+                    // paused (their pause must survive the recovery).
+                    if pause_pipeline && !user_paused_now {
+                        rec.pause_flag.store(false, Ordering::Relaxed);
+                    }
                 }
                 if let Some(tx) = &rec.event_tx {
                     let _ = tx.send(RunnerEvent::Connected);
@@ -1046,7 +1097,17 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
              A Spotify command will retry."
         );
         if pause_pipeline {
-            rec.pause_flag.store(false, Ordering::Relaxed);
+            // Reset before unpausing: whatever PCM was frozen in the framer
+            // when the session died is decrypt-garbage, and without the reset
+            // it played out the instant the pause lifted — seconds of noise,
+            // ~104s late. The reset also flushes TeamTalk's queued audio.
+            rec.audio_reset.store(true, Ordering::Relaxed);
+            // A pause the user asked for survives the give-up; only the pause
+            // this recovery itself imposed is lifted.
+            let user_paused = rec.state.lock().status == PlaybackStatus::Paused;
+            if !user_paused {
+                rec.pause_flag.store(false, Ordering::Relaxed);
+            }
         }
         if let Some(tx) = &rec.event_tx {
             let _ = tx.send(RunnerEvent::Error(
@@ -1054,6 +1115,7 @@ async fn recover_spotify(rec: &SpotifyRecovery) -> crate::spotify::recovery::Rec
             ));
         }
     }
+    rec.recovery_drain.store(false, Ordering::Relaxed);
     rec.guard.finish();
     outcome
 }

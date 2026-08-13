@@ -142,6 +142,14 @@ pub struct AudioPipeline {
     /// less than one frame accumulated). Read by the runner's end-of-track
     /// drain wait so the tail of a song finishes before the queue advances.
     drained_flag: Arc<AtomicBool>,
+    /// Set for the duration of a Spotify session recovery. While it is set and
+    /// the pipeline is paused, incoming PCM is discarded instead of held: the
+    /// dying librespot player keeps decoding (garbage) into the channel, and
+    /// with the channel full its blocking sink send parks its playback thread
+    /// — which the player's Drop then joins, deadlocking the recovery task.
+    /// Draining keeps that send always able to complete. Outside recovery the
+    /// paused buffer is preserved exactly as before.
+    recovery_drain_flag: Arc<AtomicBool>,
     shutdown_flag: Arc<AtomicBool>,
     volume_controller: VolumeController,
     framer: Framer,
@@ -168,6 +176,7 @@ impl AudioPipeline {
         pause_flag: Arc<AtomicBool>,
         stream_flush_flag: Arc<AtomicBool>,
         drained_flag: Arc<AtomicBool>,
+        recovery_drain_flag: Arc<AtomicBool>,
         shutdown_flag: Arc<AtomicBool>,
         pos_ms: Arc<AtomicU32>,
         config: &BotConfig,
@@ -185,6 +194,7 @@ impl AudioPipeline {
             pause_flag,
             stream_flush_flag,
             drained_flag,
+            recovery_drain_flag,
             shutdown_flag,
             pos_ms,
             volume_controller,
@@ -243,6 +253,13 @@ impl AudioPipeline {
             // from the exact note the listener last heard. The old drain here
             // silently skipped the buffered seconds on every pause/resume.
             if self.pause_flag.load(Ordering::Relaxed) {
+                // During session recovery only: throw away whatever the dying
+                // producer is still pushing, so its blocking send can never
+                // park its thread on a full channel (see recovery_drain_flag).
+                // The samples are decrypt-garbage nobody should hear anyway.
+                if self.recovery_drain_flag.load(Ordering::Relaxed) {
+                    while self.audio_rx.try_recv().is_ok() {}
+                }
                 self.next_block_time = None;
                 std::thread::sleep(Duration::from_millis(50));
                 continue;

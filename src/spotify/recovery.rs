@@ -83,9 +83,17 @@ impl RecoveryGuard {
     }
 }
 
-/// Resume seek target after a recovery: rewind slightly from where playback died
-/// so the transition feels continuous rather than clipping forward.
-pub const RESUME_REWIND_MS: u32 = 2000;
+/// Resume seek target after a recovery: rewind from where playback died so the
+/// transition never skips audio the listener hasn't heard.
+///
+/// The recorded position is librespot's DECODE head, which runs ahead of the
+/// audible position by everything still in flight — the full bounded(256) PCM
+/// channel plus the pipeline's framer, several seconds in practice. The rewind
+/// must cover that whole lead: too small and the unheard span between the
+/// audible position and the decode head is silently skipped (the old 2s value
+/// did exactly that); too large merely replays a few heard seconds, which is
+/// the better failure.
+pub const RESUME_REWIND_MS: u32 = 12_000;
 
 /// Compute the position to seek to when resuming the interrupted track.
 pub fn resume_seek_ms(position_ms: u32) -> u32 {
@@ -148,10 +156,19 @@ mod tests {
 
     #[test]
     fn resume_seek_rewinds_but_never_underflows() {
-        assert_eq!(resume_seek_ms(60_000), 58_000);
-        assert_eq!(resume_seek_ms(2_000), 0);
+        assert_eq!(resume_seek_ms(60_000), 60_000 - RESUME_REWIND_MS);
+        assert_eq!(resume_seek_ms(RESUME_REWIND_MS), 0);
         assert_eq!(resume_seek_ms(500), 0); // saturating, no underflow panic
         assert_eq!(resume_seek_ms(0), 0);
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)] // pins a policy floor, not logic
+    fn resume_rewind_covers_the_full_decode_lead() {
+        // position_ms is the decode head, ~6-12s ahead of what listeners have
+        // heard (256-slot PCM channel + framer). A rewind smaller than that
+        // lead skips audio nobody heard.
+        assert!(RESUME_REWIND_MS >= 12_000);
     }
 
     /// Documents the exact sequence the async driver walks: wait, attempt, ...
