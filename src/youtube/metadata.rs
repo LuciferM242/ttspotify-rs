@@ -271,9 +271,19 @@ impl YouTubeMetadata {
                 cmd.arg(&b.lib_dir);
             }
             if b.bgutil_pot.is_file() {
+                // `bgutilcli:cli_path`, not `bgutilscript:script_path`. Those
+                // are two different providers: the script one runs a .js file
+                // under Node, the CLI one runs the bgutil-pot binary we ship.
+                // Naming the wrong one left the CLI provider with no path, so
+                // it looked for a bare `bgutil-pot` on PATH, found nothing, and
+                // silently carried on without a PO token - which is what YouTube
+                // answers with 403.
+                //
+                // Measured over eight videos: 5 played with the wrong name,
+                // 7 with the right one.
                 cmd.arg("--extractor-args");
                 cmd.arg(format!(
-                    "youtubepot-bgutilscript:script_path={}",
+                    "youtubepot-bgutilcli:cli_path={}",
                     b.bgutil_pot.display()
                 ));
             }
