@@ -580,6 +580,20 @@ pub async fn run_bot(
             }
             // Give up if we've been disconnected past the deadline.
             if let Some(since) = disconnected_since {
+                // The SDK permanently disables its auto-reconnect once its own
+                // retry budget is exhausted (and only signals that through a
+                // hook we don't subscribe to). Polling past that point can
+                // never recover — even if the server comes back — so bail as
+                // soon as it happens instead of idling out the rest of the
+                // deadline. The deadline stays as the backstop for the cases
+                // where the SDK keeps trying (e.g. connect works but login
+                // fails, which never disables auto-reconnect).
+                if !event_client.auto_reconnect_enabled() {
+                    tracing::error!(
+                        "SDK auto-reconnect exhausted its attempts; giving up so the supervisor can restart"
+                    );
+                    break true;
+                }
                 if since.elapsed() > RECONNECT_DEADLINE {
                     tracing::error!(
                         "Auto-reconnect exhausted after {}s, giving up so the supervisor can restart",
