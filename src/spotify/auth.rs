@@ -136,11 +136,11 @@ impl SpotifyAuth {
                 cached_creds
             } else {
                 tracing::info!("No cached Spotify credentials. Starting OAuth login...");
-                self.oauth_login()?
+                self.oauth_login().await?
             }
         } else {
             tracing::info!("Spotify cache not available. Starting OAuth login...");
-            self.oauth_login()?
+            self.oauth_login().await?
         };
 
         match session.connect(credentials, true).await {
@@ -151,7 +151,7 @@ impl SpotifyAuth {
             }
             Err(e) if credentials_were_rejected(&e) => {
                 tracing::warn!("Spotify rejected the stored credentials: {e}. Signing in again...");
-                let credentials = self.oauth_login()?;
+                let credentials = self.oauth_login().await?;
                 session.connect(credentials, true).await
                     .map_err(|e| BotError::SpotifyAuth(format!("OAuth login also failed: {e}")))?;
                 tracing::info!("Spotify session established via OAuth re-authentication");
@@ -183,7 +183,7 @@ impl SpotifyAuth {
     /// the new credentials in the cache. Opens the browser for authorization.
     pub async fn reauthenticate(&mut self) -> Result<Session, BotError> {
         let session = Session::new(self.config.clone(), self.cache.clone());
-        let credentials = self.oauth_login()?;
+        let credentials = self.oauth_login().await?;
         session.connect(credentials, true).await
             .map_err(|e| BotError::SpotifyAuth(format!("OAuth login failed: {e}")))?;
         log_account_type(&session);
@@ -194,10 +194,25 @@ impl SpotifyAuth {
     /// Run the OAuth PKCE flow to get credentials.
     /// Opens a browser URL for the user to authorize, then catches the callback.
     /// In headless mode, skips browser launch and prints instructions.
-    fn oauth_login(&self) -> Result<Credentials, BotError> {
+    /// Run the sign-in without holding an async worker hostage.
+    ///
+    /// The flow blocks on a TcpListener waiting for the browser to come back
+    /// (or on stdin in headless mode) for as long as the user takes, which can
+    /// be minutes. librespot's `_async` variants do not help: they call the
+    /// same blocking listener internally and only await the token exchange
+    /// afterwards. The blocking pool is where this belongs.
+    async fn oauth_login(&self) -> Result<Credentials, BotError> {
+        let headless = self.headless;
+        let feasible = self.oauth_feasible();
+        tokio::task::spawn_blocking(move || Self::oauth_login_blocking(headless, feasible))
+            .await
+            .map_err(|e| BotError::SpotifyAuth(format!("sign-in worker failed: {e}")))?
+    }
+
+    fn oauth_login_blocking(headless: bool, oauth_feasible: bool) -> Result<Credentials, BotError> {
         // Refuse cleanly when neither a browser nor a terminal is available
         // (e.g. under systemd) instead of blocking on a stdin that is EOF.
-        if !self.oauth_feasible() {
+        if !oauth_feasible {
             return Err(BotError::SpotifyAuth(
                 "no cached Spotify credentials and no way to log in interactively here; \
                  run `tt-spotify-bot --auth` on this machine, then restart the bot"
@@ -208,10 +223,10 @@ impl SpotifyAuth {
         // In headless mode, use a port-less redirect URI so librespot-oauth
         // falls back to stdin input instead of starting a local HTTP server.
         // The user pastes the redirect URL from their browser's address bar.
-        let redirect = if self.headless { "http://127.0.0.1/login" } else { OAUTH_REDIRECT };
+        let redirect = if headless { "http://127.0.0.1/login" } else { OAUTH_REDIRECT };
 
         println!("Spotify Authentication");
-        if self.headless {
+        if headless {
             println!("Open the URL below in a browser and authorize the app.");
             println!("The page will then show an error like 'This site can't be reached'");
             println!("or 'site not found' -- THIS IS NORMAL. Do not close it.");
@@ -227,7 +242,7 @@ impl SpotifyAuth {
             OAUTH_SCOPES.to_vec(),
         );
 
-        if !self.headless {
+        if !headless {
             builder = builder.open_in_browser();
         }
 
@@ -271,6 +286,30 @@ mod tests {
 
     /// Errors built through librespot's own constructors, so these track what
     /// it really produces rather than a guess at its shape.
+    #[test]
+    fn refusing_an_impossible_sign_in_survives_the_blocking_hop() {
+        // The sign-in runs on the blocking pool now, so its refusal comes back
+        // through a join. Losing it there would turn "cannot sign in on this
+        // machine" into a crash under systemd, which is what the refusal exists
+        // to prevent.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt.block_on(async {
+            tokio::task::spawn_blocking(|| {
+                super::SpotifyAuth::oauth_login_blocking(true, false)
+            })
+            .await
+            .expect("the blocking task must not panic")
+        });
+        let err = err.expect_err("an infeasible sign-in must refuse, not proceed");
+        assert!(
+            err.to_string().contains("--auth"),
+            "the refusal should say what to do instead: {err}"
+        );
+    }
+
     mod connect_failures {
         use super::credentials_were_rejected;
         use librespot_core::Error;
