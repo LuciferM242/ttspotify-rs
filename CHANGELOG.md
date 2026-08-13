@@ -67,6 +67,14 @@
   were different.
 
 ### Fixed
+- YouTube playback works again. Starting a track while it was still downloading
+  left the decoder unable to read the file's index, so every YouTube track
+  failed with a seek error. This was introduced by the change that started
+  tracks during the download and affected all of them.
+- A YouTube track that YouTube refuses now gets a second attempt through a
+  different route, instead of being reported as unavailable. The fast route is
+  the one YouTube turns away first when it distrusts an address, which is more
+  likely on a hosted server than at home.
 - YouTube tracks that failed with no explanation should now play. The helper
   that fetches YouTube's proof-of-origin tokens was installed but never
   actually used, because it was being pointed at under the wrong name, and

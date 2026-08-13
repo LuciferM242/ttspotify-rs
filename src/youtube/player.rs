@@ -197,29 +197,42 @@ impl MediaPlayer for YouTubePlayer {
     }
 }
 
-/// Run yt-dlp, download the whole compressed m4a into memory, then decode +
-/// resample it from a seekable buffer. Buffering the full file is what makes
-/// seek work in both directions (symphonia can't open a partial fragmented
-/// mp4). The bot never plays livestreams, so the download always terminates.
+/// A yt-dlp download that has proven it is producing audio.
+struct Started {
+    stdout: std::process::ChildStdout,
+    /// The bytes already read while proving it. They must be fed to the
+    /// decoder before anything read afterwards.
+    first_chunk: Vec<u8>,
+    stderr_handle: std::thread::JoinHandle<String>,
+    watcher_handle: std::thread::JoinHandle<Option<std::process::ExitStatus>>,
+}
+
+/// Spawn yt-dlp through `client` and wait for the first audio bytes.
 ///
-/// `ctrl.stopped` set during playback kills the yt-dlp subprocess.
-async fn play_track(
-    video_id: String,
-    metadata: Arc<YouTubeMetadata>,
-    audio_tx: Sender<Vec<i16>>,
-    ctrl: Arc<TrackControl>,
-    state: SharedState,
-    pipeline_pos_ms: Arc<AtomicU32>,
-) -> Result<(), String> {
-    let mut child = metadata.spawn_ytdlp(&video_id)
+/// Waiting for real bytes is the whole point: a refused URL exits with 403
+/// having produced none, and that is only knowable by reading. Returning after
+/// the first chunk means a failure is detected in about the time the attempt
+/// would have taken anyway, leaving room to try another client.
+async fn begin_download(
+    metadata: &Arc<YouTubeMetadata>,
+    video_id: &str,
+    client: &str,
+    ctrl: &Arc<TrackControl>,
+) -> Result<Started, String> {
+    let mut child = metadata
+        .spawn_ytdlp_with_client(video_id, client)
         .map_err(|e| format!("yt-dlp spawn: {e}"))?;
-    let mut stdout = child.stdout.take()
+    let mut stdout = child
+        .stdout
+        .take()
         .ok_or_else(|| "yt-dlp stdout was not piped".to_string())?;
-    let stderr = child.stderr.take()
+    let stderr = child
+        .stderr
+        .take()
         .ok_or_else(|| "yt-dlp stderr was not piped".to_string())?;
 
-    // Drain stderr in the background so yt-dlp doesn't block on a full pipe,
-    // and so we can surface its output on errors.
+    // Drain stderr in the background so yt-dlp never blocks on a full pipe,
+    // and so its complaint can be reported if this attempt fails.
     let stderr_handle = std::thread::spawn(move || -> String {
         let mut buf = String::new();
         let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stderr), &mut buf);
@@ -243,11 +256,105 @@ async fn play_track(
         }
     });
 
+    // Blocking read, on the blocking pool: this waits on the network for as
+    // long as the extraction takes.
+    let ctrl_for_read = ctrl.clone();
+    let (stdout, first_chunk) = tokio::task::spawn_blocking(move || {
+        let mut buf = vec![0u8; 64 * 1024];
+        if ctrl_for_read.stopped.load(Ordering::Relaxed) {
+            return (stdout, Vec::new());
+        }
+        // One read. It blocks until yt-dlp has either produced audio or given
+        // up, which is exactly the question being asked.
+        match stdout.read(&mut buf) {
+            Ok(0) => (stdout, Vec::new()), // exited without ever sending audio
+            Ok(n) => {
+                buf.truncate(n);
+                (stdout, buf)
+            }
+            Err(_) => (stdout, Vec::new()),
+        }
+    })
+    .await
+    .map_err(|e| format!("download worker join: {e}"))?;
+
+    if first_chunk.is_empty() {
+        // Nothing came back. Report what yt-dlp said, since that is the only
+        // account of why - a 403, a missing format, a bot check.
+        let complaint = stderr_handle.join().unwrap_or_default();
+        let _ = watcher_handle.join();
+        let reason = complaint
+            .lines()
+            .find(|l| l.to_lowercase().contains("error"))
+            .unwrap_or_else(|| complaint.lines().last().unwrap_or("no output"));
+        return Err(reason.chars().take(300).collect());
+    }
+
+    Ok(Started { stdout, first_chunk, stderr_handle, watcher_handle })
+}
+
+/// Run yt-dlp, download the whole compressed m4a into memory, then decode +
+/// resample it from a seekable buffer. Buffering the full file is what makes
+/// seek work in both directions (symphonia can't open a partial fragmented
+/// mp4). The bot never plays livestreams, so the download always terminates.
+///
+/// `ctrl.stopped` set during playback kills the yt-dlp subprocess.
+async fn play_track(
+    video_id: String,
+    metadata: Arc<YouTubeMetadata>,
+    audio_tx: Sender<Vec<i16>>,
+    ctrl: Arc<TrackControl>,
+    state: SharedState,
+    pipeline_pos_ms: Arc<AtomicU32>,
+) -> Result<(), String> {
+    // Try the fast client, then the reliable one. YouTube refuses the fast
+    // client's URLs when it distrusts an address - a datacenter IP more often
+    // than a home one - and the refusal arrives before any audio, so a second
+    // attempt through a PO-token client costs nothing on the tracks that were
+    // going to work anyway. Measured on one address: 2/6 through the fast
+    // client, 6/6 through the fallback.
+    let mut started = None;
+    let mut last_error = String::new();
+    for (attempt, client) in [
+        crate::youtube::metadata::PRIMARY_CLIENT,
+        crate::youtube::metadata::FALLBACK_CLIENT,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if ctrl.stopped.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        match begin_download(&metadata, &video_id, client, &ctrl).await {
+            Ok(begun) => {
+                if attempt > 0 {
+                    tracing::info!(
+                        "YouTube: {video_id} needed the {client} player after the faster one was refused"
+                    );
+                }
+                started = Some(begun);
+                break;
+            }
+            Err(e) => {
+                tracing::warn!("YouTube: {client} player could not start {video_id}: {e}");
+                last_error = e;
+            }
+        }
+    }
+    let Started { mut stdout, first_chunk, stderr_handle, watcher_handle } = match started {
+        Some(s) => s,
+        None => return Err(last_error),
+    };
+    let _ = &stderr_handle;
+    let _ = &watcher_handle;
     // Pump yt-dlp's output into a buffer the decoder reads at the same time,
     // so playback starts on the first bytes instead of after the whole track
     // has downloaded. Everything downloaded is kept, so seeking back is still
     // instant; seeking forward waits for the bytes.
     let (writer, reader) = crate::youtube::stream::channel();
+    // The bytes read to prove this attempt works come first, or the decoder
+    // starts mid-file.
+    writer.append(&first_chunk);
     let ctrl_for_read = ctrl.clone();
     let download_writer = writer.clone();
     let download = tokio::task::spawn_blocking(move || {
@@ -324,6 +431,12 @@ fn decode_and_stream(
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
+    // Wait for the download before probing. symphonia will not seek a source
+    // of unknown length, and finding the MP4 moov atom needs a seek, so a probe
+    // started mid-download fails with "stream is not seekable" - which is every
+    // track. The bytes are kept, so decoding still streams from memory once it
+    // starts; only the probe waits.
+    reader.wait_until_complete();
     let source: Box<dyn MediaSource> = Box::new(reader);
     let mss = MediaSourceStream::new(source, Default::default());
 

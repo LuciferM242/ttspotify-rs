@@ -47,6 +47,24 @@ pub struct YouTubeMetadata {
     yt_dlp_exe: PathBuf,
 }
 
+/// The client tried first: fastest, because it needs no PO token and so skips
+/// that round trip. About 1.9s to the first audio byte against tv_simply's 5s.
+///
+/// Needing no token is also its weakness. yt-dlp's PO Token Guide warns that
+/// requests without one "may return HTTP Error 403, or result in your account
+/// or IP address being blocked", and this is the client YouTube refuses first
+/// when it distrusts an address - which a datacenter IP is more likely to be.
+pub const PRIMARY_CLIENT: &str = "android_vr";
+
+/// The client tried when the primary is refused: slower, and backed by a PO
+/// token, which is what makes it hold up when the fast one is being turned
+/// away. Measured 6/6 where android_vr managed 2/6 on the same addresses.
+///
+/// It only became usable once the PO token provider was wired up correctly;
+/// before that it failed with "Requested format is not available", having been
+/// given no token to present.
+pub const FALLBACK_CLIENT: &str = "tv_simply";
+
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
         // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
@@ -231,6 +249,17 @@ impl YouTubeMetadata {
     /// download (and free the pipe). yt-dlp handles all of YouTube's
     /// header/cookie/fragment requirements.
     pub fn spawn_ytdlp(&self, video_id: &str) -> Result<std::process::Child, BotError> {
+        self.spawn_ytdlp_with_client(video_id, PRIMARY_CLIENT)
+    }
+
+    /// As `spawn_ytdlp`, asking YouTube through a named player client.
+    ///
+    /// See [`PRIMARY_CLIENT`] and [`FALLBACK_CLIENT`] for why there are two.
+    pub fn spawn_ytdlp_with_client(
+        &self,
+        video_id: &str,
+        client: &str,
+    ) -> Result<std::process::Child, BotError> {
         use std::process::{Command, Stdio};
         let url = format!("https://www.youtube.com/watch?v={video_id}");
 
@@ -240,26 +269,18 @@ impl YouTubeMetadata {
             "--no-playlist",
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "-o", "-",
-            // Ask one client rather than letting yt-dlp poll several.
-            //
-            // Left to itself it queries the tv and android players and merges
-            // the formats, which is most of the wait before a track starts.
-            // Measured over seven videos: 3.99s to the first audio byte on
-            // average, against 1.87s asking android_vr alone - and it succeeded
-            // more often too, 6/7 against 4/7.
-            //
-            // android_vr specifically, because it offers the m4a (AAC) audio
-            // this bot needs: symphonia is built with isomp4 and aac only, so a
-            // client that serves opus in webm would leave nothing to decode.
-            // Its format 140 is 44.1 kHz, which is the pipeline rate, so it also
-            // avoids a resample.
-            //
-            // Deliberately no `player_skip`. It is the usual advice for speed
-            // and it does not work here: skipping the webpage and configs made
-            // YouTube answer "Sign in to confirm you're not a bot" on 6 of the
-            // same 7 videos.
-            "--extractor-args", "youtube:player_client=android_vr",
         ]);
+
+        // Ask one client rather than letting yt-dlp poll several. Left to
+        // itself it queries the tv and android players and merges the formats,
+        // which is most of the wait before a track starts.
+        //
+        // Deliberately no `player_skip`. It is the usual advice for speed and
+        // it does not work here: skipping the webpage made YouTube answer
+        // "Sign in to confirm you're not a bot" whether or not a PO token was
+        // present.
+        cmd.arg("--extractor-args");
+        cmd.arg(format!("youtube:player_client={client}"));
 
         // Wire the bgutil-pot plugin and binary if bundled.
         if let Some(b) = &self.bundle {

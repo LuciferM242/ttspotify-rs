@@ -103,6 +103,27 @@ impl StreamReader {
         self.shared.closed.load(Ordering::SeqCst)
     }
 
+    /// Block until the download has finished (or failed).
+    ///
+    /// symphonia refuses to seek a source whose length it does not know, and
+    /// finding an MP4's `moov` atom needs a seek. Until the download closes
+    /// there is no length to report, so a probe started before then fails with
+    /// "stream is not seekable" - and every track fails with it.
+    ///
+    /// Waiting here rather than reporting a partial length is deliberate: a
+    /// length that later grows would have symphonia read a truncated file and
+    /// decide the track simply ends early.
+    pub fn wait_until_complete(&self) {
+        let mut data = self.shared.data.lock().unwrap_or_else(|e| e.into_inner());
+        while !self.shared.closed.load(Ordering::SeqCst) {
+            data = self
+                .shared
+                .grew
+                .wait(data)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     /// Block until `self.pos` has data behind it, the buffer closes, or the
     /// download fails.
     fn wait_for_data(&self) -> io::Result<usize> {
@@ -312,6 +333,69 @@ mod tests {
         writer.finish();
         assert_eq!(reader.byte_len(), Some(3));
         assert!(reader.is_seekable());
+    }
+
+    #[test]
+    fn waiting_for_completion_returns_once_the_download_closes() {
+        // What the decoder waits on before probing. symphonia will not seek a
+        // source of unknown length, so probing before this returns fails with
+        // "stream is not seekable" - which was every YouTube track.
+        let (writer, reader) = channel();
+        writer.append(b"partial");
+        let w = writer.clone();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            w.append(b" and the rest");
+            w.finish();
+        });
+        reader.wait_until_complete();
+        assert!(reader.is_closed(), "returned before the download had finished");
+        assert_eq!(reader.available(), 20, "should see every byte written");
+        feeder.join().unwrap();
+    }
+
+    #[test]
+    fn the_length_is_known_once_the_wait_returns() {
+        // The two have to agree: waiting is only useful if a length follows.
+        use symphonia::core::io::MediaSource;
+        let (writer, reader) = channel();
+        let w = writer.clone();
+        let feeder = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            w.append(b"0123456789");
+            w.finish();
+        });
+        assert_eq!(reader.byte_len(), None, "unknown while downloading");
+        reader.wait_until_complete();
+        assert_eq!(
+            reader.byte_len(),
+            Some(10),
+            "a probe after the wait must have a length to work from"
+        );
+        feeder.join().unwrap();
+    }
+
+    #[test]
+    fn waiting_on_an_already_finished_download_returns_at_once() {
+        let (writer, reader) = channel();
+        writer.append(b"done");
+        writer.finish();
+        reader.wait_until_complete();
+        assert!(reader.is_closed());
+    }
+
+    #[test]
+    fn waiting_returns_when_the_download_fails_rather_than_hanging() {
+        // A failed download closes the buffer too. Without that this would
+        // block forever and the track would never end.
+        let (writer, reader) = channel();
+        let w = writer.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            w.fail("yt-dlp died");
+        });
+        reader.wait_until_complete();
+        assert!(reader.is_closed());
     }
 
     #[test]
