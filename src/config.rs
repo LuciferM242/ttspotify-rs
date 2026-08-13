@@ -425,11 +425,12 @@ impl BotConfig {
                     // offer_service = false: this path continues into running the
                     // bot in the foreground; also starting a systemd instance
                     // would run the same config twice.
-                    crate::wizard::run_wizard(None, false)?;
-                    // Re-check if a config was created in the default config dir
-                    let configs = list_configs();
-                    if let Some((_, created_path)) = configs.first() {
-                        let mut config = Self::parse_file(created_path)
+                    // Load exactly the file the wizard created (None = user
+                    // cancelled). Guessing via list_configs().first() used to
+                    // pick the alphabetically-first config instead — a
+                    // different bot on a different server.
+                    if let Some(created_path) = crate::wizard::run_wizard(None, false)? {
+                        let mut config = Self::parse_file(&created_path)
                             .map_err(|e| BotError::Config(format!("Failed to load created config: {e}")))?;
                         for warning in config.validate() {
                             tracing::warn!("Config: {warning}");

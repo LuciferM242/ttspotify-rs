@@ -89,7 +89,7 @@ async fn main() -> Result<(), BotError> {
 
     if let Some(ref name) = args.setup {
         let name = if name.is_empty() { None } else { Some(name.as_str()) };
-        return tt_spotify_bot::wizard::run_wizard(name, true);
+        return tt_spotify_bot::wizard::run_wizard(name, true).map(|_| ());
     }
 
     #[cfg(target_os = "linux")]

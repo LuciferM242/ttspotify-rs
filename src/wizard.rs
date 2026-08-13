@@ -57,7 +57,10 @@ fn ask_int(prompt: &str, default: i32) -> Option<i32> {
 /// The first-run wizard inside `BotConfig::load` must pass false: that path
 /// continues into running the bot in the foreground, and starting a systemd
 /// instance there too would run the same config twice.
-pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), BotError> {
+pub fn run_wizard(
+    config_name: Option<&str>,
+    offer_service: bool,
+) -> Result<Option<std::path::PathBuf>, BotError> {
     #[cfg(not(target_os = "linux"))]
     let _ = offer_service;
     println!();
@@ -69,11 +72,14 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
     } else {
         match ask("Config name (used for file name and service name)", "config", true) {
             Some(n) => n.replace(".json", ""),
-            None => return Ok(()),
+            None => return Ok(None),
         }
     };
 
-    let dir = config_dir();
+    // Configs live in <root>/config/ — the directory list_configs(), the CLI
+    // auto-detect and the systemd unit all read. Writing to the data root put
+    // every post-first-run setup where nothing would ever find it.
+    let dir = crate::paths::configs_dir();
     std::fs::create_dir_all(&dir)?;
     let config_path = dir.join(format!("{name}.json"));
 
@@ -87,7 +93,7 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
             Some(ref v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes") => {}
             _ => {
                 println!("Setup cancelled.");
-                return Ok(());
+                return Ok(None);
             }
         }
     }
@@ -95,41 +101,41 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
     println!("TeamTalk Server Settings");
     let host = match ask("Server address", "", true) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let tcp_port = match ask_int("TCP port", 10333) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let udp_port = match ask_int("UDP port", tcp_port) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
     println!("Bot Credentials");
     let username = match ask("Bot username", "", true) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let password = match ask("Bot password", "", false) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
     println!("Bot Settings");
     let bot_name = match ask("Bot nickname", "Spotify", true) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let channel = match ask("Channel to join (path or leave blank for root)", "/", false) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let channel_password = match ask("Channel password (if any)", "", false) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
@@ -141,7 +147,7 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
             "list" => crate::config::AdminMode::List,
             _ => crate::config::AdminMode::Both,
         },
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let admins = if matches!(
         admin_mode,
@@ -149,7 +155,7 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
     ) {
         match ask("Admin usernames (comma separated)", "", false) {
             Some(s) => crate::bot::auth::parse_admin_list(&s),
-            None => return Ok(()),
+            None => return Ok(None),
         }
     } else {
         Vec::new()
@@ -167,25 +173,25 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
             let code = s.trim().to_lowercase();
             if code.is_empty() { "en".to_string() } else { code }
         }
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
     println!("License (optional)");
     let license_name = match ask("License name", "", false) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
     let license_key = match ask("License key", "", false) {
         Some(v) => v,
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
     println!("Default Service");
     let default_service = match ask("Which service should bare commands target? (spotify/youtube)", "spotify", true) {
         Some(v) => Service::parse_or_default(&v),
-        None => return Ok(()),
+        None => return Ok(None),
     };
 
     println!();
@@ -205,7 +211,7 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
                 }
                 p
             }
-            None => return Ok(()),
+            None => return Ok(None),
         }
     } else {
         String::new()
@@ -343,7 +349,7 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
     println!("  Run the bot with: tt-spotify-bot --config {}", config_path.display());
     println!();
 
-    Ok(())
+    Ok(Some(config_path))
 }
 
 /// Public entry point for the standalone `--setup-yt` flag.
