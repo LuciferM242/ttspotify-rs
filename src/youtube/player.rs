@@ -454,9 +454,6 @@ fn decode_and_stream(
 
     let codec_params = track.codec_params.clone();
     let src_rate = codec_params.sample_rate.ok_or_else(|| "missing sample_rate".to_string())?;
-    let src_channels = codec_params.channels
-        .map(|c| c.count())
-        .unwrap_or(2);
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())
@@ -565,34 +562,10 @@ fn decode_and_stream(
             Err(e) => return Err(format!("decode: {e}")),
         };
 
-        // Pull planar f32 channels from whatever sample format symphonia hands us.
-        match decoded {
-            AudioBufferRef::F32(buf) => {
-                let n = buf.frames();
-                let l = buf.chan(0);
-                let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend_from_slice(&l[..n]);
-                buf_r.extend_from_slice(&r[..n]);
-            }
-            AudioBufferRef::S16(buf) => {
-                let n = buf.frames();
-                let l = buf.chan(0);
-                let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend(l[..n].iter().map(|&s| s as f32 / 32768.0));
-                buf_r.extend(r[..n].iter().map(|&s| s as f32 / 32768.0));
-            }
-            AudioBufferRef::S32(buf) => {
-                let n = buf.frames();
-                let l = buf.chan(0);
-                let r = if src_channels >= 2 { buf.chan(1) } else { l };
-                buf_l.extend(l[..n].iter().map(|&s| s as f32 / 2147483648.0));
-                buf_r.extend(r[..n].iter().map(|&s| s as f32 / 2147483648.0));
-            }
-            other => {
-                tracing::warn!("YouTube: unsupported sample format {:?}", std::mem::discriminant(&other));
-                continue;
-            }
-        };
+        if !extend_planar(&decoded, &mut buf_l, &mut buf_r) {
+            tracing::warn!("YouTube: unsupported sample format {:?}", std::mem::discriminant(&decoded));
+            continue;
+        }
 
         // Drain in chunk_in-sized slices through the resampler.
         while buf_l.len() >= chunk_in {
@@ -680,6 +653,45 @@ fn flush_remaining(
     }
 }
 
+/// Append a decoded buffer's samples to the planar f32 accumulators, mono
+/// duplicated to both sides. Returns false for a sample format we don't
+/// handle.
+///
+/// The channel count MUST come from the buffer itself (`spec()`), not from
+/// `codec_params.channels` captured before the loop: that field is `None` for
+/// every AAC-in-MP4 stream, and defaulting it to 2 made `buf.chan(1)` trip
+/// symphonia's channel assert on the first packet of a mono track — which
+/// with panic = "abort" took down the whole process.
+fn extend_planar(decoded: &AudioBufferRef<'_>, buf_l: &mut Vec<f32>, buf_r: &mut Vec<f32>) -> bool {
+    match decoded {
+        AudioBufferRef::F32(buf) => {
+            let n = buf.frames();
+            let l = buf.chan(0);
+            let r = if buf.spec().channels.count() >= 2 { buf.chan(1) } else { l };
+            buf_l.extend_from_slice(&l[..n]);
+            buf_r.extend_from_slice(&r[..n]);
+            true
+        }
+        AudioBufferRef::S16(buf) => {
+            let n = buf.frames();
+            let l = buf.chan(0);
+            let r = if buf.spec().channels.count() >= 2 { buf.chan(1) } else { l };
+            buf_l.extend(l[..n].iter().map(|&s| s as f32 / 32768.0));
+            buf_r.extend(r[..n].iter().map(|&s| s as f32 / 32768.0));
+            true
+        }
+        AudioBufferRef::S32(buf) => {
+            let n = buf.frames();
+            let l = buf.chan(0);
+            let r = if buf.spec().channels.count() >= 2 { buf.chan(1) } else { l };
+            buf_l.extend(l[..n].iter().map(|&s| s as f32 / 2147483648.0));
+            buf_r.extend(r[..n].iter().map(|&s| s as f32 / 2147483648.0));
+            true
+        }
+        _ => false,
+    }
+}
+
 fn interleave_to_i16(l: &[f32], r: &[f32]) -> Vec<i16> {
     let n = l.len().min(r.len());
     let mut out = Vec::with_capacity(n * 2);
@@ -738,5 +750,56 @@ mod tests {
     fn interleave_empty_returns_empty() {
         let out = interleave_to_i16(&[], &[]);
         assert!(out.is_empty());
+    }
+
+    use symphonia::core::audio::{AudioBuffer, Channels, SignalSpec};
+
+    fn f32_buffer(channels: Channels, frames: &[&[f32]]) -> AudioBuffer<f32> {
+        let spec = SignalSpec::new(44_100, channels);
+        let n = frames[0].len();
+        let mut buf = AudioBuffer::<f32>::new(n as u64, spec);
+        buf.render_reserved(Some(n));
+        for (ch, samples) in frames.iter().enumerate() {
+            buf.chan_mut(ch).copy_from_slice(samples);
+        }
+        buf
+    }
+
+    #[test]
+    fn mono_buffer_duplicates_the_single_channel_instead_of_panicking() {
+        // AAC-in-MP4 reports no channel layout in codec_params, so the count
+        // must come from the decoded buffer itself. A mono buffer used to hit
+        // `buf.chan(1)` and abort the process.
+        let buf = f32_buffer(Channels::FRONT_LEFT, &[&[0.1, 0.2, 0.3]]);
+        let decoded = AudioBufferRef::F32(std::borrow::Cow::Owned(buf));
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        assert!(extend_planar(&decoded, &mut l, &mut r));
+        assert_eq!(l, vec![0.1, 0.2, 0.3]);
+        assert_eq!(r, l, "mono plays on both sides");
+    }
+
+    #[test]
+    fn stereo_buffer_keeps_left_and_right_separate() {
+        let buf = f32_buffer(
+            Channels::FRONT_LEFT | Channels::FRONT_RIGHT,
+            &[&[0.1, 0.2], &[0.3, 0.4]],
+        );
+        let decoded = AudioBufferRef::F32(std::borrow::Cow::Owned(buf));
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        assert!(extend_planar(&decoded, &mut l, &mut r));
+        assert_eq!(l, vec![0.1, 0.2]);
+        assert_eq!(r, vec![0.3, 0.4]);
+    }
+
+    #[test]
+    fn extend_planar_accumulates_across_calls() {
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        for _ in 0..2 {
+            let buf = f32_buffer(Channels::FRONT_LEFT, &[&[0.5]]);
+            let decoded = AudioBufferRef::F32(std::borrow::Cow::Owned(buf));
+            assert!(extend_planar(&decoded, &mut l, &mut r));
+        }
+        assert_eq!(l.len(), 2);
+        assert_eq!(r.len(), 2);
     }
 }
