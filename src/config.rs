@@ -268,6 +268,14 @@ pub struct BotConfig {
     pub jitter_buffer_ms: u32,
     #[serde(rename = "spotifyVolumeRampStep")]
     pub volume_ramp_step: f32,
+    /// Whether `volume` and `max_volume` are already on the loudness curve.
+    ///
+    /// Volume used to scale amplitude straight from the percentage. Configs
+    /// written before that changed hold settings meant for the old scaling, and
+    /// are converted once on load so they keep sounding the same. Absent means
+    /// an old config, which is exactly what serde's default gives us.
+    #[serde(default, rename = "volumeCurveMigrated")]
+    pub volume_curve_migrated: bool,
 
     // Radio/recommendations
     #[serde(rename = "spotifyRadio")]
@@ -330,6 +338,8 @@ impl Default for BotConfig {
 
             volume: 50,
             max_volume: 70,
+            // A config made now is already on the curve.
+            volume_curve_migrated: true,
             jitter_buffer_ms: 400,
             volume_ramp_step: 0.03,
 
@@ -355,8 +365,33 @@ impl BotConfig {
     pub(crate) fn parse_file(path: &Path) -> Result<Self, BotError> {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
-        serde_json::from_str(&contents)
-            .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))
+        let mut config: Self = serde_json::from_str(&contents)
+            .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))?;
+        config.migrate_volume_curve();
+        Ok(config)
+    }
+
+    /// Carry volumes saved under the old linear scaling onto the loudness
+    /// curve, so a listener hears the same thing after upgrading.
+    ///
+    /// The old setting *was* the amplitude, so the new setting is whatever
+    /// produces that amplitude on the curve - about 77 where it used to say 50.
+    /// Converting in memory rather than rewriting the file keeps this read-only;
+    /// the value is persisted by whatever saves next, and re-running it on an
+    /// unsaved config produces the same answer.
+    pub(crate) fn migrate_volume_curve(&mut self) {
+        if self.volume_curve_migrated {
+            return;
+        }
+        let before = (self.volume, self.max_volume);
+        self.volume = crate::audio::volume::percent_for_amplitude(self.volume as f32 / 100.0);
+        self.max_volume =
+            crate::audio::volume::percent_for_amplitude(self.max_volume as f32 / 100.0);
+        self.volume_curve_migrated = true;
+        tracing::info!(
+            "Volume now follows the loudness curve; carried {}/{} across as {}/{} so it sounds the same",
+            before.0, before.1, self.volume, self.max_volume
+        );
     }
 
     /// Load and validate a config without any interactive prompt. Fails if the
@@ -520,6 +555,91 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use ::teamtalk::types::UserGender;
+
+    mod volume_curve_migration {
+        use super::*;
+
+        #[test]
+        fn an_old_config_keeps_the_loudness_it_had() {
+            // The old setting was the amplitude itself. On the curve, 50 would
+            // be a third as loud, so it has to become the setting that produces
+            // the same amplitude.
+            let mut cfg = BotConfig {
+                volume: 50,
+                max_volume: 80,
+                volume_curve_migrated: false,
+                ..Default::default()
+            };
+            cfg.migrate_volume_curve();
+
+            assert_eq!(cfg.volume, 77);
+            assert_eq!(cfg.max_volume, 92);
+            assert!(cfg.volume_curve_migrated);
+
+            // What matters is the loudness, not the number.
+            let after = crate::audio::volume::amplitude_for_percent(cfg.volume);
+            assert!((after - 0.50).abs() < 0.01, "got {after}");
+        }
+
+        #[test]
+        fn a_migrated_config_is_left_alone() {
+            // Running twice must not push the volume up again each time.
+            let mut cfg = BotConfig {
+                volume: 77,
+                max_volume: 92,
+                volume_curve_migrated: true,
+                ..Default::default()
+            };
+            let before = (cfg.volume, cfg.max_volume);
+            cfg.migrate_volume_curve();
+            cfg.migrate_volume_curve();
+            assert_eq!((cfg.volume, cfg.max_volume), before);
+        }
+
+        #[test]
+        fn silence_and_full_are_unchanged() {
+            // 0 and 100 mean the same thing on both scalings, so the migration
+            // must not nudge them.
+            let mut cfg = BotConfig {
+                volume: 0,
+                max_volume: 100,
+                volume_curve_migrated: false,
+                ..Default::default()
+            };
+            cfg.migrate_volume_curve();
+            assert_eq!((cfg.volume, cfg.max_volume), (0, 100));
+        }
+
+        #[test]
+        fn a_config_written_now_needs_no_migration() {
+            assert!(
+                BotConfig::default().volume_curve_migrated,
+                "a fresh config is already on the curve; migrating it would make it louder"
+            );
+        }
+
+        #[test]
+        fn a_config_file_without_the_marker_is_treated_as_old() {
+            // Every config written before this change lacks the field, and that
+            // absence is the only signal that it needs converting.
+            let json = r#"{"host":"h","tcpPort":1,"udpPort":1,"encrypted":false,
+                "botName":"b","username":"u","password":"p","channelName":"/",
+                "channelPassword":"","botGender":"neutral","adminMode":"Both",
+                "admins":[],"defaultLanguage":"en","spotifyQuality":"HIGH",
+                "spotifyEnableNormalization":false,"normalisationType":"track",
+                "normalisationMethod":"dynamic","normalisationPregainDb":0.0,
+                "normalisationThresholdDbfs":-2.0,"normalisationKneeDb":5.0,
+                "volume":50,"spotifyMaxVolume":80,"spotifyJitterBufferSizeMs":0,
+                "spotifyVolumeRampStep":0.05,"radioEnabled":false,
+                "radioBatchSize":1,"radioDelay":0.0,"searchLimit":5,
+                "youtubeCookiesFile":"","defaultService":"Spotify"}"#;
+            let parsed: BotConfig = serde_json::from_str(json).expect("should parse");
+            assert!(
+                !parsed.volume_curve_migrated,
+                "a config with no marker must be treated as pre-curve"
+            );
+        }
+    }
 
     // -- BotConfig equality (unchanged-edit detection in the GUI dialog) --
 
