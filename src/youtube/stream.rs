@@ -1,14 +1,13 @@
 //! A buffer that is written and read at the same time.
 //!
-//! yt-dlp writes a track to us over a pipe while symphonia wants to decode it.
-//! Waiting for the download to finish before starting the decoder is simple,
-//! and it is what this used to do — at the cost of every YouTube track starting
-//! only after its whole file had arrived.
+//! yt-dlp writes a track to us over a pipe while symphonia reads it. Reads past
+//! what has arrived block until the writer catches up rather than reporting
+//! end-of-file, and everything written stays in memory, so seeking backwards is
+//! instant and seeking forwards waits for the bytes.
 //!
-//! This lets the decoder start on the first bytes: reads past what has arrived
-//! block until the downloader catches up, rather than reporting end-of-file.
-//! Everything downloaded stays in memory, so seeking backwards is still
-//! instant, and seeking forwards simply waits for the bytes.
+//! Decoding still waits for the whole download before it starts, because
+//! symphonia will not seek a source whose length it does not know and finding
+//! an MP4's index needs a seek. See `wait_until_complete`.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};

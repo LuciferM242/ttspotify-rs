@@ -1,11 +1,10 @@
 //! The tray popup menu, as data.
 //!
 //! The menu is described here and rendered by the Win32 layer, so what a click
-//! means is decided once, when the menu is built, and looked up by command ID
-//! afterwards. The wx version instead derived the bot from the item's position
-//! and re-read the bot list inside the click handler: a bot added or removed
-//! while the menu was open shifted the list, and "Stop" hit whichever bot had
-//! slid into that slot.
+//! means is decided once, when the menu is built, and looked up by command id
+//! afterwards. Deriving the bot from the clicked item's position instead would
+//! misfire whenever the bot list changed while the menu was open: "Stop" would
+//! reach whichever bot had slid into that slot.
 
 use std::collections::HashMap;
 

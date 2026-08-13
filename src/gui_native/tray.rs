@@ -1,20 +1,14 @@
 //! Native Win32 system tray, on winsafe.
 //!
-//! Ported from `gui/tray.rs`, which used wxWidgets. Behaviour is the same
-//! except where the wx version was working around its own toolkit:
+//! Two things here are load-bearing and not obvious from the code:
 //!
-//! - The menu is built from `menu::MenuModel`, so a command id names a bot
-//!   rather than a list position. See that module for the bug this fixes.
-//! - `TrackPopupMenu` with `TPM::RETURNCMD` returns the chosen id directly, so
-//!   there is no handler to bind to the menu. wx needed one because its
-//!   `popup_menu` did not route through the tray icon's own menu events.
-//! - The icon comes from an embedded resource instead of being drawn at
-//!   runtime.
 //! - `TaskbarCreated` is handled, so the icon comes back when Explorer
-//!   restarts. Nothing did that before.
+//!   restarts. Without it the icon is gone for the rest of the session.
 //! - `NOTIFYICON_VERSION_4` is requested, which is what makes the shell report
 //!   keyboard invocation of the icon as `WM_CONTEXTMENU` with a usable
 //!   position. Without it, reaching the menu from the keyboard is unreliable.
+//!   It also suppresses the standard tooltip, which is why `NIF_SHOWTIP` is set
+//!   on every notification - a screen reader reads the icon's name from it.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -532,9 +526,8 @@ fn pump_until_ready<T>(hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> O
 /// Open an instance's newest log, or its folder when it has none yet.
 fn open_logs(hwnd: &w::HWND, name: &str) {
     let dir = crate::logging::instance_log_dir(name);
-    // Deliberately not the wx version's filename-suffix search: that dated
-    // from when every instance shared one log folder. Logs now live in
-    // logs/<name>/<date>.log, so the newest file in the folder is the answer.
+    // Logs live in logs/<name>/<date>.log, so the newest file in the
+    // instance's own folder is the one wanted.
     let target = match crate::logging::newest_log_file(&dir) {
         Some(path) => path,
         None if dir.is_dir() => dir,

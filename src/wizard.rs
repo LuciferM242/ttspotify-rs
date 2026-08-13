@@ -64,7 +64,6 @@ pub fn run_wizard(config_name: Option<&str>, offer_service: bool) -> Result<(), 
     println!("TTSpotify Configuration Setup");
     println!();
 
-    // Config file name
     let name = if let Some(n) = config_name {
         n.to_string()
     } else {

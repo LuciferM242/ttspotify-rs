@@ -56,8 +56,7 @@ impl Sink for TeamTalkSink {
         }
         match packet {
             AudioPacket::Samples(samples) => {
-                // Convert f64 samples to i16
-                let pcm_data = converter.f64_to_s16(&samples);
+                        let pcm_data = converter.f64_to_s16(&samples);
                 self.sender.send(pcm_data).map_err(|e| {
                     SinkError::OnWrite(format!("Failed to send PCM data: {e}"))
                 })?;

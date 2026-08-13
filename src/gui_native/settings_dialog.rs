@@ -3,13 +3,7 @@
 //!
 //! Built from the `IDD_SETTINGS` resource template rather than by placing
 //! controls, so tab order, Alt-key mnemonics, Enter/Escape and DPI scaling come
-//! from Windows. The wx version had to set each control's accessible name by
-//! hand, because wxCheckBox reported its window name ("check") rather than its
-//! label; standard controls in a dialog template do not need that.
-//!
-//! Both settings are read and written by code that has nothing to do with the
-//! toolkit (`crate::settings` and `crate::gui_native::autostart`), so only the window
-//! itself changed in the port.
+//! from Windows, and a screen reader reads each control's real label.
 
 use winsafe::prelude::*;
 use winsafe::{co, gui};

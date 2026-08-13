@@ -280,8 +280,8 @@ async fn run_cli_update() -> Result<(), BotError> {
     }
 }
 
-/// Windows system-tray app. Manages multiple bot instances via a wxDragon
-/// tray icon. `--setup` opens the GUI config dialog directly.
+/// Windows system-tray app. Manages multiple bot instances from the tray.
+/// `--setup` opens the config editor directly.
 #[cfg(windows)]
 fn main() {
     // Brings winsafe's GuiWindow/GuiEventsParent methods into scope for the

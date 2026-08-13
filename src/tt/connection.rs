@@ -29,7 +29,6 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     let client = Client::new()
         .map_err(|e| BotError::TeamTalk(format!("Failed to create client: {e}")))?;
 
-    // Connect
     tracing::info!("Connecting to TeamTalk server {}:{}...", config.host, config.tcp_port);
     client.connect(&config.host, config.tcp_port, config.udp_port, config.encrypted)
         .map_err(|e| BotError::TeamTalk(format!("Connection failed: {e}")))?;
@@ -37,7 +36,6 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
         .ok_or_else(|| BotError::TeamTalk("Connection timeout".into()))?;
     tracing::info!("Connected to TeamTalk server");
 
-    // Login
     tracing::info!("Logging in as '{}'...", config.bot_name);
     client.login_and_wait(&config.bot_name, &config.username, &config.password, "TTSpotifyBot", 10_000)
         .map_err(|e| BotError::TeamTalk(format!("Login failed: {e}")))?;
@@ -55,14 +53,12 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     // Disable voice transmission (we inject audio blocks manually)
     let _ = client.enable_voice_transmission(false);
 
-    // Set bot gender
     let gender = crate::config::parse_gender(&config.bot_gender);
     let mut status = UserStatus::default();
     status.gender = gender;
     let _ = client.set_status(status, "");
     tracing::info!("Bot gender set to {:?}", gender);
 
-    // Join channel
     let _channel_id = join_channel(&client, config)?;
 
     // Enable SDK auto-reconnect for connection + login only.

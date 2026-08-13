@@ -93,7 +93,6 @@ fn compose_tooltip(statuses: &[(String, BotStatus)]) -> String {
 
     // No empty-parts fallback: the match above is exhaustive and every variant
     // increments a counter, so with bots present `parts` always has something.
-    // wx carried a "{n} bots" branch here that could never run.
     format!("TT Spotify - {}", parts.join(", "))
 }
 

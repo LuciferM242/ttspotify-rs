@@ -319,7 +319,6 @@ impl AudioPipeline {
                     tracing::info!("First audio frame ready, injecting (stream_id={})", self.stream_id);
                 }
 
-                // Update volume
                 let vol = self.volume.load(Ordering::Relaxed);
                 self.volume_controller.set_target(vol, self.max_volume);
                 self.volume_controller.apply(&mut self.frame_buf);
