@@ -75,7 +75,14 @@ impl StreamWriter {
 
     /// The download finished: readers may now hit end-of-file.
     pub fn finish(&self) {
+        // `closed` must change while the data mutex is held, like `append`
+        // holds it while extending: a reader checks its predicate under that
+        // mutex and only then parks on the condvar, so a store+notify landing
+        // between its check and its wait would be the last notification this
+        // buffer ever sends - and the reader would sleep forever.
+        let _guard = self.shared.data.lock().unwrap_or_else(|e| e.into_inner());
         self.shared.closed.store(true, Ordering::SeqCst);
+        drop(_guard);
         self.shared.grew.notify_all();
     }
 
