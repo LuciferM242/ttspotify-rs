@@ -65,15 +65,6 @@ pub const PRIMARY_CLIENT: &str = "android_vr";
 /// given no token to present.
 pub const FALLBACK_CLIENT: &str = "tv_simply";
 
-/// Whether a client needs a JavaScript runtime to produce a usable URL.
-///
-/// Only the fallback does. `tv_simply` fails outright without one ("Requested
-/// format is not available"), while `android_vr` returns the full track. Every
-/// other client tried either needs a runtime too or serves no m4a.
-fn client_needs_js_runtime(client: &str) -> bool {
-    client != PRIMARY_CLIENT
-}
-
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
         // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
@@ -291,20 +282,6 @@ impl YouTubeMetadata {
         cmd.arg("--extractor-args");
         cmd.arg(format!("youtube:player_client={client}"));
 
-        if !client_needs_js_runtime(client) {
-            // android_vr resolves without running any of YouTube's JavaScript,
-            // so there is no reason to let yt-dlp start deno for it.
-            //
-            // This is not a micro-optimisation: yt-dlp is spawned without a
-            // console, so any runtime it starts is given a fresh one by
-            // Windows - a black window titled with deno's path, appearing
-            // mid-song. Not starting it is the fix. CREATE_NO_WINDOW does not
-            // help, since it applies to yt-dlp and not to what yt-dlp spawns.
-            //
-            // Measured: no slower without it (2.47s against 2.56s, noise).
-            cmd.arg("--no-js-runtimes");
-        }
-
         // Wire the bgutil-pot plugin and binary if bundled.
         if let Some(b) = &self.bundle {
             if b.plugin_dir.is_dir() {
@@ -350,7 +327,8 @@ impl YouTubeMetadata {
         }
 
         // The tray is a GUI process with no console, so a child console app
-        // flashes a command window on each spawn.
+        // flashes a command window on each spawn. CREATE_NO_WINDOW suppresses it
+        // for yt-dlp and the bgutil-pot child it launches.
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -410,24 +388,6 @@ fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
 mod tests {
     use super::retry_once;
     use std::cell::Cell;
-
-    #[test]
-    fn only_the_fallback_client_needs_a_javascript_runtime() {
-        // The primary resolves without running YouTube's JavaScript, so yt-dlp
-        // is told not to start a runtime for it. That is what keeps deno from
-        // opening a console window mid-song: a runtime yt-dlp starts is given
-        // one by Windows, and CREATE_NO_WINDOW applies to yt-dlp rather than to
-        // what yt-dlp spawns.
-        assert!(!super::client_needs_js_runtime(super::PRIMARY_CLIENT));
-        assert!(super::client_needs_js_runtime(super::FALLBACK_CLIENT));
-    }
-
-    #[test]
-    fn the_two_clients_are_different() {
-        // A fallback identical to the primary would retry the same refusal, and
-        // would inherit its no-runtime treatment, which it cannot work without.
-        assert_ne!(super::PRIMARY_CLIENT, super::FALLBACK_CLIENT);
-    }
 
     #[tokio::test]
     async fn retry_once_returns_first_success_without_retrying() {
