@@ -75,15 +75,18 @@ impl FactsCache {
     pub fn get(&mut self, fetch: impl FnOnce() -> MenuFacts) -> MenuFacts {
         let marked = self.stale.load(Ordering::Relaxed);
         let now = Instant::now();
-        if needs_refresh(self.last.map(|(t, _)| t), now, MAX_AGE, marked) {
+        if needs_refresh(self.last.as_ref().map(|(t, _)| *t), now, MAX_AGE, marked) {
             let facts = fetch();
-            self.last = Some((now, facts));
+            self.last = Some((now, facts.clone()));
             self.stale.store(false, Ordering::Relaxed);
             facts
         } else {
             // Only reachable when `last` is set: needs_refresh returns true for
             // None.
-            self.last.map(|(_, f)| f).unwrap_or_else(fetch)
+            self.last
+                .as_ref()
+                .map(|(_, f)| f.clone())
+                .unwrap_or_else(fetch)
         }
     }
 }
@@ -97,6 +100,7 @@ mod tests {
         MenuFacts {
             spotify_signed_in: false,
             youtube_installed: installed,
+            spotify_user: None,
         }
     }
 

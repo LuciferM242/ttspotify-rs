@@ -38,6 +38,21 @@ pub fn credentials_were_rejected(error: &librespot_core::Error) -> bool {
     error.kind == librespot_core::error::ErrorKind::PermissionDenied
 }
 
+/// A username worth showing, or `None`.
+///
+/// Spotify does not always return one with the stored credentials, and has been
+/// seen to return an empty or padded string. Showing "signed in as " with
+/// nothing after it reads as a bug, so an unusable name is treated as absent.
+fn usable_username(raw: Option<String>) -> Option<String> {
+    let name = raw?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Whether an interactive OAuth flow can possibly succeed: either a browser
 /// can be opened (non-headless), or stdin is a terminal so the headless
 /// paste-the-URL flow has someone to answer it. Under systemd both are false
@@ -110,6 +125,22 @@ impl SpotifyAuth {
     /// Check if cached Spotify credentials exist (without connecting).
     pub fn has_cached_credentials(&self) -> bool {
         self.cache.as_ref().is_some_and(|c| c.credentials().is_some())
+    }
+
+    /// The account the cached credentials belong to, if there are any and they
+    /// name one.
+    ///
+    /// Read from the cache rather than a session, because the tray has no
+    /// session: it only ever asks whether somebody is signed in. Spotify
+    /// returns a canonical username with the reusable credentials, but not
+    /// always, so this can be `None` even when a sign-in exists.
+    pub fn cached_username(&self) -> Option<String> {
+        usable_username(
+            self.cache
+                .as_ref()
+                .and_then(|c| c.credentials())
+                .and_then(|c| c.username),
+        )
     }
 
     /// Whether an interactive OAuth flow could succeed in this process.
@@ -286,6 +317,21 @@ mod tests {
 
     /// Errors built through librespot's own constructors, so these track what
     /// it really produces rather than a guess at its shape.
+    #[test]
+    fn a_blank_username_is_treated_as_no_username() {
+        // Spotify has been seen to return empty or padded names. "signed in as"
+        // followed by nothing reads as a bug rather than as a missing name.
+        use super::usable_username;
+        assert_eq!(usable_username(None), None);
+        assert_eq!(usable_username(Some(String::new())), None);
+        assert_eq!(usable_username(Some("   ".to_string())), None);
+        assert_eq!(
+            usable_username(Some("  aloys  ".to_string())),
+            Some("aloys".to_string()),
+            "a real name should be kept, and tidied"
+        );
+    }
+
     #[test]
     fn refusing_an_impossible_sign_in_survives_the_blocking_hop() {
         // The sign-in runs on the blocking pool now, so its refusal comes back

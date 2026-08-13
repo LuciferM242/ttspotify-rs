@@ -326,11 +326,15 @@ fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POIN
 
     // Read from the cache: both of these answers come from disk, and this runs
     // on the message loop every time the menu opens.
-    let facts = tray.facts.borrow_mut().get(|| MenuFacts {
-        spotify_signed_in: crate::spotify::auth::SpotifyAuth::new().has_cached_credentials(),
+    let facts = tray.facts.borrow_mut().get(|| {
+        let auth = crate::spotify::auth::SpotifyAuth::new();
+        MenuFacts {
+        spotify_signed_in: auth.has_cached_credentials(),
+        spotify_user: auth.cached_username(),
         youtube_installed: crate::youtube::setup::resolve_paths()
             .map(|p| crate::youtube::setup::is_installed(&p))
             .unwrap_or(false),
+        }
     });
     let model = tray.menus.borrow_mut().build(&bots, facts);
 
@@ -689,6 +693,7 @@ mod hmenu_tests {
         MenuFacts {
             spotify_signed_in: false,
             youtube_installed: false,
+            spotify_user: None,
         }
     }
 

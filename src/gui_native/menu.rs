@@ -47,11 +47,25 @@ pub enum MenuEntry {
     },
 }
 
+/// The Spotify line in the menu. Naming the account matters when several bots
+/// share a machine: "signed in" alone does not say whose account is playing.
+pub fn spotify_label(signed_in: bool, user: Option<&str>) -> String {
+    match (signed_in, user) {
+        (true, Some(name)) => format!("Spotify: signed in as {name}"),
+        // Spotify does not always return a username with the stored
+        // credentials, so a sign-in without a name is normal, not an error.
+        (true, None) => "Spotify: signed in".to_string(),
+        (false, _) => "Spotify: not signed in".to_string(),
+    }
+}
+
 /// Facts the menu needs that don't come from the bot list.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct MenuFacts {
     pub spotify_signed_in: bool,
     pub youtube_installed: bool,
+    /// The signed-in Spotify account, when it is known.
+    pub spotify_user: Option<String>,
 }
 
 /// A built menu: what to draw, and what each command ID means.
@@ -167,13 +181,8 @@ impl MenuBuilder {
             model.entries.push(MenuEntry::Separator);
         }
 
-        let spotify_label = if facts.spotify_signed_in {
-            "Spotify: signed in"
-        } else {
-            "Spotify: not signed in"
-        };
         model.entries.push(MenuEntry::Submenu {
-            label: spotify_label.to_string(),
+            label: spotify_label(facts.spotify_signed_in, facts.spotify_user.as_deref()),
             items: vec![MenuEntry::Item {
                 id: ID_SPOTIFY_AUTH,
                 label: "Sign in / re-authenticate".to_string(),
@@ -243,10 +252,13 @@ impl MenuBuilder {
 mod tests {
     use super::*;
 
-    const FACTS: MenuFacts = MenuFacts {
-        spotify_signed_in: false,
-        youtube_installed: false,
-    };
+    fn facts() -> MenuFacts {
+        MenuFacts {
+            spotify_signed_in: false,
+            youtube_installed: false,
+            spotify_user: None,
+        }
+    }
 
     fn bot(name: &str, status: &str, running: bool) -> (String, String, bool) {
         (name.to_string(), status.to_string(), running)
@@ -281,9 +293,58 @@ mod tests {
     }
 
     #[test]
+    fn the_spotify_line_names_the_account_when_it_is_known() {
+        // With several bots on one machine, "signed in" alone does not say
+        // whose account is playing.
+        assert_eq!(
+            spotify_label(true, Some("aloys")),
+            "Spotify: signed in as aloys"
+        );
+    }
+
+    #[test]
+    fn a_sign_in_without_a_name_still_reads_as_signed_in() {
+        // Spotify does not always return a username with the stored
+        // credentials, and that is normal - it must not read as an error or
+        // as being signed out.
+        assert_eq!(spotify_label(true, None), "Spotify: signed in");
+    }
+
+    #[test]
+    fn being_signed_out_never_shows_a_name() {
+        // A stale name beside "not signed in" would be worse than no name.
+        assert_eq!(spotify_label(false, None), "Spotify: not signed in");
+        assert_eq!(spotify_label(false, Some("aloys")), "Spotify: not signed in");
+    }
+
+    #[test]
+    fn the_menu_shows_the_account_name() {
+        let menu = MenuBuilder::new().build(
+            &[],
+            MenuFacts {
+                spotify_signed_in: true,
+                youtube_installed: false,
+                spotify_user: Some("aloys".to_string()),
+            },
+        );
+        let labels: Vec<&str> = menu
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Submenu { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            labels.iter().any(|l| l.contains("aloys")),
+            "got: {labels:?}"
+        );
+    }
+
+    #[test]
     fn every_command_id_resolves_to_an_action() {
         let bots = [bot("alpha", "Connected, Idle", true)];
-        let menu = MenuBuilder::new().build(&bots, FACTS);
+        let menu = MenuBuilder::new().build(&bots, facts());
         let all = ids(&menu.entries);
         assert!(!all.is_empty(), "menu produced no commands");
         for id in all {
@@ -298,7 +359,7 @@ mod tests {
             bot("alpha", "Connected, Idle", true),
             bot("beta", "Stopped", false),
         ];
-        let menu = MenuBuilder::new().build(&bots, FACTS);
+        let menu = MenuBuilder::new().build(&bots, facts());
         let all = ids(&menu.entries);
         let mut sorted = all.clone();
         sorted.sort_unstable();
@@ -312,7 +373,7 @@ mod tests {
             bot("alpha", "Connected, Idle", true),
             bot("beta", "Stopped", false),
         ];
-        let menu = MenuBuilder::new().build(&bots, FACTS);
+        let menu = MenuBuilder::new().build(&bots, facts());
         for name in ["alpha", "beta"] {
             let mut actions: Vec<BotAction> = ids(&menu.entries)
                 .iter()
@@ -346,7 +407,7 @@ mod tests {
             bot("beta", "Connected, Idle", true),
         ];
         let mut builder = MenuBuilder::new();
-        let menu = builder.build(&two, FACTS);
+        let menu = builder.build(&two, facts());
         let stop_beta = ids(&menu.entries)
             .into_iter()
             .find(|id| {
@@ -356,7 +417,7 @@ mod tests {
             .expect("no stop command for beta");
 
         let one = [bot("beta", "Connected, Idle", true)];
-        let rebuilt = builder.build(&one, FACTS);
+        let rebuilt = builder.build(&one, facts());
         // A name keeps its ID block for the life of the process, so the click
         // still reaches beta. Merely resolving to nothing would be safe but is
         // not what we promise: it would silently drop the user's click.
@@ -376,7 +437,7 @@ mod tests {
             bot("running", "Connected, Idle", true),
             bot("idle", "Stopped", false),
         ];
-        let menu = MenuBuilder::new().build(&bots, FACTS);
+        let menu = MenuBuilder::new().build(&bots, facts());
         for (bot_name, action, expect_enabled) in [
             ("running", BotAction::Start, false),
             ("running", BotAction::Stop, true),
@@ -402,7 +463,7 @@ mod tests {
 
     #[test]
     fn the_global_commands_are_always_present() {
-        let menu = MenuBuilder::new().build(&[], FACTS);
+        let menu = MenuBuilder::new().build(&[], facts());
         let present: Vec<&MenuAction> = ids(&menu.entries)
             .iter()
             .filter_map(|id| menu.action(*id))
@@ -424,6 +485,7 @@ mod tests {
             let facts = MenuFacts {
                 spotify_signed_in: false,
                 youtube_installed: installed,
+                spotify_user: None,
             };
             let menu = MenuBuilder::new().build(&[], facts);
             for (action, expect_enabled) in [
@@ -448,7 +510,7 @@ mod tests {
     #[test]
     fn a_bot_submenu_is_labelled_with_its_name_and_status() {
         let bots = [bot("alpha", "Connected, Playing: Song", true)];
-        let menu = MenuBuilder::new().build(&bots, FACTS);
+        let menu = MenuBuilder::new().build(&bots, facts());
         let labels: Vec<&str> = menu
             .entries
             .iter()
@@ -465,7 +527,7 @@ mod tests {
 
     #[test]
     fn an_unknown_id_resolves_to_nothing() {
-        let menu = MenuBuilder::new().build(&[bot("alpha", "Stopped", false)], FACTS);
+        let menu = MenuBuilder::new().build(&[bot("alpha", "Stopped", false)], facts());
         assert_eq!(menu.action(u16::MAX), None);
     }
 }
