@@ -54,10 +54,13 @@ pub struct VolumeController {
 }
 
 impl VolumeController {
-    pub fn new(ramp_step: f32) -> Self {
-        // These are amplitudes, not percentages: 0.5 here would be about the
-        // 77% setting. Start where a 50% setting actually lands.
-        let start = amplitude_for_percent(50);
+    /// Start at the configured setting, not at some fixed default: the first
+    /// frames of the first track play at `current_scale` before any ramping,
+    /// and a controller seeded at 50% made a bot configured to volume 20 play
+    /// ~6x too loud for its first ~100ms — audibly so for a muted (volume 0)
+    /// bot, which briefly played every track's opening at half volume.
+    pub fn new(percent: u8, max_percent: u8, ramp_step: f32) -> Self {
+        let start = amplitude_for_percent(percent.min(max_percent));
         Self {
             target_scale: start,
             current_scale: start,
@@ -172,7 +175,7 @@ mod tests {
 
     #[test]
     fn the_maximum_caps_the_setting() {
-        let mut v = VolumeController::new(1.0); // large step: snaps immediately
+        let mut v = VolumeController::new(50, 100, 1.0); // large step: snaps immediately
         v.set_target(80, 70);
         let mut samples = [1000i16];
         v.apply(&mut samples);
@@ -182,13 +185,13 @@ mod tests {
 
     #[test]
     fn zero_silences_and_full_passes_through() {
-        let mut v = VolumeController::new(1.0);
+        let mut v = VolumeController::new(50, 100, 1.0);
         v.set_target(0, 100);
         let mut samples = [1000i16];
         v.apply(&mut samples);
         assert_eq!(samples[0], 0);
 
-        let mut v = VolumeController::new(1.0);
+        let mut v = VolumeController::new(50, 100, 1.0);
         v.set_target(100, 100);
         let mut samples = [1000i16];
         v.apply(&mut samples);
@@ -196,20 +199,39 @@ mod tests {
     }
 
     #[test]
-    fn a_new_controller_starts_at_the_fifty_percent_setting() {
-        // These are amplitudes internally, so starting at 0.5 would really be
-        // about 77%.
-        let mut v = VolumeController::new(1.0);
+    fn a_new_controller_starts_at_its_configured_setting() {
+        // The first frames play at the seed gain before any ramp: it must be
+        // the configured volume, not a fixed default. (A 50%-seeded controller
+        // made a volume-20 bot ~6x too loud for its first frames.)
+        let mut v = VolumeController::new(20, 100, 1.0);
         let mut samples = [1000i16];
         v.apply(&mut samples);
-        assert_eq!(samples[0], 166);
+        assert_eq!(samples[0], (1000.0 * amplitude_for_percent(20)) as i16);
+    }
+
+    #[test]
+    fn a_muted_controller_starts_silent() {
+        // The sharpest case of the seed bug: a bot the operator muted played
+        // ~100ms of every track's opening before the ramp reached zero.
+        let mut v = VolumeController::new(0, 100, 0.03);
+        let mut samples = [1000i16, -1000];
+        v.apply(&mut samples);
+        assert_eq!(samples, [0, 0]);
+    }
+
+    #[test]
+    fn the_seed_respects_the_maximum() {
+        let mut v = VolumeController::new(100, 70, 1.0);
+        let mut samples = [1000i16];
+        v.apply(&mut samples);
+        assert_eq!(samples[0], (1000.0 * amplitude_for_percent(70)) as i16);
     }
 
     #[test]
     fn a_change_is_ramped_rather_than_jumping() {
         // A step change in gain is audible as a click, which is why the ramp
         // exists at all.
-        let mut v = VolumeController::new(0.1);
+        let mut v = VolumeController::new(50, 100, 0.1);
         v.set_target(100, 100); // 0.166 -> 1.0, further than one step
         let mut samples = [1000i16];
         v.apply(&mut samples);
@@ -218,7 +240,7 @@ mod tests {
 
     #[test]
     fn ramping_down_moves_by_one_step_too() {
-        let mut v = VolumeController::new(0.05);
+        let mut v = VolumeController::new(50, 100, 0.05);
         v.set_target(0, 100); // target 0.0 from 0.166
         let mut samples = [1000i16];
         v.apply(&mut samples);
@@ -227,7 +249,7 @@ mod tests {
 
     #[test]
     fn a_ramp_settles_exactly_on_the_target() {
-        let mut v = VolumeController::new(0.1);
+        let mut v = VolumeController::new(50, 100, 0.1);
         v.set_target(100, 100);
         for _ in 0..20 {
             v.apply(&mut []);
@@ -239,7 +261,7 @@ mod tests {
 
     #[test]
     fn an_empty_frame_still_advances_the_ramp() {
-        let mut v = VolumeController::new(0.1);
+        let mut v = VolumeController::new(50, 100, 0.1);
         v.set_target(100, 100);
         v.apply(&mut []);
         let mut samples = [1000i16];

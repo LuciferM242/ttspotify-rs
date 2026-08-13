@@ -181,8 +181,11 @@ impl AudioPipeline {
         pos_ms: Arc<AtomicU32>,
         config: &BotConfig,
     ) -> Self {
-        let mut volume_controller = VolumeController::new(config.volume_ramp_step);
-        volume_controller.set_target(config.volume, config.max_volume);
+        // Seeded at the configured volume: the pre-seed constructor started
+        // every pipeline at the 50% amplitude, so the first ~100ms of the
+        // first track played at the wrong gain (a muted bot audibly so).
+        let volume_controller =
+            VolumeController::new(config.volume, config.max_volume, config.volume_ramp_step);
 
         Self {
             audio_rx,
