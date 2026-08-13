@@ -22,6 +22,22 @@ pub struct SpotifyAuth {
     headless: bool,
 }
 
+/// Whether a failed `Session::connect` means the stored login was refused, as
+/// opposed to Spotify being unreachable.
+///
+/// `connect` reports both through one `Err`, and treating every failure as a
+/// refusal sent the user to a browser whenever the network was briefly down —
+/// on every retry, so a boot before the network was up produced a run of
+/// browser windows asking for a login that was never the problem.
+///
+/// librespot maps a rejected login (and an HTTP 401/403) to `PermissionDenied`
+/// and everything else to other kinds: a lost connection is `Unavailable`, a
+/// timeout is `DeadlineExceeded`. `PermissionDenied` is used in exactly those
+/// two credential cases, so it is the whole rule.
+pub fn credentials_were_rejected(error: &librespot_core::Error) -> bool {
+    error.kind == librespot_core::error::ErrorKind::PermissionDenied
+}
+
 /// Whether an interactive OAuth flow can possibly succeed: either a browser
 /// can be opened (non-headless), or stdin is a terminal so the headless
 /// paste-the-URL flow has someone to answer it. Under systemd both are false
@@ -133,15 +149,25 @@ impl SpotifyAuth {
                 log_account_type(session);
                 Ok(())
             }
-            Err(e) => {
-                // If cached credentials failed, try OAuth
-                tracing::warn!("Cached credentials rejected: {e}. Falling back to OAuth...");
+            Err(e) if credentials_were_rejected(&e) => {
+                tracing::warn!("Spotify rejected the stored credentials: {e}. Signing in again...");
                 let credentials = self.oauth_login()?;
                 session.connect(credentials, true).await
                     .map_err(|e| BotError::SpotifyAuth(format!("OAuth login also failed: {e}")))?;
                 tracing::info!("Spotify session established via OAuth re-authentication");
                 log_account_type(session);
                 Ok(())
+            }
+            Err(e) => {
+                // Not a credential problem, so signing in again cannot help.
+                // Opening a browser here is actively wrong: it happens on every
+                // boot before the network is up, and the caller retries, so a
+                // transient outage produced a browser window per attempt.
+                Err(BotError::SpotifyAuth(format!(
+                    "could not reach Spotify: {e}. The stored login was not \
+                     rejected, so this is a connection problem rather than a \
+                     sign-in one"
+                )))
             }
         }
     }
@@ -240,7 +266,65 @@ fn log_account_type(session: &Session) {
 
 #[cfg(test)]
 mod tests {
-    use super::oauth_is_feasible;
+    use super::{credentials_were_rejected, oauth_is_feasible};
+
+    /// Errors built through librespot's own constructors, so these track what
+    /// it really produces rather than a guess at its shape.
+    mod connect_failures {
+        use super::credentials_were_rejected;
+        use librespot_core::Error;
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("boom")]
+        struct Boom;
+
+        #[test]
+        fn a_refused_login_asks_the_user_to_sign_in_again() {
+            // What librespot returns for AuthenticationError::LoginFailed, and
+            // for an HTTP 401/403 - the only two things it calls
+            // permission_denied.
+            assert!(credentials_were_rejected(&Error::permission_denied(Boom)));
+        }
+
+        #[test]
+        fn an_unreachable_spotify_does_not_open_a_browser() {
+            // The bug this exists for: a bot starting before the network is up
+            // used to be sent to a browser, once per retry.
+            assert!(!credentials_were_rejected(&Error::unavailable(Boom)));
+        }
+
+        #[test]
+        fn a_timeout_does_not_open_a_browser() {
+            assert!(!credentials_were_rejected(&Error::deadline_exceeded(Boom)));
+        }
+
+        #[test]
+        fn no_other_failure_is_mistaken_for_a_refusal() {
+            // Everything else librespot can produce on this path. If a future
+            // version starts reporting refusals differently this stays safe:
+            // the worst case is not offering a sign-in, not a surprise browser.
+            for e in [
+                Error::unavailable(Boom),
+                Error::deadline_exceeded(Boom),
+                Error::internal(Boom),
+                Error::unknown(Boom),
+                Error::invalid_argument(Boom),
+                Error::not_found(Boom),
+                Error::aborted(Boom),
+                Error::cancelled(Boom),
+                Error::failed_precondition(Boom),
+                Error::resource_exhausted(Boom),
+                Error::unauthenticated(Boom),
+                Error::unimplemented(Boom),
+            ] {
+                assert!(
+                    !credentials_were_rejected(&e),
+                    "{:?} should not be treated as a refused login",
+                    e.kind
+                );
+            }
+        }
+    }
 
     #[test]
     fn oauth_feasible_with_browser_regardless_of_stdin() {
