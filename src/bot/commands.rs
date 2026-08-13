@@ -217,6 +217,13 @@ fn parse_seek(cmd: &str, args: &str) -> Option<SeekParse> {
     Some(SeekParse::Seconds(direction * secs))
 }
 
+/// Seconds to a millisecond offset without overflow: `sf3000000` used to wrap
+/// i32 in release builds and seek backwards. Saturating keeps the sign, and
+/// the runner clamps the resulting position to the track anyway.
+fn seek_offset_ms(secs: i32) -> i32 {
+    secs.saturating_mul(1000)
+}
+
 /// Parse the argument to `shuffle`. No argument toggles, so the answer depends
 /// on `currently_on`. `None` means the argument was not understood.
 fn parse_shuffle(args: &str, currently_on: bool) -> Option<bool> {
@@ -378,7 +385,7 @@ impl CommandDispatcher {
         if let Some(seek) = parse_seek(&cmd, args) {
             match seek {
                 SeekParse::Seconds(secs) => {
-                    self.send(BotCommand::Seek { offset_ms: secs * 1000, user_id: sender_id });
+                    self.send(BotCommand::Seek { offset_ms: seek_offset_ms(secs), user_id: sender_id });
                     let key = if secs >= 0 { Key::SeekForward } else { Key::SeekBackward };
                     self.reply_t(client, sender_id, key, &[
                         ("seconds", secs.abs().to_string()),
@@ -1020,6 +1027,16 @@ mod tests {
         assert_eq!(parse_seek("sf30", ""), Some(SeekParse::Seconds(30)));
         assert_eq!(parse_seek("sb", "5"), Some(SeekParse::Seconds(-5)));
         assert_eq!(parse_seek("sf", "abc"), Some(SeekParse::Usage));
+    }
+
+    #[test]
+    fn huge_seek_seconds_saturate_instead_of_wrapping() {
+        // sf3000000: 3_000_000 * 1000 overflows i32; the release build wrapped
+        // to a negative offset and a "forward" seek jumped to the track start.
+        assert_eq!(seek_offset_ms(3_000_000), i32::MAX);
+        assert_eq!(seek_offset_ms(-3_000_000), i32::MIN);
+        assert_eq!(seek_offset_ms(30), 30_000);
+        assert_eq!(seek_offset_ms(-10), -10_000);
     }
 
     #[test]

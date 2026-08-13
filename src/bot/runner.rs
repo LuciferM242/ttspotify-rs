@@ -217,6 +217,14 @@ fn auto_advance_is_stale(after_track: Option<&str>, current: Option<&str>) -> bo
     }
 }
 
+/// New playback position after a relative seek, floored at 0. Widened to i64
+/// so no input can overflow: `(current as i32 + offset)` used to wrap for
+/// `sf2147483`-class offsets and turn a forward seek into a random one.
+/// `replay` relies on the floor (it seeks by -86_400_000 to reach 0).
+fn apply_seek_offset(current_ms: u32, offset_ms: i32) -> u32 {
+    (i64::from(current_ms) + i64::from(offset_ms)).clamp(0, i64::from(u32::MAX)) as u32
+}
+
 /// Whether a self channel-change requires flushing the injected audio stream.
 /// Moving to a different channel restarts the SDK's voice stream for the new
 /// channel's codec; audio blocks straddling that transition leave the encoder
@@ -1823,8 +1831,7 @@ async fn command_processor(
             BotCommand::Seek { offset_ms, user_id: _ } => {
                 let (new_pos, service) = {
                     let mut s = state.lock();
-                    let current = s.position_ms as i32;
-                    let pos = (current + offset_ms).max(0) as u32;
+                    let pos = apply_seek_offset(s.position_ms, offset_ms);
                     let svc = s.current().map(|e| e.track.service()).unwrap_or(s.active_service);
                     // Optimistically reflect the new position immediately so a
                     // rapid second seek computes from the intended target.
@@ -2422,6 +2429,28 @@ mod tests {
         assert!(!brake.on_failure());
         assert!(!brake.on_failure());
         assert!(brake.on_failure());
+    }
+
+    // -- apply_seek_offset --
+
+    #[test]
+    fn seek_offsets_apply_and_floor_at_zero() {
+        assert_eq!(apply_seek_offset(60_000, 10_000), 70_000);
+        assert_eq!(apply_seek_offset(60_000, -10_000), 50_000);
+        // replay's contract: a huge negative offset lands at 0.
+        assert_eq!(apply_seek_offset(60_000, -86_400_000), 0);
+    }
+
+    #[test]
+    fn seek_offsets_near_i32_max_do_not_wrap() {
+        // sf2147483 sends offset 2_147_483_000; with any position > 647ms the
+        // old i32 addition wrapped negative and the seek went backwards.
+        assert_eq!(
+            apply_seek_offset(60_000, i32::MAX),
+            60_000u32.wrapping_add(i32::MAX as u32)
+        );
+        assert_eq!(apply_seek_offset(u32::MAX, i32::MAX), u32::MAX);
+        assert_eq!(apply_seek_offset(0, i32::MIN), 0);
     }
 
     // -- channel_move_needs_flush --
