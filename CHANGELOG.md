@@ -67,6 +67,15 @@
   were different.
 
 ### Fixed
+- YouTube tracks that failed with no explanation should now play. The helper
+  that fetches YouTube's proof-of-origin tokens was installed but never
+  actually used, because it was being pointed at under the wrong name, and
+  YouTube answers requests without a token by refusing them. Across eight test
+  tracks, five played before and seven after.
+- The startup log now reports the proof-of-origin helper's real version by
+  running it, rather than repeating what was written down at install time. A
+  helper that is present but cannot run now says so, instead of looking
+  healthy while YouTube quietly refuses every track.
 - A brief network problem no longer opens a browser asking you to sign in to
   Spotify. Starting the bot before the network was ready did that once per
   retry attempt, even though the saved login was fine. Only an actual refusal

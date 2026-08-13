@@ -227,12 +227,14 @@ pub fn installed_tool_versions() -> ToolVersions {
         }
     });
 
+    // Run the binary rather than trusting the sidecar: the sidecar says what
+    // was downloaded, not what works.
     let bgutil = paths.as_ref().and_then(|p| {
-        if p.bgutil_pot.is_file() {
-            Some(installed_bgutil_version(p))
-        } else {
-            None
-        }
+        describe_bgutil(
+            p.bgutil_pot.is_file(),
+            probed_bgutil_version(p),
+            &installed_bgutil_version(p),
+        )
     });
 
     let js_runtime = paths.as_ref().and_then(|p| match find_js_runtime(p) {
@@ -531,9 +533,57 @@ pub fn installed_deno_version(paths: &YoutubeSetupPaths) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Returns the bgutil version actually installed on disk (read from the
-/// sidecar). Falls back to the pinned const if the sidecar is missing,
-/// which covers older installs that predate the sidecar.
+/// Ask the bgutil binary its version, by running it.
+///
+/// The sidecar file records what we downloaded; this reports what actually
+/// runs. They disagree when the binary is missing, corrupt, or built for
+/// another architecture - and a PO token provider that cannot run is the
+/// difference between YouTube playing and answering 403.
+pub fn probed_bgutil_version(paths: &YoutubeSetupPaths) -> Option<String> {
+    if !paths.bgutil_pot.is_file() {
+        return None;
+    }
+    let mut cmd = std::process::Command::new(&paths.bgutil_pot);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_bgutil_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Pull the version out of `bgutil-pot --version`, which prints
+/// `bgutil-pot 0.8.1`.
+fn parse_bgutil_version(output: &str) -> Option<String> {
+    let first = output.lines().next()?.trim();
+    let version = first.split_whitespace().nth(1)?;
+    (!version.is_empty()).then(|| version.to_string())
+}
+
+/// How to describe bgutil in the startup log.
+///
+/// A binary that is present but will not run is the case worth naming: it
+/// looks installed everywhere else, and its only symptom is tracks failing
+/// with no stated reason.
+pub fn describe_bgutil(file_exists: bool, probed: Option<String>, sidecar: &str) -> Option<String> {
+    match (file_exists, probed) {
+        (false, _) => None,
+        (true, Some(version)) => Some(version),
+        (true, None) => Some(format!(
+            "{sidecar} (INSTALLED BUT WILL NOT RUN - YouTube will fail with 403)"
+        )),
+    }
+}
+
+/// Returns the bgutil version recorded on disk (read from the sidecar).
+/// Falls back to the pinned const if the sidecar is missing, which covers
+/// older installs that predate the sidecar. This is what `--update-tools`
+/// compares against; for what actually runs, see `probed_bgutil_version`.
 pub fn installed_bgutil_version(paths: &YoutubeSetupPaths) -> String {
     fs::read_to_string(paths.lib_dir.join(BGUTIL_VERSION_FILE))
         .map(|s| s.trim().to_string())
@@ -1009,6 +1059,61 @@ short  ignored.bin";
         // Missing asset -> None; malformed short hash -> not matched.
         assert_eq!(parse_sums_file(text, "nope.exe"), None);
         assert_eq!(parse_sums_file(text, "ignored.bin"), None);
+    }
+}
+
+#[cfg(test)]
+mod bgutil_reporting_tests {
+    use super::*;
+
+    #[test]
+    fn a_working_binary_reports_the_version_it_printed() {
+        assert_eq!(
+            describe_bgutil(true, Some("0.8.1".to_string()), "v0.8.0"),
+            Some("0.8.1".to_string()),
+            "what runs wins over what the sidecar remembers"
+        );
+    }
+
+    #[test]
+    fn a_binary_that_will_not_run_says_so_loudly() {
+        // The case that hid a broken PO token provider for months: present on
+        // disk, reported as installed, and silently doing nothing. Its only
+        // symptom was tracks failing with no stated reason, so the log has to
+        // name it.
+        let described = describe_bgutil(true, None, "v0.8.1").expect("should describe");
+        assert!(described.contains("WILL NOT RUN"), "got: {described}");
+        assert!(described.contains("403"), "should name the symptom: {described}");
+    }
+
+    #[test]
+    fn a_missing_binary_is_simply_absent() {
+        // Not installed is a normal state for a Spotify-only user, and must not
+        // read as a fault.
+        assert_eq!(describe_bgutil(false, None, "v0.8.1"), None);
+    }
+
+    #[test]
+    fn the_version_is_read_from_what_the_binary_prints() {
+        assert_eq!(
+            parse_bgutil_version("bgutil-pot 0.8.1
+"),
+            Some("0.8.1".to_string())
+        );
+        assert_eq!(
+            parse_bgutil_version("bgutil-pot 1.0.0-rc.2"),
+            Some("1.0.0-rc.2".to_string())
+        );
+    }
+
+    #[test]
+    fn unreadable_version_output_is_not_invented() {
+        // Better to report "will not run" than to make a version up.
+        assert_eq!(parse_bgutil_version(""), None);
+        assert_eq!(parse_bgutil_version("bgutil-pot"), None);
+        assert_eq!(parse_bgutil_version("
+
+"), None);
     }
 }
 
