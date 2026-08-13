@@ -240,6 +240,25 @@ impl YouTubeMetadata {
             "--no-playlist",
             "-f", "bestaudio[ext=m4a]/bestaudio",
             "-o", "-",
+            // Ask one client rather than letting yt-dlp poll several.
+            //
+            // Left to itself it queries the tv and android players and merges
+            // the formats, which is most of the wait before a track starts.
+            // Measured over seven videos: 3.99s to the first audio byte on
+            // average, against 1.87s asking android_vr alone - and it succeeded
+            // more often too, 6/7 against 4/7.
+            //
+            // android_vr specifically, because it offers the m4a (AAC) audio
+            // this bot needs: symphonia is built with isomp4 and aac only, so a
+            // client that serves opus in webm would leave nothing to decode.
+            // Its format 140 is 44.1 kHz, which is the pipeline rate, so it also
+            // avoids a resample.
+            //
+            // Deliberately no `player_skip`. It is the usual advice for speed
+            // and it does not work here: skipping the webpage and configs made
+            // YouTube answer "Sign in to confirm you're not a bot" on 6 of the
+            // same 7 videos.
+            "--extractor-args", "youtube:player_client=android_vr",
         ]);
 
         // Wire the bgutil-pot plugin and binary if bundled.

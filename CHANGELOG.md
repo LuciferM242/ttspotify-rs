@@ -10,6 +10,11 @@
   startup log now says which runtime is in use.
 
 ### Changed
+- YouTube tracks start about twice as fast. yt-dlp was asking YouTube for the
+  same track through several of its clients and merging the results, which was
+  most of the wait; it now asks the one that carries the audio format the bot
+  needs. Measured over seven tracks, the wait before sound dropped from about
+  4.0 seconds to about 1.9, and fewer tracks failed outright.
 - The Windows tray and its windows are now plain Windows ones, built with the
   system's own dialogs instead of a bundled toolkit. They should feel and read
   the same, with better keyboard and screen-reader behaviour: every window has
