@@ -500,6 +500,14 @@ fn decode_and_stream(
     // *played*, not frames buffered ahead, so it never lurches on a seek.
     let mut base_ms: u64 = 0;
 
+    // Nothing else on the YouTube path reports "actually playing" (librespot's
+    // event loop only speaks for Spotify), so the status stayed Loading for
+    // the whole track: bare `p` answered "loading" forever and pause/resume
+    // was unreachable. Promote Loading -> Playing on the first chunk handed
+    // to the pipeline; the guard keeps a user's Paused (or a stop's Idle)
+    // from being overwritten by this thread.
+    let mut reported_playing = false;
+
     loop {
         if ctrl.stopped.load(Ordering::Relaxed) {
             return Ok(());
@@ -620,7 +628,16 @@ fn decode_and_stream(
             let pos = (base_ms + pipeline_pos_ms.load(Ordering::Relaxed) as u64)
                 .min(u32::MAX as u64) as u32;
             ctrl.position_ms.store(pos, Ordering::Relaxed);
-            state.lock().position_ms = pos;
+            {
+                let mut s = state.lock();
+                s.position_ms = pos;
+                if !reported_playing {
+                    if s.status == crate::bot::state::PlaybackStatus::Loading {
+                        s.status = crate::bot::state::PlaybackStatus::Playing;
+                    }
+                    reported_playing = true;
+                }
+            }
         }
     }
 }
