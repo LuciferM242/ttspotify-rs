@@ -165,7 +165,7 @@ fn spawn_drained_advance(
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        let _ = cmd_tx.send(BotCommand::Next { user_id: 0, after_track });
+        let _ = cmd_tx.send(BotCommand::Next { user_id: 0, after_track, failed: false });
     });
 }
 
@@ -1370,9 +1370,12 @@ async fn command_processor(
     macro_rules! start_or_skip {
         ($service:expr, $uri:expr, $user_id:expr, $name:expr) => {{
             if start_track($service, $uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
-                if $service == crate::services::Service::Spotify {
-                    start_brake.on_success();
-                }
+                // NOTE: a successful *dispatch* no longer resets the brake.
+                // For an unavailable track the load dispatches fine and the
+                // failure only comes back later as PlayerEvent::Unavailable,
+                // so resetting here let one dead track on repeat re-arm the
+                // brake every lap and loop forever. The reset now happens on
+                // PlaybackStarted (audio really flowing) or a clean track end.
                 true
             } else {
                 reply_t($user_id, Key::FailedToStart, &[("track", $name.to_string())]);
@@ -1382,6 +1385,8 @@ async fn command_processor(
                     let _ = radio_cmd_tx.send(BotCommand::Next {
                         user_id: 0,
                         after_track: Some($uri.to_string()),
+                        // The on_failure above already counted this failure.
+                        failed: false,
                     });
                 }
                 false
@@ -1602,7 +1607,7 @@ async fn command_processor(
                 send_event(RunnerEvent::Idle);
             }
 
-            BotCommand::Next { user_id, after_track } => {
+            BotCommand::Next { user_id, after_track, failed } => {
                 // Whatever happens below, this advance has been consumed: the
                 // next track is free to raise its own end-of-track signal.
                 state.lock().release_auto_advance();
@@ -1619,6 +1624,19 @@ async fn command_processor(
                         );
                         continue;
                     }
+                }
+
+                // A failure-driven advance (Spotify Unavailable) counts toward
+                // the consecutive-failure brake. Counted after the stale check
+                // so a signal the user already skipped past doesn't tick it.
+                // Under repeat-track this is the only thing standing between
+                // one dead track and an endless silent re-load loop.
+                if failed && start_brake.on_failure() {
+                    tracing::warn!(
+                        "{MAX_CONSECUTIVE_START_FAILURES} consecutive track failures, stopping playback"
+                    );
+                    brake_stop!();
+                    continue;
                 }
 
                 // Capture current track info before advance() clears current_index
@@ -2026,12 +2044,17 @@ async fn command_processor(
                 }
                 if error.is_some() {
                     // Failed load: nothing meaningful buffered, skip promptly.
-                    let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri });
+                    // failed: false — the brake already counted this error above.
+                    let _ = radio_cmd_tx.send(BotCommand::Next { user_id: 0, after_track: ended_uri, failed: false });
                 } else {
                     // Natural end: same early-signal problem as Spotify — the
                     // decoder finished, the buffered tail hasn't played yet.
                     spawn_drained_advance(radio_cmd_tx.clone(), pipeline_drained.clone(), pause_flag.clone(), ended_uri);
                 }
+            }
+
+            BotCommand::PlaybackStarted => {
+                start_brake.on_success();
             }
 
             BotCommand::StartCurrent => {
@@ -2159,9 +2182,14 @@ async fn player_event_loop(
     while let Some(event) = events.recv().await {
         match event {
             PlayerEvent::Playing { position_ms, .. } => {
-                let mut s = state.lock();
-                s.status = PlaybackStatus::Playing;
-                s.position_ms = position_ms;
+                {
+                    let mut s = state.lock();
+                    s.status = PlaybackStatus::Playing;
+                    s.position_ms = position_ms;
+                }
+                // Audio is really flowing: this, not a successful load
+                // dispatch, is what resets the consecutive-failure brake.
+                let _ = cmd_tx.send(BotCommand::PlaybackStarted);
             }
             PlayerEvent::Paused { position_ms, .. } => {
                 let mut s = state.lock();
@@ -2229,9 +2257,13 @@ async fn player_event_loop(
                     tracing::debug!("Unavailable: an advance is already in flight, not sending a second");
                     continue;
                 }
+                // failed: true — an Unavailable is a track that could not play.
+                // Without this the advance bypassed the failure brake entirely,
+                // and under repeat-track one region-locked song looped forever.
                 let _ = cmd_tx.send(BotCommand::Next {
                     user_id: 0,
                     after_track: track_id.to_uri().ok(),
+                    failed: true,
                 });
             }
             PlayerEvent::TimeToPreloadNextTrack { .. } => {

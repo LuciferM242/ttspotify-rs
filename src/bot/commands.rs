@@ -20,7 +20,17 @@ pub enum BotCommand {
     /// `after_track`: Some(uri) when sent automatically because that track
     /// ended or failed — the handler drops it if the queue already moved past
     /// that track (races with a manual `n`). None for a user-issued skip.
-    Next { user_id: i32, after_track: Option<String> },
+    /// `failed`: true when this advance exists because the track could not
+    /// play (e.g. Spotify Unavailable). The handler feeds those into the
+    /// consecutive-failure brake so a queue of dead tracks — or one dead track
+    /// on repeat — stops instead of skip-storming forever. Paths that already
+    /// counted the failure themselves send false.
+    Next { user_id: i32, after_track: Option<String>, failed: bool },
+    /// Sent by the player event loop when Spotify reports audio actually
+    /// playing. Resets the consecutive-failure brake — the signal a mere
+    /// successful load dispatch cannot give (an unavailable track dispatches
+    /// fine and only fails later).
+    PlaybackStarted,
     Prev { user_id: i32 },
     Seek { offset_ms: i32, user_id: i32 },
     SetVolume { percent: u8, user_id: i32 },
@@ -418,7 +428,7 @@ impl CommandDispatcher {
                 self.send(BotCommand::Stop { user_id: sender_id });
             }
             "n" | "next" => {
-                self.send(BotCommand::Next { user_id: sender_id, after_track: None });
+                self.send(BotCommand::Next { user_id: sender_id, after_track: None, failed: false });
             }
             "o" | "prev" => {
                 self.send(BotCommand::Prev { user_id: sender_id });
