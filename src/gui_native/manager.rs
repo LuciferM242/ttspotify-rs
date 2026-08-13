@@ -341,6 +341,25 @@ impl BotManager {
     }
 }
 
+/// A failed run that had been up at least this long counts as a fresh outage
+/// (retry count restarts at 1) rather than another strike in a losing streak.
+const FRESH_OUTAGE_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Next value of the error-retry counter after a failed run that lasted
+/// `run_duration`. The counter exists to stop a bot that cannot start at all
+/// from restarting forever — but it never reset on recovery, so it counted
+/// every outage of the bot thread's lifetime: six transient server outages
+/// spread over months (each individually recovered) permanently stopped the
+/// bot. A run that stayed up a while before failing is a new outage, not a
+/// continuation of the last one.
+fn next_error_retries(previous: u32, run_duration: std::time::Duration) -> u32 {
+    if run_duration >= FRESH_OUTAGE_AFTER {
+        1
+    } else {
+        previous + 1
+    }
+}
+
 /// Run a single bot instance in its own tokio runtime.
 fn run_bot_instance(
     config_path: PathBuf,
@@ -419,6 +438,7 @@ fn run_bot_instance(
 
             let shutdown_clone = shutdown.clone();
             let event_tx_clone = event_tx.clone();
+            let run_started = std::time::Instant::now();
             match crate::bot::runner::run_bot(
                 cfg,
                 config_path_str.clone(),
@@ -451,7 +471,7 @@ fn run_bot_instance(
                         update_status(BotStatus::Error(e.to_string()));
                         break;
                     }
-                    error_retries += 1;
+                    error_retries = next_error_retries(error_retries, run_started.elapsed());
                     if error_retries > MAX_ERROR_RETRIES {
                         tracing::error!("[{name}] Giving up after {MAX_ERROR_RETRIES} restart attempts: {e}");
                         update_status(BotStatus::Error(e.to_string()));
@@ -503,5 +523,24 @@ mod tests {
         // Quick Stop-then-Start from the tray: thread alive but already told
         // to stop. Must queue the start, not silently drop it.
         assert_eq!(start_disposition(true, true), StartAction::DeferAfterStop);
+    }
+
+    use super::{next_error_retries, FRESH_OUTAGE_AFTER};
+    use std::time::Duration;
+
+    #[test]
+    fn rapid_failures_count_up() {
+        // Bot cannot start at all: each quick failure is another strike.
+        assert_eq!(next_error_retries(0, Duration::from_secs(2)), 1);
+        assert_eq!(next_error_retries(1, Duration::from_secs(2)), 2);
+        assert_eq!(next_error_retries(4, Duration::from_secs(30)), 5);
+    }
+
+    #[test]
+    fn a_long_healthy_run_makes_the_next_failure_a_fresh_outage() {
+        // The bug: strikes accumulated across the thread's whole lifetime, so
+        // six transient outages months apart permanently stopped the bot.
+        assert_eq!(next_error_retries(4, FRESH_OUTAGE_AFTER), 1);
+        assert_eq!(next_error_retries(5, Duration::from_secs(3600)), 1);
     }
 }
