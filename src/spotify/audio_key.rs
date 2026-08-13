@@ -128,11 +128,12 @@ pub fn is_audio_key_failure(message: &str) -> bool {
 /// What to tell the user when a track is skipped.
 pub fn skip_reason(after_key_failure: bool) -> &'static str {
     if after_key_failure {
-        // Deliberately lists both causes: from here the two are
-        // indistinguishable, and naming only one sends people hunting wrong.
-        "Spotify refused the audio key for this track, so it could not be \
-         played. This usually means the account is not premium, or it is \
-         streaming on another device."
+        // Says what happened and stops there. Why Spotify refuses a key is not
+        // visible from here, and guessing at it in the message sends people
+        // looking in the wrong place. The account type is logged when the
+        // session connects, which is the fact actually worth having.
+        "Spotify would not release the key needed to play this track, so it \
+         was skipped."
     } else {
         "Track unavailable, skipping."
     }
@@ -278,11 +279,13 @@ mod tests {
     #[test]
     fn the_skip_message_names_the_real_cause_only_after_a_key_failure() {
         let blamed = skip_reason(true);
-        assert!(blamed.contains("audio key"));
-        assert!(blamed.contains("premium"), "must name the likeliest cause");
-        assert!(blamed.contains("another device"), "must name the other cause");
+        assert!(blamed.contains("key"), "should say what Spotify refused");
+        // No invented causes. Why a key is refused is not knowable from here,
+        // and a message that guesses sends people hunting the wrong thing.
+        assert!(!blamed.contains("premium"));
+        assert!(!blamed.contains("another device"));
 
         let plain = skip_reason(false);
-        assert!(!plain.contains("audio key"), "do not blame keys without evidence");
+        assert!(!plain.contains("key"), "do not blame keys without evidence");
     }
 }
