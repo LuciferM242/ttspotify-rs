@@ -158,6 +158,17 @@ impl YouTubePlayer {
     }
 }
 
+impl Drop for YouTubePlayer {
+    fn drop(&mut self) {
+        // External shutdown paths (tray stop, reconnect-exhausted) never call
+        // MediaPlayer::stop, which left an in-flight yt-dlp download orphaned:
+        // the watcher never killed the child and the runtime drop then joined
+        // the still-reading download worker until the file finished. Dropping
+        // the player (the command processor owns it) now aborts whatever runs.
+        self.abort_current();
+    }
+}
+
 impl MediaPlayer for YouTubePlayer {
     fn load(&self, video_id: &str) {
         self.spawn_track(video_id);
@@ -393,8 +404,10 @@ async fn play_track(
     let decode_result = decode.await.map_err(|e| format!("decode worker join: {e}"))?;
     // Decoding is over either way, so nothing is waiting on the rest of the
     // download: tell it to stop so a failure is reported now rather than after
-    // the remaining minutes of audio have been fetched.
-    ctrl_for_cleanup.stopped.store(true, Ordering::Relaxed);
+    // the remaining minutes of audio have been fetched. Snapshot whether a
+    // user stop had already happened — after this point a non-zero yt-dlp exit
+    // is expected (our own kill), before it it means a truncated download.
+    let was_stopped = ctrl_for_cleanup.stopped.swap(true, Ordering::Relaxed);
     let _ = download.await;
 
     let exit_status = watcher_handle.join().ok().flatten();
@@ -416,6 +429,24 @@ async fn play_track(
             "{e} (yt-dlp exit={exit_code}, stderr: {})",
             yt_err.chars().take(300).collect::<String>()
         ));
+    }
+    // Decode reached a clean end-of-stream, but if yt-dlp itself failed and
+    // the user never stopped the track, that "end" is a truncation that
+    // happened to land on an mp4 atom boundary: the song cut short, silently,
+    // and it counted as a success (resetting the failure brake). Surface it.
+    if !was_stopped {
+        if let Some(status) = exit_status {
+            if !status.success() {
+                let yt_err = stderr_text
+                    .lines()
+                    .find(|l| l.to_lowercase().contains("error"))
+                    .unwrap_or_else(|| stderr_text.lines().last().unwrap_or("no output"));
+                return Err(format!(
+                    "yt-dlp exited with {status} mid-download; track truncated (stderr: {})",
+                    yt_err.chars().take(300).collect::<String>()
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -546,7 +577,27 @@ fn decode_and_stream(
                     state.lock().position_ms = target;
                     tracing::debug!("YouTube native seek to {target}ms (actual_ts={})", seeked.actual_ts);
                 }
-                Err(e) => tracing::warn!("YouTube seek to {target}ms failed: {e}"),
+                Err(SymphoniaError::IoError(ref e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    // Seeking past the end of the track: treat it as the track
+                    // finishing, the way every player's UI does. Returning Ok
+                    // raises a natural TrackEnded and the queue advances.
+                    tracing::debug!("YouTube seek to {target}ms is past the end; ending track");
+                    return Ok(());
+                }
+                Err(e) => {
+                    // The runner already wrote the optimistic target into
+                    // state.position_ms and reset the pipeline (pos_ms = 0).
+                    // Decoding continues from the OLD file position, so rebase
+                    // the position bookkeeping there — leaving base_ms stale
+                    // made `c` read near 0:00 for the rest of the track and
+                    // corrupted every later relative seek.
+                    let cur = ctrl.position_ms.load(Ordering::Relaxed);
+                    base_ms = cur as u64;
+                    state.lock().position_ms = cur;
+                    tracing::warn!("YouTube seek to {target}ms failed: {e}; continuing at {cur}ms");
+                }
             }
         }
 
@@ -554,7 +605,7 @@ fn decode_and_stream(
             Ok(p) => p,
             Err(SymphoniaError::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 // Drain any remaining buffered samples through the resampler.
-                flush_remaining(resampler.as_mut(), &mut buf_l, &mut buf_r, &audio_tx, chunk_in);
+                flush_remaining(resampler.as_mut(), &mut buf_l, &mut buf_r, &audio_tx, chunk_in, &ctrl);
                 return Ok(());
             }
             Err(e) => return Err(format!("next_packet: {e}")),
@@ -648,25 +699,45 @@ fn flush_remaining(
     buf_r: &mut Vec<f32>,
     audio_tx: &Sender<Vec<i16>>,
     chunk_in: usize,
+    ctrl: &TrackControl,
 ) {
     if buf_l.is_empty() {
         return;
     }
     // Pad with zeros up to chunk_in so the resampler can complete one final block.
-    if let Some(rs) = resampler {
+    let frame = if let Some(rs) = resampler {
         if buf_l.len() < chunk_in {
             buf_l.resize(chunk_in, 0.0);
             buf_r.resize(chunk_in, 0.0);
         }
         let in_l: Vec<f32> = buf_l.drain(..chunk_in).collect();
         let in_r: Vec<f32> = buf_r.drain(..chunk_in).collect();
-        if let Ok(out) = rs.process(&[in_l, in_r], None) {
-            let _ = audio_tx.send(interleave_to_i16(&out[0], &out[1]));
+        match rs.process(&[in_l, in_r], None) {
+            Ok(out) => interleave_to_i16(&out[0], &out[1]),
+            Err(_) => return,
         }
     } else {
-        let _ = audio_tx.send(interleave_to_i16(buf_l, buf_r));
+        let out = interleave_to_i16(buf_l, buf_r);
         buf_l.clear();
         buf_r.clear();
+        out
+    };
+    // Same never-block contract as the decode loop's sends: a blocking send
+    // here could park this thread until the pipeline drains — indefinitely if
+    // the user pauses right at the end of the track.
+    let mut frame = Some(frame);
+    loop {
+        if ctrl.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        match audio_tx.try_send(frame.take().expect("set before loop")) {
+            Ok(()) => return,
+            Err(crossbeam_channel::TrySendError::Full(returned)) => {
+                frame = Some(returned);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => return,
+        }
     }
 }
 

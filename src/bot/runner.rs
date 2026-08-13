@@ -1729,10 +1729,20 @@ async fn command_processor(
                 } else {
                     let radio_on = state.lock().radio_enabled;
 
+                    // Radio is Spotify-only: the seed must be a Spotify URI.
+                    // Parsed up front so a YouTube seed falls through to the
+                    // end-of-queue reply below — it used to enter this branch,
+                    // fail the parse silently, and skip BOTH the radio fetch
+                    // and the message, leaving `n` at the end of a YouTube
+                    // queue with radio on answering nothing at all.
+                    let seed_parsed = pre_seed_uri
+                        .as_ref()
+                        .and_then(|s| SpotifyUri::from_uri(s).ok());
+
                     // Track whether a radio track was successfully started; if not,
                     // fall through to a clean idle state below.
                     let mut resumed = false;
-                    if radio_on && pre_allow_rec {
+                    if radio_on && pre_allow_rec && seed_parsed.is_some() {
                         if let Some(seed) = pre_seed_uri {
                             if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
                                 reply_t(user_id, Key::RadioFetching, &[]);
