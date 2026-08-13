@@ -91,6 +91,31 @@ pub fn chunk_message(text: &str, max_len: usize) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut chunk = String::new();
     for line in text.lines() {
+        // A single line longer than max_len can't be split at a line
+        // boundary; hard-split it at char boundaries instead. Returning it
+        // whole (the old behavior) handed TeamTalk a message over its size
+        // limit, which the server rejects — the reply silently vanished.
+        if line.len() > max_len {
+            if !chunk.is_empty() {
+                chunks.push(std::mem::take(&mut chunk));
+            }
+            let mut rest = line;
+            while rest.len() > max_len {
+                let mut cut = max_len;
+                while cut > 0 && !rest.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                if cut == 0 {
+                    // max_len smaller than one character: take the character
+                    // whole rather than looping forever.
+                    cut = rest.chars().next().map(char::len_utf8).unwrap_or(rest.len());
+                }
+                chunks.push(rest[..cut].to_string());
+                rest = &rest[cut..];
+            }
+            chunk.push_str(rest);
+            continue;
+        }
         if !chunk.is_empty() && chunk.len() + 1 + line.len() > max_len {
             chunks.push(std::mem::take(&mut chunk));
         }
@@ -1138,13 +1163,35 @@ mod tests {
     }
 
     #[test]
-    fn chunk_message_oversized_single_line_returned_as_one_chunk() {
-        // Single line longer than max_len: current behavior is to return it as
-        // one oversized chunk rather than truncate or split mid-line.
+    fn chunk_message_never_exceeds_max_len() {
+        // The whole point of max_len: TeamTalk rejects oversized messages, so
+        // an oversized chunk is a reply that silently never arrives. A single
+        // line longer than the limit is hard-split mid-line.
         let line = "z".repeat(700);
         let chunks = chunk_message(&line, 500);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].len(), 700);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.len() <= 500), "no chunk may exceed max_len");
+        assert_eq!(chunks.join(""), line, "no content may be lost");
+    }
+
+    #[test]
+    fn chunk_message_hard_split_lands_on_char_boundaries() {
+        // Multibyte text must never be cut mid-character (that would panic on
+        // the byte slice). Fill with 3-byte characters so 500 is mid-char.
+        let line = "é".repeat(400); // 2 bytes per char, 800 bytes total
+        let chunks = chunk_message(&line, 501); // 501 is mid-character
+        assert!(chunks.iter().all(|c| c.len() <= 501));
+        assert_eq!(chunks.join(""), line);
+    }
+
+    #[test]
+    fn chunk_message_oversized_line_between_normal_lines_keeps_everything() {
+        let long = "x".repeat(120);
+        let text = format!("head\n{long}\ntail");
+        let chunks = chunk_message(&text, 100);
+        assert!(chunks.iter().all(|c| c.len() <= 100));
+        let rejoined = chunks.join("\n").replace('\n', "");
+        assert_eq!(rejoined, text.replace('\n', ""), "all content survives");
     }
 
     #[test]
