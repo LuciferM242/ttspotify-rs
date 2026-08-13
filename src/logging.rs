@@ -184,15 +184,13 @@ mod audio_key_watch_tests {
     use super::*;
     use tracing_subscriber::layer::SubscriberExt;
 
-    /// The watched failure state is process-wide, so these tests would
-    /// otherwise arm each other's flag while running in parallel.
-    static SERIALISE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
     /// Run `body` with only the watch layer installed, from a clean state and
-    /// with no other test in this module running.
+    /// with no other test touching the shared failure record. The lock is the
+    /// one beside that state, not a local one: these tests and the audio_key
+    /// tests share it, so a lock per module would not exclude them from each
+    /// other.
     fn with_watch(body: impl FnOnce()) -> parking_lot::MutexGuard<'static, ()> {
-        let guard = SERIALISE.lock();
-        crate::spotify::audio_key::reset_for_test();
+        let guard = crate::spotify::audio_key::test_guard();
         let subscriber = tracing_subscriber::registry().with(AudioKeyWatch);
         tracing::subscriber::with_default(subscriber, body);
         guard

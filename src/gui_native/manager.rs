@@ -44,6 +44,10 @@ impl std::fmt::Display for BotStatus {
 struct BotInstance {
     name: String,
     config_path: PathBuf,
+    /// Identifies this bot for the audio-key attribution. Allocated once per
+    /// instance rather than per run: a restart is the same bot, and allocating
+    /// per run would leave a stale entry behind on every restart.
+    audio_key_id: u64,
     status: Arc<Mutex<BotStatus>>,
     thread: Option<thread::JoinHandle<()>>,
     shutdown: Option<Arc<AtomicBool>>,
@@ -54,6 +58,7 @@ impl BotInstance {
         Self {
             name,
             config_path,
+            audio_key_id: crate::spotify::audio_key::next_bot_id(),
             status: Arc::new(Mutex::new(BotStatus::Stopped)),
             thread: None,
             shutdown: None,
@@ -158,6 +163,7 @@ impl BotManager {
         let shutdown_flag = shutdown.clone();
         let status_tx = self.status_tx.clone();
         let bot_name = name.to_string();
+        let bot_id = inst.audio_key_id;
 
         *status.lock() = BotStatus::Starting;
         let _ = status_tx.send((bot_name.clone(), BotStatus::Starting));
@@ -165,7 +171,7 @@ impl BotManager {
         let handle = match thread::Builder::new()
             .name(format!("bot-{name}"))
             .spawn(move || {
-                run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name);
+                run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name, bot_id);
             }) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -237,6 +243,7 @@ impl BotManager {
         let status = inst.status.clone();
         let status_tx = self.status_tx.clone();
         let bot_name = name.to_string();
+        let bot_id = inst.audio_key_id;
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_flag = shutdown.clone();
 
@@ -251,7 +258,7 @@ impl BotManager {
                     let _ = h.join();
                 }
                 thread::sleep(std::time::Duration::from_millis(500));
-                run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name);
+                run_bot_instance(config_path, status, shutdown_flag, status_tx, bot_name, bot_id);
             }) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -341,11 +348,16 @@ fn run_bot_instance(
     shutdown: Arc<AtomicBool>,
     status_tx: crossbeam_channel::Sender<(String, BotStatus)>,
     name: String,
+    bot_id: u64,
 ) {
     // Per-instance log file (e.g. logs/myserver.log)
     let log_dir = crate::paths::logs_dir();
     let (dispatch, _log_guard) = crate::logging::create_instance_logging(&log_dir, &name);
     let _dispatch_guard = tracing::dispatcher::set_default(&dispatch);
+
+    // Tag every thread this bot runs on, so a Spotify audio-key failure is
+    // attributed to this bot and not to a sibling in the same tray process.
+    crate::spotify::audio_key::set_current_bot(bot_id);
 
     let update_status = |new_status: BotStatus| {
         *status.lock() = new_status.clone();
@@ -354,6 +366,9 @@ fn run_bot_instance(
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        // librespot logs the key failure from a runtime worker, and the skip
+        // is handled on this runtime too, so both ends need the tag.
+        .on_thread_start(move || crate::spotify::audio_key::set_current_bot(bot_id))
         .build()
     {
         Ok(rt) => rt,
