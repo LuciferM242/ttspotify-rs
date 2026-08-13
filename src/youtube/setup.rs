@@ -264,10 +264,7 @@ pub async fn install(
     fs::create_dir_all(&paths.lib_dir)
         .map_err(|e| BotError::Config(format!("create lib dir: {e}")))?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
+    let client = http_client()?;
 
     // 1. yt-dlp — install the newest release, verified against that release's
     // SHA2-256SUMS manifest. The `latest` alias redirects to the current tag;
@@ -523,10 +520,7 @@ pub async fn update_js_runtime(
         return Ok(());
     }
     let before = installed_deno_version(paths);
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
+    let client = http_client()?;
     install_deno(&client, paths, &progress).await?;
     match (before, installed_deno_version(paths)) {
         (Some(old), Some(new)) if old == new => progress(&format!("  Deno already on {new}.")),
@@ -613,10 +607,7 @@ pub async fn install_bgutil_version(
     fs::create_dir_all(&paths.lib_dir)
         .map_err(|e| BotError::Config(format!("create lib dir: {e}")))?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
+    let client = http_client()?;
 
     let digests = fetch_release_asset_digests(
         &client,
@@ -657,10 +648,7 @@ pub async fn install_bgutil_version(
 
 /// Hit the GitHub API for the latest bgutil release tag.
 pub async fn latest_bgutil_version() -> Result<String, BotError> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))?;
+    let client = http_client()?;
     let response = client
         .get("https://api.github.com/repos/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest")
         .send().await
@@ -689,6 +677,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+/// Shared HTTP client for all tool downloads. The stall timeouts matter more
+/// than they look: these requests run under the tray's modal progress dialog,
+/// which cannot be closed until the worker finishes — with no read timeout a
+/// half-open socket kept that dialog (and the whole tray) hostage until the
+/// OS TCP keepalive gave up, hours later. `read_timeout` bounds silence, not
+/// total transfer time, so a slow-but-progressing download is unaffected.
+fn http_client() -> Result<reqwest::Client, BotError> {
+    reqwest::Client::builder()
+        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))
 }
 
 /// Verify `bytes` hash against an expected hex digest (case-insensitive).

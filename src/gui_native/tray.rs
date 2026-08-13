@@ -133,9 +133,14 @@ pub fn run() {
 
     {
         // The updater replaces the exe and relaunches with process::exit, which
-        // skips wm_destroy, so the bots have to be stopped explicitly first.
+        // skips wm_destroy, so the bots have to be stopped explicitly first —
+        // and the tray icon removed, or it lingers as a ghost with the same
+        // name next to the new instance's icon (a broken duplicate for anyone
+        // tabbing through the notification area with a screen reader).
         let manager = tray.manager.clone();
+        let wnd_for_hook = wnd.clone();
         crate::gui_native::update_dialog::set_prepare_relaunch(move || {
+            remove_icon(wnd_for_hook.hwnd());
             manager
                 .borrow_mut()
                 .stop_all_with_timeout(std::time::Duration::from_secs(3));
@@ -229,8 +234,12 @@ fn register_events(
             if changed {
                 update_tooltip(wnd2.hwnd(), &tray);
             }
-            poll_startup_update(&wnd2, &tray);
-            report_auth_outcome(wnd2.hwnd(), &tray);
+            // These two can open dialogs; hold them back while a menu action
+            // (possibly its own modal) is running — the next tick retries.
+            if let Some(_guard) = ModalGuard::acquire() {
+                poll_startup_update(&wnd2, &tray);
+                report_auth_outcome(wnd2.hwnd(), &tray);
+            }
             Ok(())
         });
     }
@@ -309,6 +318,13 @@ fn update_tooltip(hwnd: &w::HWND, tray: &Tray) {
 
 /// Build and show the popup menu, then act on what was chosen.
 fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POINT) {
+    // One menu action at a time. A modal dialog's message loop still delivers
+    // the tray callback, so without this a second menu (and a second config
+    // editor over the first, or a second YouTube install racing the same
+    // temp paths) was reachable mid-modal.
+    let Some(_guard) = ModalGuard::acquire() else {
+        return;
+    };
     let statuses = tray.manager.borrow().statuses();
     let bots: Vec<(String, String, bool)> = statuses
         .iter()
@@ -507,19 +523,63 @@ fn check_for_updates_now(hwnd: &w::HWND, wnd: &gui::WindowMain) {
     }
 }
 
-/// Wait for a channel while keeping the message loop alive, so the window keeps
-/// painting and the tray keeps updating instead of appearing hung.
-fn pump_until_ready<T>(hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> Option<T> {
+/// Wait for a channel while actually pumping this thread's message queue, so
+/// timers fire, the tooltip stays current and clicks are handled instead of
+/// piling up. The old body only slept, which despite the name blocked the GUI
+/// thread for the whole wait — up to the HTTP timeout on "Check for updates".
+/// Re-entry into menu actions during the pump is stopped by [`ModalGuard`].
+fn pump_until_ready<T>(_hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> Option<T> {
+    let mut msg = w::MSG::default();
     loop {
         match rx.try_recv() {
             Ok(v) => return Some(v),
             Err(crossbeam_channel::TryRecvError::Disconnected) => return None,
             Err(crossbeam_channel::TryRecvError::Empty) => {}
         }
-        // Give Windows a slice so the window keeps painting; the tray's own
-        // timer keeps running because this is the same message loop.
-        let _ = hwnd;
+        while w::PeekMessage(&mut msg, None, 0, 0, co::PM::REMOVE) {
+            if msg.message == co::WM::QUIT {
+                // Keep the shutdown moving: put it back for the main loop.
+                w::PostQuitMessage(msg.wParam as i32);
+                return None;
+            }
+            w::TranslateMessage(&msg);
+            unsafe {
+                w::DispatchMessage(&msg);
+            }
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+thread_local! {
+    /// True while a menu action (possibly a modal dialog) is executing on the
+    /// GUI thread. The tray menu stays reachable during a modal's message
+    /// loop — DialogBoxParam still dispatches messages posted to the owner —
+    /// so without this a second config editor could be opened over the first
+    /// and silently discard whichever saved first.
+    static MODAL_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII claim on "a menu action is running". `acquire` returns None when one
+/// already is; the flag clears on drop, surviving every early return.
+struct ModalGuard;
+
+impl ModalGuard {
+    fn acquire() -> Option<ModalGuard> {
+        MODAL_ACTIVE.with(|f| {
+            if f.get() {
+                None
+            } else {
+                f.set(true);
+                Some(ModalGuard)
+            }
+        })
+    }
+}
+
+impl Drop for ModalGuard {
+    fn drop(&mut self) {
+        MODAL_ACTIVE.with(|f| f.set(false));
     }
 }
 
