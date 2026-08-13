@@ -327,8 +327,24 @@ impl YouTubeMetadata {
         }
 
         // The tray is a GUI process with no console, so a child console app
-        // flashes a command window on each spawn. CREATE_NO_WINDOW suppresses it
-        // for yt-dlp and the bgutil-pot child it launches.
+        // flashes a command window on each spawn.
+        //
+        // This covers yt-dlp itself and no further. A console is inherited, and
+        // this flag denies yt-dlp one, so anything yt-dlp starts is given a
+        // fresh console by Windows - which is why deno opens a black window
+        // titled with its own path while a track is playing.
+        //
+        // Not fixable from here. yt-dlp offers no say over how it spawns a
+        // runtime, and deno has no flag for it; the runtimes yt-dlp supports
+        // (deno, node, quickjs, bun) are all console programs. Telling yt-dlp
+        // to skip the runtime does stop the window, and costs far too much:
+        // alternating both settings over three rounds, android_vr played 8/9
+        // tracks with a runtime and 3/9 without, failing with 403. YouTube's
+        // "n" parameter is solved by that JavaScript, and an unsolved one is
+        // refused.
+        //
+        // The only remaining lever is giving this process a console of its own
+        // and hiding it, so the whole tree inherits it.
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
