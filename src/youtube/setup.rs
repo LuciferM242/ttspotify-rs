@@ -405,7 +405,18 @@ fn deno_is_supported(version: (u32, u32, u32)) -> bool {
 
 /// Ask a Deno binary its version.
 fn deno_version_of(exe: &Path) -> Option<(u32, u32, u32)> {
-    let out = std::process::Command::new(exe).arg("--version").output().ok()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--version");
+    // Without this the tray, which has no console of its own, makes Windows
+    // give deno a new one: a black window titled with deno's path, at startup
+    // and again whenever a bundled deno is looked up. The other probes in this
+    // file already do it.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
     parse_deno_version(&String::from_utf8_lossy(&out.stdout))
 }
 
