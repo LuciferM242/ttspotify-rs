@@ -875,12 +875,21 @@ fn spawn_bulk_loader(
 
 /// Format queue position and estimated wait time for a newly queued track.
 /// Returns a string like " (3rd up, ~8 min)" or empty if not applicable.
-pub(crate) fn queue_wait_info(state: &crate::bot::state::PlayerState) -> String {
+///
+/// `new_track_pos` is the 1-based slot the new arrival actually occupies among
+/// the upcoming tracks. It must come from the caller: an explicit pick lands at
+/// the back of the next-up tier (AHEAD of any playlist/radio source), so
+/// assuming "last in line" reported the whole queue's length and wait for the
+/// track that will actually play next — contradicting the numbering the
+/// `queue` command shows.
+pub(crate) fn queue_wait_info(
+    state: &crate::bot::state::PlayerState,
+    new_track_pos: usize,
+) -> String {
     let Some(current) = state.current() else {
         return String::new();
     };
-    // Where the track just added sits: last in line.
-    let upcoming_pos = state.upcoming_len();
+    let upcoming_pos = new_track_pos.min(state.upcoming_len());
     if upcoming_pos == 0 {
         return String::new();
     }
@@ -1467,7 +1476,7 @@ async fn command_processor(
                         // A generation is claimed only for loads that continue in
                         // the background, so single/album plays don't kill an
                         // in-flight bulk loader.
-                        let (is_idle, loader_gen, count, added_name, playing) = {
+                        let (is_idle, loader_gen, count, added_name, playing, new_pos) = {
                             let mut s = state.lock();
                             let idle = s.status == PlaybackStatus::Idle;
                             if idle {
@@ -1503,7 +1512,15 @@ async fn command_processor(
                             let playing = s.current().map(|e| {
                                 (e.track.service(), e.track.uri().to_string(), e.track.display_name())
                             });
-                            (idle, generation, count, added_name, playing)
+                            // Where the new arrival sits: an explicit single
+                            // lands at the back of the next-up tier (ahead of
+                            // any source); a bulk batch appends to the end.
+                            let new_pos = if is_multi {
+                                s.upcoming_len()
+                            } else {
+                                s.queue.next_up_len()
+                            };
+                            (idle, generation, count, added_name, playing, new_pos)
                         };
 
                         if let Some(generation) = loader_gen {
@@ -1559,7 +1576,7 @@ async fn command_processor(
                                 }
                             }
                         } else {
-                            let upcoming = queue_wait_info(&state.lock());
+                            let upcoming = queue_wait_info(&state.lock(), new_pos);
                             let msg = if count == 0 {
                                 // Whole first batch was already queued
                                 // (repeat of the same bulk source).
@@ -1976,10 +1993,12 @@ async fn command_processor(
                         let uri_str = track.uri().to_string();
                         let track_name = track.display_name();
                         s.enqueue_next(track, user_name, true);
-                        (service, uri_str, track_name, idle)
+                        // A pick sits at the back of the next-up tier, ahead
+                        // of any source — its position is NOT the queue length.
+                        (service, uri_str, track_name, idle, s.queue.next_up_len())
                     })
                 };
-                if let Some((service, uri_str, track_name, is_idle)) = picked {
+                if let Some((service, uri_str, track_name, is_idle, new_pos)) = picked {
                     if is_idle {
                         if start_or_skip!(service, &uri_str, user_id, &track_name) {
                             reply_t(user_id, Key::NowPlaying, &[("track", track_name.clone())]);
@@ -1991,7 +2010,7 @@ async fn command_processor(
                             }
                         }
                     } else {
-                        let upcoming = queue_wait_info(&state.lock());
+                        let upcoming = queue_wait_info(&state.lock(), new_pos);
                         reply_t(user_id, Key::QueuedOne, &[
                             ("track", track_name),
                             ("upcoming", upcoming),
@@ -2511,14 +2530,14 @@ mod tests {
     #[test]
     fn queue_wait_info_empty_when_no_current() {
         let state = PlayerState::new();
-        assert_eq!(queue_wait_info(&state), "");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), "");
     }
 
     #[test]
     fn queue_wait_info_empty_when_only_current_track() {
         let mut state = PlayerState::new();
         enqueue(&mut state, &[180_000]);
-        assert_eq!(queue_wait_info(&state), "");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), "");
     }
 
     // -- "next" position (1 upcoming) --
@@ -2530,7 +2549,7 @@ mod tests {
         // Wait = 60s remaining on current → rounds to 1 min.
         enqueue(&mut state, &[60_000, 120_000]);
         // position_ms=0 (default) → wait = 60_000 - 0 = 60_000ms → 1 min.
-        assert_eq!(queue_wait_info(&state), " (next, ~1 min)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (next, ~1 min)");
     }
 
     #[test]
@@ -2539,7 +2558,7 @@ mod tests {
         enqueue(&mut state, &[180_000, 60_000]);
         state.position_ms = 150_000; // 30s left on current
         // Wait = 30s → (30000+30000)/60000 = 1 min.
-        assert_eq!(queue_wait_info(&state), " (next, ~1 min)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (next, ~1 min)");
     }
 
     #[test]
@@ -2547,7 +2566,7 @@ mod tests {
         let mut state = PlayerState::new();
         enqueue(&mut state, &[20_000, 60_000]);
         // Wait = 20s → (20000+30000)/60000 = 0 min → no "~N min".
-        assert_eq!(queue_wait_info(&state), " (next)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (next)");
     }
 
     // -- multi-upcoming --
@@ -2560,7 +2579,7 @@ mod tests {
         // Wait = remaining(A=120s) + B(60s) + C(60s) = 240s = 4 min.
         // (D itself is not summed — wait is "until D starts".)
         enqueue(&mut state, &[120_000, 60_000, 60_000, 60_000]);
-        assert_eq!(queue_wait_info(&state), " (3 ahead, ~4 min)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (3 ahead, ~4 min)");
     }
 
     #[test]
@@ -2572,7 +2591,7 @@ mod tests {
         // wait = 60s (remaining A) + 60s (B). C is excluded.
         enqueue(&mut state, &[60_000, 60_000, 999_999_000]);
         // Wait = 120s → (120000+30000)/60000 = 2 min.
-        assert_eq!(queue_wait_info(&state), " (2 ahead, ~2 min)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (2 ahead, ~2 min)");
     }
 
     #[test]
@@ -2583,6 +2602,43 @@ mod tests {
         let mut state = PlayerState::new();
         enqueue(&mut state, &[10_000, 60_000]);
         state.position_ms = 99_999_999;
-        assert_eq!(queue_wait_info(&state), " (next)");
+        assert_eq!(queue_wait_info(&state, state.upcoming_len()), " (next)");
+    }
+
+    // -- explicit picks: the position is the pick's slot, not the queue length --
+
+    #[test]
+    fn an_explicit_pick_ahead_of_a_playlist_is_reported_as_next() {
+        // The regression this suite used to miss: every production single-track
+        // path enqueues via enqueue_next, which lands AHEAD of the source tier.
+        // Current A (60s) + source [B, C, D] queued, then a pick X: X plays
+        // next, so its wait is just A's remainder — not the whole queue's.
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[60_000, 300_000, 300_000, 300_000]);
+        state.enqueue_next(track("x", 60_000), "u".into(), true);
+        let pos = state.queue.next_up_len();
+        assert_eq!(pos, 1);
+        assert_eq!(queue_wait_info(&state, pos), " (next, ~1 min)");
+    }
+
+    #[test]
+    fn a_second_pick_waits_behind_the_first_but_not_behind_the_source() {
+        // Current A (60s), source [B=300s], picks X (60s) then Y.
+        // Y is 2nd up: wait = remaining A + X = 2 min. B is behind both picks.
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[60_000, 300_000]);
+        state.enqueue_next(track("x", 60_000), "u".into(), true);
+        state.enqueue_next(track("y", 60_000), "u".into(), true);
+        let pos = state.queue.next_up_len();
+        assert_eq!(pos, 2);
+        assert_eq!(queue_wait_info(&state, pos), " (2 ahead, ~2 min)");
+    }
+
+    #[test]
+    fn a_position_past_the_queue_clamps_to_last_in_line() {
+        let mut state = PlayerState::new();
+        enqueue(&mut state, &[60_000, 60_000]);
+        assert_eq!(queue_wait_info(&state, 99), " (next, ~1 min)");
+        assert_eq!(queue_wait_info(&state, 0), "", "0 means nothing was added");
     }
 }

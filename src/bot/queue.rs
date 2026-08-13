@@ -105,6 +105,13 @@ impl Queue {
         self.next_up.len() + self.upcoming.len()
     }
 
+    /// How many explicit picks are queued. The most recent pick sits at this
+    /// 1-based position among the upcoming tracks (picks play before the
+    /// source tier), which is what the queued-reply wait estimate needs.
+    pub fn next_up_len(&self) -> usize {
+        self.next_up.len()
+    }
+
     /// Everything the queue knows about, for duplicate checks.
     pub fn all_entries(&self) -> impl Iterator<Item = &QueueEntry> {
         self.history
