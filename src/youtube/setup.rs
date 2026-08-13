@@ -701,7 +701,10 @@ fn verify_sha256(bytes: &[u8], expected_hex: &str) -> bool {
 fn parse_sums_file(text: &str, asset_name: &str) -> Option<String> {
     for line in text.lines() {
         let mut parts = line.split_whitespace();
-        let hash = parts.next()?;
+        // Skip lines that don't parse (blank, comment) instead of aborting:
+        // a `?` here made one blank line silently disable hash verification
+        // for the whole file.
+        let Some(hash) = parts.next() else { continue };
         // The filename is the remainder (may be prefixed with '*' for binary).
         let name = parts.next().unwrap_or("").trim_start_matches('*');
         if name == asset_name && hash.len() == 64 {
@@ -1070,6 +1073,17 @@ short  ignored.bin";
         // Missing asset -> None; malformed short hash -> not matched.
         assert_eq!(parse_sums_file(text, "nope.exe"), None);
         assert_eq!(parse_sums_file(text, "ignored.bin"), None);
+    }
+
+    #[test]
+    fn parse_sums_file_survives_blank_and_comment_lines() {
+        // A blank line used to abort the scan via `?`, silently downgrading
+        // yt-dlp verification to the magic-byte fallback.
+        let text = "\n# comment\n\naaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  yt-dlp.exe\n";
+        assert_eq!(
+            parse_sums_file(text, "yt-dlp.exe").as_deref(),
+            Some("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
+        );
     }
 }
 

@@ -20,10 +20,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 pub fn expected_hash<'a>(sums: &'a str, asset: &str) -> Option<&'a str> {
     for line in sums.lines() {
         let line = line.trim();
-        if line.is_empty() {
+        // Skip lines that don't match the `<hex>  <name>` shape (comments,
+        // `sha256sum -b`'s `<hex> *<name>`) instead of aborting the whole
+        // lookup: the `?` here failed the update on the first odd line even
+        // when the wanted entry sat right below it. Fails closed either way -
+        // no match means the update is refused, never wrongly accepted.
+        let Some((hash, name)) = line.split_once("  ") else {
             continue;
-        }
-        let (hash, name) = line.split_once("  ")?;
+        };
         if name.trim() == asset {
             return Some(hash.trim());
         }
@@ -74,6 +78,21 @@ mod tests {
     fn expected_hash_missing_asset_is_none() {
         let sums = "aaaa  other.tar.gz\n";
         assert_eq!(expected_hash(sums, "tt-spotify-bot-windows-x86_64.zip"), None);
+    }
+
+    #[test]
+    fn expected_hash_survives_malformed_lines_before_the_match() {
+        // A comment, a binary-mode `hash *name` line and a tab-separated line
+        // used to abort the whole lookup via `?`, failing the update even
+        // though the wanted entry was right there.
+        let sums = "# release manifest\n\
+                    bbbb *binary-mode.zip\n\
+                    cccc\tone-tab.zip\n\
+                    aaaa  tt-spotify-bot-windows-x86_64.zip\n";
+        assert_eq!(
+            expected_hash(sums, "tt-spotify-bot-windows-x86_64.zip"),
+            Some("aaaa")
+        );
     }
 
     // Real minisign signature over the bytes b"hello\n", made with the project
