@@ -82,7 +82,31 @@ impl YouTubeMetadata {
 
         // Cookies: explicit override wins; otherwise look for the default path.
         let cookies_file = if !config.youtube_cookies_file.is_empty() {
-            config.youtube_cookies_file.clone()
+            let configured = PathBuf::from(&config.youtube_cookies_file);
+            if configured.is_file() {
+                config.youtube_cookies_file.clone()
+            } else if default_cookies_path().is_file() {
+                // The layout migration moved <root>/cookies.txt into config/
+                // but configs holding the old absolute path were not rewritten;
+                // without this rescue every yt-dlp spawn died on "unable to
+                // open cookie file" with nothing tying it to the move.
+                let default = default_cookies_path();
+                tracing::warn!(
+                    "YouTube: configured cookies file {} does not exist; using {} instead. Update youtubeCookiesFile in the config.",
+                    configured.display(),
+                    default.display()
+                );
+                default.to_string_lossy().into_owned()
+            } else {
+                // No fallback available: keep the configured path so yt-dlp's
+                // own loud "unable to open cookie file" error still surfaces a
+                // genuine typo, but say up front why playback is about to fail.
+                tracing::warn!(
+                    "YouTube: configured cookies file {} does not exist; yt-dlp will refuse to start until the file is restored or the setting is cleared",
+                    configured.display()
+                );
+                config.youtube_cookies_file.clone()
+            }
         } else {
             let default = default_cookies_path();
             if default.is_file() {
