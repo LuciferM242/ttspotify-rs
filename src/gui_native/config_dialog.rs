@@ -301,7 +301,22 @@ pub fn show(
                 return Ok(());
             }
 
-            let cfg = form.apply(&original);
+            let mut cfg = form.apply(&original);
+            // The same clamps every config load applies. Without them here the
+            // editor persisted out-of-range values (port 0, ramp step 0) that
+            // runtime silently corrected on each start while the file — and
+            // the editor on reopen — kept showing the bogus number.
+            let corrections = cfg.validate();
+            if !corrections.is_empty() {
+                let _ = hwnd.MessageBox(
+                    &format!(
+                        "Some values were out of range and have been corrected:\n\n{}",
+                        corrections.join("\n")
+                    ),
+                    "TT Spotify",
+                    co::MB::OK | co::MB::ICONWARNING,
+                );
+            }
 
             // Editing and changing nothing writes nothing, so the bot is not
             // restarted for a no-op.
