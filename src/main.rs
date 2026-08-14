@@ -298,6 +298,13 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .filter(|s| !s.starts_with('-'));
 
+        // Sort the data folder first, exactly as the tray does. Without this a
+        // pre-migration install still has its configs loose in the root, the
+        // lookup below misses them, and saving creates a blank config at the
+        // new location that permanently shadows the real one (the migration
+        // never overwrites an existing destination).
+        let _ = tt_spotify_bot::paths::migrate_data_layout();
+
         let (config, path) = if let Some(name) = name_arg {
             let p = tt_spotify_bot::paths::configs_dir().join(format!("{name}.json"));
             if p.exists() {
