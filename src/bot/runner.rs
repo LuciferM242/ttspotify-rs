@@ -1902,14 +1902,22 @@ async fn command_processor(
             }
 
             BotCommand::SetMode { mode, user_id: _ } => {
-                let mut s = state.lock();
                 use crate::bot::state::RepeatMode;
-                // Repeat only: shuffle is its own toggle and is left alone.
-                s.repeat = match mode {
+                let repeat = match mode {
                     PlaybackMode::RepeatTrack => RepeatMode::Track,
                     PlaybackMode::RepeatQueue => RepeatMode::Queue,
                     PlaybackMode::Off => RepeatMode::Off,
                 };
+                // Repeat only: shuffle is its own toggle and is left alone.
+                state.lock().repeat = repeat;
+                // Persist like shuffle and radio do: repeat previously only
+                // reached the config through do_exit, so a tray stop or
+                // systemd stop (which never run do_exit) lost the setting.
+                let (repeat_track, repeat_queue) = repeat.to_flags();
+                config_store.update(|cfg| {
+                    cfg.repeat_track = repeat_track;
+                    cfg.repeat_queue = repeat_queue;
+                });
             }
 
             BotCommand::SetShuffle { enable, user_id: _ } => {
