@@ -22,8 +22,12 @@ pub trait MediaPlayer: Send + Sync {
     /// Stop playback and release any held resources.
     fn stop(&self);
 
-    /// Seek to absolute position in milliseconds.
-    fn seek(&self, position_ms: u32);
+    /// Seek to absolute position in milliseconds. Returns whether a live
+    /// track accepted the seek — false means nothing will move, so the caller
+    /// must not flush buffered audio on the strength of it (a seek in the
+    /// drain tail after end-of-track used to discard the last seconds of the
+    /// song for a seek that went nowhere).
+    fn seek(&self, position_ms: u32) -> bool;
 
     /// Hint the player to begin fetching the given URI in the background.
     /// Implementations may treat this as a no-op.
@@ -55,20 +59,20 @@ mod tests {
     fn seek_on_a_spotify_track_reaches_only_the_spotify_player() {
         let mut spotify = MockMediaPlayer::new();
         let mut youtube = MockMediaPlayer::new();
-        spotify.expect_seek().times(1).withf(|ms| *ms == 30_000).return_const(());
+        spotify.expect_seek().times(1).withf(|ms| *ms == 30_000).return_const(true);
         youtube.expect_seek().never();
 
-        player_for(Service::Spotify, &spotify, &youtube).seek(30_000);
+        assert!(player_for(Service::Spotify, &spotify, &youtube).seek(30_000));
     }
 
     #[test]
     fn seek_on_a_youtube_track_reaches_only_the_youtube_player() {
         let mut spotify = MockMediaPlayer::new();
         let mut youtube = MockMediaPlayer::new();
-        youtube.expect_seek().times(1).withf(|ms| *ms == 5_000).return_const(());
+        youtube.expect_seek().times(1).withf(|ms| *ms == 5_000).return_const(true);
         spotify.expect_seek().never();
 
-        player_for(Service::YouTube, &spotify, &youtube).seek(5_000);
+        assert!(player_for(Service::YouTube, &spotify, &youtube).seek(5_000));
     }
 
     #[test]

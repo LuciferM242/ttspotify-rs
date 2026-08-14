@@ -1851,8 +1851,13 @@ async fn command_processor(
                     PrevAction::RestartCurrent => {
                         if let Some((service, _, name)) = track {
                             state.lock().position_ms = 0;
-                            audio_reset.store(true, Ordering::Relaxed);
-                            crate::player::player_for(service, &player, &youtube_player).seek(0);
+                            // Only flush the buffered tail if a live track took
+                            // the seek; in the end-of-track drain window the
+                            // seek goes nowhere and the flush would cut the
+                            // last seconds of the song.
+                            if crate::player::player_for(service, &player, &youtube_player).seek(0) {
+                                audio_reset.store(true, Ordering::Relaxed);
+                            }
                             reply_t(user_id, Key::NowPlaying, &[("track", name.clone())]);
                             announce_playing_status(&name);
                         }
@@ -1879,8 +1884,14 @@ async fn command_processor(
                     s.position_ms = pos;
                     (pos, svc)
                 };
-                audio_reset.store(true, Ordering::Relaxed);
-                crate::player::player_for(service, &player, &youtube_player).seek(new_pos);
+                // Flush the buffered tail only when a live track accepted the
+                // seek. A seek during the end-of-track drain (YouTube keeps a
+                // dead control in its slot until the next load) repositions
+                // nothing — flushing there discarded the last seconds of the
+                // song and fired the advance early.
+                if crate::player::player_for(service, &player, &youtube_player).seek(new_pos) {
+                    audio_reset.store(true, Ordering::Relaxed);
+                }
             }
 
             BotCommand::SetVolume { .. } => {

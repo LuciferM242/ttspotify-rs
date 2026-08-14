@@ -148,8 +148,12 @@ impl MediaPlayer for SpotifyPlayer {
         self.inner().stop();
     }
 
-    fn seek(&self, position_ms: u32) {
+    fn seek(&self, position_ms: u32) -> bool {
+        // librespot tracks its own loaded state and quietly ignores a seek
+        // with nothing playing; there is no cheap way to observe that here,
+        // so Spotify reports accepted and keeps its previous behaviour.
         self.inner().seek(position_ms);
+        true
     }
 
     fn preload(&self, uri: &str) {

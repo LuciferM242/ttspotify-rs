@@ -190,15 +190,24 @@ impl MediaPlayer for YouTubePlayer {
         self.abort_current();
     }
 
-    fn seek(&self, position_ms: u32) {
+    fn seek(&self, position_ms: u32) -> bool {
         // Native symphonia seek on the buffered file: instant, both directions,
         // no respawn. The decode loop picks up the request on its next iteration.
-        if let Some((_, ctrl)) = self.current.lock().as_ref() {
-            tracing::debug!("YouTube seek requested to {position_ms}ms");
-            ctrl.seek_to_ms.store(position_ms, Ordering::Relaxed);
-            ctrl.seek_requested.store(true, Ordering::Relaxed);
-        } else {
-            tracing::debug!("YouTube seek ignored: no track loaded");
+        // A naturally-ended track lingers in the slot until the next load (only
+        // load/stop clear it), with `stopped` set by its own cleanup — its
+        // control is dead, nobody polls the flags, so the seek must report
+        // unaccepted rather than pretend the position will move.
+        match self.current.lock().as_ref() {
+            Some((_, ctrl)) if !ctrl.stopped.load(Ordering::Relaxed) => {
+                tracing::debug!("YouTube seek requested to {position_ms}ms");
+                ctrl.seek_to_ms.store(position_ms, Ordering::Relaxed);
+                ctrl.seek_requested.store(true, Ordering::Relaxed);
+                true
+            }
+            _ => {
+                tracing::debug!("YouTube seek ignored: no live track");
+                false
+            }
         }
     }
 
