@@ -360,7 +360,12 @@ impl PlayerState {
         tracks
             .into_iter()
             .filter(|t| {
-                seen_ids.insert(t.id().to_string()) && seen_songs.insert(song_key(&t.display_name()))
+                // Both inserts must run: `&&` short-circuiting skipped the
+                // song-key record for id-duplicates, letting a same-song
+                // different-id entry later in the batch slip through.
+                let new_id = seen_ids.insert(t.id().to_string());
+                let new_song = seen_songs.insert(song_key(&t.display_name()));
+                new_id && new_song
             })
             .collect()
     }
