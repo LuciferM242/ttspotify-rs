@@ -466,9 +466,16 @@ fn run_bot_instance(
                     update_status(BotStatus::Stopped);
                 }
                 Err(e) => {
-                    // Don't retry if the user asked the bot to stop.
+                    // Don't retry if the user asked the bot to stop. The stop
+                    // itself is what usually surfaces as the error here (a
+                    // reconnect wait aborted mid-flight returns Err before the
+                    // runner's shutdown check), so the status is Stopped — the
+                    // user got what they asked for — and the error text goes
+                    // to the log. Showing Error left the tray permanently
+                    // reading "Error: Lost connection..." for a deliberate stop.
                     if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                        update_status(BotStatus::Error(e.to_string()));
+                        tracing::info!("[{name}] Stopped while handling: {e}");
+                        update_status(BotStatus::Stopped);
                         break;
                     }
                     error_retries = next_error_retries(error_retries, run_started.elapsed());
