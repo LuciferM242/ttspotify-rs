@@ -262,6 +262,32 @@ fn register_events(
             Ok(())
         });
     }
+
+    // --- Logoff / shutdown / restart: Windows sends WM_ENDSESSION and then
+    // terminates the process without a WM_DESTROY, so without this handler no
+    // bot ever disconnected and the server kept a ghost user per bot until it
+    // timed out — colliding with the same account's re-login on autostart. ---
+    {
+        let tray = tray.clone();
+        let wnd2 = wnd.clone();
+        wnd.on().wm(co::WM::ENDSESSION, move |p: msg::Wm| {
+            // wParam FALSE means an earlier WM_QUERYENDSESSION round was
+            // aborted and the session is not ending after all.
+            if p.wparam == 0 || tray.exiting.get() {
+                return Ok(0);
+            }
+            tray.exiting.set(true);
+            let _ = wnd2.hwnd().KillTimer(TIMER_STATUS);
+            remove_icon(wnd2.hwnd());
+            // Bounded, exactly like the menu Exit path: Windows allows only a
+            // short grace period after WM_ENDSESSION before killing the
+            // process regardless, so this must never block indefinitely.
+            tray.manager
+                .borrow_mut()
+                .stop_all_with_timeout(std::time::Duration::from_secs(3));
+            Ok(0)
+        });
+    }
 }
 
 /// Base icon data. `uFlags` is set by each caller for what it is changing.
