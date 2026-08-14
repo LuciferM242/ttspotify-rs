@@ -497,11 +497,27 @@ fn extract_single_file(zip_path: &Path, dest: &Path) -> Result<(), BotError> {
             fs::create_dir_all(parent)
                 .map_err(|e| BotError::Config(format!("mkdir {}: {e}", parent.display())))?;
         }
-        let mut out = fs::File::create(dest)
-            .map_err(|e| BotError::Config(format!("create {}: {e}", dest.display())))?;
-        std::io::copy(&mut entry, &mut out)
-            .map_err(|e| BotError::Config(format!("write {}: {e}", dest.display())))?;
-        return Ok(());
+        // Extract to a temp file then rename, like download_verified: writing
+        // straight to `dest` truncated the working binary first, so a failed
+        // copy left a corrupt file that find_js_runtime still counted as
+        // installed. The suffix differs from download_verified's so the two
+        // steps never share a temp path (lib/deno.zip's download temp is
+        // lib/deno.download.tmp, which lib/deno would also map to).
+        let tmp = dest.with_extension("extract.tmp");
+        let result = fs::File::create(&tmp)
+            .map_err(|e| BotError::Config(format!("create {}: {e}", tmp.display())))
+            .and_then(|mut out| {
+                std::io::copy(&mut entry, &mut out)
+                    .map_err(|e| BotError::Config(format!("write {}: {e}", tmp.display())))
+            })
+            .and_then(|_| {
+                fs::rename(&tmp, dest)
+                    .map_err(|e| BotError::Config(format!("rename to {}: {e}", dest.display())))
+            });
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        return result;
     }
     Err(BotError::Config("the Deno archive was empty".to_string()))
 }
@@ -824,17 +840,25 @@ async fn download_verified(
     }
 
     // Write to a temp file then rename, so a failed/partial download never
-    // leaves a half-written binary at the destination path.
+    // leaves a half-written binary at the destination path. The temp itself is
+    // removed on failure: a rename refused because the tool is running (the
+    // usual Windows case — updating mid-track) used to strand a full-size
+    // .download.tmp in lib/ on every retry.
     let tmp = dest.with_extension("download.tmp");
-    {
-        let mut f = fs::File::create(&tmp)
-            .map_err(|e| BotError::Config(format!("create {}: {e}", tmp.display())))?;
-        f.write_all(&bytes)
-            .map_err(|e| BotError::Config(format!("write {}: {e}", tmp.display())))?;
+    let result = fs::File::create(&tmp)
+        .map_err(|e| BotError::Config(format!("create {}: {e}", tmp.display())))
+        .and_then(|mut f| {
+            f.write_all(&bytes)
+                .map_err(|e| BotError::Config(format!("write {}: {e}", tmp.display())))
+        })
+        .and_then(|_| {
+            fs::rename(&tmp, dest)
+                .map_err(|e| BotError::Config(format!("rename to {}: {e}", dest.display())))
+        });
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, dest)
-        .map_err(|e| BotError::Config(format!("rename to {}: {e}", dest.display())))?;
-    Ok(())
+    result
 }
 
 #[cfg(unix)]
