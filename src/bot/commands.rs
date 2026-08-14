@@ -206,6 +206,12 @@ fn parse_volume(cmd: &str, args: &str) -> Option<VolumeParse> {
     };
     match vol_str.parse::<u16>() {
         Ok(v) => Some(VolumeParse::Set(v)),
+        // A number too big for u16 is still a set attempt: saturate so the
+        // dispatcher's range check replies "volume must be 0..max" instead of
+        // silently showing the current volume as if the user had asked.
+        Err(_) if !vol_str.is_empty() && vol_str.chars().all(|c| c.is_ascii_digit()) => {
+            Some(VolumeParse::Set(u16::MAX))
+        }
         Err(_) => Some(VolumeParse::Show),
     }
 }
@@ -1052,6 +1058,17 @@ mod tests {
         assert_eq!(parse_seek("sf30", ""), Some(SeekParse::Seconds(30)));
         assert_eq!(parse_seek("sb", "5"), Some(SeekParse::Seconds(-5)));
         assert_eq!(parse_seek("sf", "abc"), Some(SeekParse::Usage));
+    }
+
+    #[test]
+    fn a_volume_too_big_for_u16_is_a_set_attempt_not_a_show() {
+        // v99999 used to silently show the current volume; it must reach the
+        // dispatcher as an (out-of-range) set so the user hears the range error.
+        assert_eq!(parse_volume("v", "99999"), Some(VolumeParse::Set(u16::MAX)));
+        assert_eq!(parse_volume("v99999", ""), Some(VolumeParse::Set(u16::MAX)));
+        // Non-numeric still shows.
+        assert_eq!(parse_volume("v", ""), Some(VolumeParse::Show));
+        assert_eq!(parse_volume("v", "abc"), Some(VolumeParse::Show));
     }
 
     #[test]
