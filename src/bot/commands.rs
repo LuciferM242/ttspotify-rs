@@ -38,7 +38,7 @@ pub enum BotCommand {
     SetShuffle { enable: bool, user_id: i32 },
     RadioToggle { enable: bool, user_id: i32 },
     QueueClear { user_id: i32 },
-    QueueRemove { index: usize, user_id: i32 },
+    QueueRemove { index: usize, expected_uri: String, user_id: i32 },
     SearchOnly { query: String, user_id: i32 },
     SearchPick { user_id: i32, pick: usize, user_name: String },
     JoinChannel { path: String, user_id: i32 },
@@ -526,12 +526,24 @@ impl CommandDispatcher {
                         } else {
                             // `n` is the number shown by `queue`: 1 is the next
                             // track up, and the playing track has no number.
+                            // The uri travels with the index: the removal runs
+                            // later on the command processor, and if the queue
+                            // shifted in between the handler must delete the
+                            // track this reply names, not whatever slid into
+                            // position n.
                             let state = self.state.lock();
-                            let name = state.upcoming().nth(n - 1).map(|e| e.track.display_name());
+                            let found = state
+                                .upcoming()
+                                .nth(n - 1)
+                                .map(|e| (e.track.display_name(), e.track.uri().to_string()));
                             drop(state);
-                            match name {
-                                Some(name) => {
-                                    self.send(BotCommand::QueueRemove { index: n, user_id: sender_id });
+                            match found {
+                                Some((name, expected_uri)) => {
+                                    self.send(BotCommand::QueueRemove {
+                                        index: n,
+                                        expected_uri,
+                                        user_id: sender_id,
+                                    });
                                     self.reply_t(client, sender_id, Key::Removed, &[("name", name)]);
                                 }
                                 None => self.reply_t(client, sender_id, Key::NoTrackAtPosition, &[

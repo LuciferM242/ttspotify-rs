@@ -376,6 +376,11 @@ impl PlayerState {
         self.queue.remove_upcoming(n)
     }
 
+    /// See [`Queue::remove_upcoming_expected`].
+    pub fn remove_upcoming_expected(&mut self, n: usize, expected_uri: &str) -> Option<QueueEntry> {
+        self.queue.remove_upcoming_expected(n, expected_uri)
+    }
+
     /// The current track followed by what is still to come.
     ///
     /// Played tracks are deliberately left out, the way Spotify's queue and

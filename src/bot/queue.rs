@@ -268,6 +268,28 @@ impl Queue {
         self.upcoming.remove(index - self.next_up.len())
     }
 
+    /// Remove the N-th upcoming entry, but only if it is still the track the
+    /// caller looked at. The name shown to the user is resolved on the event
+    /// thread and the removal runs later on the command processor, so anything
+    /// that shifts the queue in between (the current track ending, a bulk load,
+    /// `queue clear`) made position N point at a different track — the reply
+    /// then named one track while another died. If the expected track moved,
+    /// it is removed from wherever it now sits; if it left the queue entirely
+    /// (started playing, already removed), nothing is touched.
+    pub fn remove_upcoming_expected(&mut self, n: usize, expected_uri: &str) -> Option<QueueEntry> {
+        let index = n.checked_sub(1)?;
+        let still_at_n = self
+            .upcoming()
+            .nth(index)
+            .is_some_and(|e| e.track.uri() == expected_uri);
+        let position = if still_at_n {
+            n
+        } else {
+            self.upcoming().position(|e| e.track.uri() == expected_uri)? + 1
+        };
+        self.remove_upcoming(position)
+    }
+
     /// Drop everything still to play, keeping the current track and history.
     pub fn clear_upcoming(&mut self) {
         self.next_up.clear();
@@ -545,6 +567,37 @@ mod tests {
         q.push_next(entry("x")); // upcoming is now x, b, c
         let got = q.remove_upcoming(n).map(|e| e.track.id().to_string());
         assert_eq!(got.as_deref(), Some(removed));
+    }
+
+    #[test]
+    fn an_unshifted_queue_removes_exactly_the_named_position() {
+        let mut q = playing_abc(); // upcoming: b, c
+        let got = q.remove_upcoming_expected(1, "spotify:track:b");
+        assert_eq!(got.map(|e| e.track.id().to_string()).as_deref(), Some("b"));
+        assert_eq!(upcoming_ids(&q), ["c"]);
+    }
+
+    #[test]
+    fn a_shifted_queue_still_removes_the_track_the_reply_named() {
+        // The race this guards: the dispatcher reads position 1 (= b), replies
+        // "Removed b", then the current track ends and the queue advances
+        // before the removal runs. Position 1 is now c — removing by position
+        // deleted c while telling the user b was gone.
+        let mut q = playing_abc(); // playing a; upcoming: b, c
+        q.advance(RepeatMode::Off, false); // playing b; upcoming: c
+        let got = q.remove_upcoming_expected(1, "spotify:track:c");
+        assert_eq!(got.map(|e| e.track.id().to_string()).as_deref(), Some("c"));
+        assert_eq!(q.upcoming_len(), 0);
+    }
+
+    #[test]
+    fn a_track_that_left_the_queue_is_not_replaced_by_a_scapegoat() {
+        let mut q = playing_abc(); // playing a; upcoming: b, c
+        q.advance(RepeatMode::Off, false); // b started playing
+        // The user asked to remove b (position 1 at the time); it is now
+        // playing, so nothing upcoming may be touched in its place.
+        assert!(q.remove_upcoming_expected(1, "spotify:track:b").is_none());
+        assert_eq!(upcoming_ids(&q), ["c"], "c must survive");
     }
 
     #[test]

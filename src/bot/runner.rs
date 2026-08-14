@@ -1948,9 +1948,9 @@ async fn command_processor(
                 state.lock().clear_upcoming();
             }
 
-            BotCommand::QueueRemove { index, user_id: _ } => {
+            BotCommand::QueueRemove { index, expected_uri, user_id: _ } => {
                 let mut s = state.lock();
-                s.remove_upcoming(index);
+                s.remove_upcoming_expected(index, &expected_uri);
             }
 
             BotCommand::SearchOnly { query, user_id } => {
