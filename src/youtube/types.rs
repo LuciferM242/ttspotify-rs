@@ -63,6 +63,10 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
         .or_else(|| path_query.strip_prefix("m.youtube.com/"))
         .or_else(|| path_query.strip_prefix("youtu.be/"))
         .unwrap_or(path_query);
+    // Drop any #fragment up front: it otherwise rides along inside the last
+    // query value, making `watch?v=<id>#t=30` fail the 11-char check (silent
+    // search instead of a play) and `list=<id>#x` a corrupted playlist id.
+    let path_query = path_query.split('#').next().unwrap_or(path_query);
 
     // youtu.be/<id> short URLs land here as `<id>` (or `<id>?...`).
     if let Some(id) = path_query.split(['?', '#', '/']).next() {
@@ -215,6 +219,21 @@ mod tests {
         // gets the whole list queued, matching what music.youtube.com plays.
         assert_eq!(
             parse_youtube_ref("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc"),
+            Some(YouTubeRef::Playlist("PLabc".into()))
+        );
+    }
+
+    #[test]
+    fn parse_urls_with_fragments_still_resolve() {
+        // A #fragment used to ride inside the last query value: watch?v=<id>#t
+        // failed the 11-char check (silent search) and list=<id>#x produced a
+        // corrupted playlist id.
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/watch?v=dQw4w9WgXcQ#t=30"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
+        assert_eq!(
+            parse_youtube_ref("https://music.youtube.com/playlist?list=PLabc#share"),
             Some(YouTubeRef::Playlist("PLabc".into()))
         );
     }
