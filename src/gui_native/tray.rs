@@ -376,7 +376,13 @@ fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POIN
         Ok(None) => {} // dismissed
         Err(e) => tracing::error!("Could not show the tray menu: {e}"),
     }
-    update_tooltip(hwnd, tray);
+    // The refresh keeps the tooltip current after Start/Stop/Restart (the
+    // status timer only fires on messages, and stop_nonblocking sends none) —
+    // but Exit has already run WM_DESTROY synchronously inside handle_action,
+    // so the icon is deleted and a refresh would warn on every clean exit.
+    if !tray.exiting.get() {
+        update_tooltip(hwnd, tray);
+    }
 }
 
 /// Turn the menu model into a real HMENU. Submenus are attached with MF_POPUP,
@@ -457,14 +463,29 @@ fn handle_action(
 
 /// Create a new config, then start whatever it produced.
 fn add_server(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
-    let created = crate::gui_native::config_dialog::show(wnd, BotConfig::default(), None);
-    if created.is_none() {
+    let Some(saved) = crate::gui_native::config_dialog::show(wnd, BotConfig::default(), None)
+    else {
         return;
-    }
+    };
+    // The dialog allows saving over an existing config after a prompt, but
+    // load_configs returns only names it did not already know — so an
+    // overwrite used to start nothing, restart nothing, and leave the owning
+    // bot running on its old settings with no feedback. Follow edit_config's
+    // rule for that case: restart only if running.
+    let overwritten = saved
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|name| tray.manager.borrow().config_path(name).is_some())
+        .map(str::to_string);
     let names = { tray.manager.borrow_mut().load_configs() };
     let mut m = tray.manager.borrow_mut();
     for name in &names {
         m.start(name);
+    }
+    if let Some(name) = &overwritten {
+        if m.is_running(name) {
+            m.restart_nonblocking(name);
+        }
     }
     drop(m);
     // A config may have signed in or installed tools.
@@ -653,7 +674,21 @@ fn poll_startup_update(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
     if tray.update_done.get() {
         return;
     }
-    let Ok(result) = rx.try_recv() else { return };
+    let result = match rx.try_recv() {
+        Ok(result) => result,
+        // Not yet — keep polling.
+        Err(crossbeam_channel::TryRecvError::Empty) => return,
+        // The worker died without sending (a panic in the check). Bot startup
+        // is gated on this poll, so treating this like Empty meant the timer
+        // polled a dead channel every 200 ms forever and no bot ever started,
+        // with no message anywhere.
+        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+            tracing::warn!("The startup update check ended without reporting; starting bots without it");
+            tray.update_done.set(true);
+            start_bots(wnd, tray);
+            return;
+        }
+    };
     tray.update_done.set(true);
     match result {
         Some(info) => {
