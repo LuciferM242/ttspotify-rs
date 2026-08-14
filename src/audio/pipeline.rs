@@ -323,11 +323,15 @@ impl AudioPipeline {
             }
 
             while self.framer.len() >= FRAME_SIZE {
-                // Check reset, pause or stream-flush mid-injection so a stop,
-                // pause or channel move interrupts a buffered backlog promptly.
+                // Check reset, pause, stream-flush or shutdown mid-injection so
+                // a stop, pause, channel move or bot exit interrupts a buffered
+                // backlog promptly — without the shutdown check this thread
+                // outlived run_bot by the whole buffered backlog (paced at
+                // realtime, several seconds per track switch).
                 if self.reset_flag.load(Ordering::Relaxed)
                     || self.pause_flag.load(Ordering::Relaxed)
                     || self.stream_flush_flag.load(Ordering::Relaxed)
+                    || self.shutdown_flag.load(Ordering::Relaxed)
                 {
                     break;
                 }
