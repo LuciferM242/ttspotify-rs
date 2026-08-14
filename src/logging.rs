@@ -57,6 +57,18 @@ pub fn newest_log_file(log_dir: &Path) -> Option<PathBuf> {
     newest
 }
 
+/// Where the panic hook writes `panics.log`: one level above the instance's
+/// rotating-log directory, i.e. `logs/panics.log`. It must not sit beside the
+/// rotated files — the appender prunes by filename suffix and `panics.log`
+/// ends with `log`, so inside the instance dir the crash record was counted
+/// against the 7-file retention and deleted a week after the crash.
+fn panic_log_dir_for(log_dir: &Path) -> PathBuf {
+    log_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| log_dir.to_path_buf())
+}
+
 /// Create a daily-rotating file appender and non-blocking writer. If the file
 /// appender can't be created (e.g. an unwritable log directory), fall back to
 /// stderr instead of panicking at startup — a logging problem should never
@@ -65,8 +77,8 @@ fn create_file_writer(log_dir: &Path, log_filename: &str) -> (tracing_appender::
     if let Err(e) = std::fs::create_dir_all(log_dir) {
         eprintln!("Warning: failed to create log directory {}: {e}", log_dir.display());
     }
-    // Remember the dir so the panic hook can write crashes here synchronously.
-    let _ = PANIC_LOG_DIR.set(log_dir.to_path_buf());
+    // Remember where the panic hook writes crashes synchronously.
+    let _ = PANIC_LOG_DIR.set(panic_log_dir_for(log_dir));
     match tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_suffix(log_filename)
@@ -388,6 +400,17 @@ mod tests {
         let dir = scratch("empty");
         assert!(newest_log_file(&dir).is_none());
         assert!(newest_log_file(&dir.join("nope")).is_none());
+    }
+
+    #[test]
+    fn the_panic_log_lives_outside_the_rotated_folder() {
+        // Inside `logs/<name>/` the rotating appender counted panics.log
+        // against its 7-file retention (the suffix filter matches anything
+        // ending in "log") and deleted the crash record a week later.
+        let (instance_dir, _) = log_path_from_config("/anywhere/config/alpha.json");
+        let panic_dir = panic_log_dir_for(&instance_dir);
+        assert_ne!(panic_dir, instance_dir);
+        assert_eq!(Some(panic_dir.as_path()), instance_dir.parent());
     }
 
     #[test]
