@@ -68,6 +68,33 @@ pub fn logs_dir() -> PathBuf {
     root().join("logs")
 }
 
+/// Write a file atomically: temp file in the same directory, then rename over
+/// the target. The temp name carries the pid and a process-wide counter so two
+/// concurrent writers of the same file never share one temp — with a fixed name
+/// (the old `.json.tmp`) the first rename could publish a mix of both writes.
+/// The `.tmp` extension keeps it invisible to the config scanner and the layout
+/// migration, which both filter on `.json`. Failures remove the temp file.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        WRITE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = path.with_file_name(name);
+    let result = std::fs::write(&tmp, contents).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Create the standard folders if they are missing, so a fresh install has the
 /// same shape as a migrated one and every writer can assume its folder exists.
 pub fn ensure_dirs() {
@@ -340,6 +367,48 @@ mod tests {
     /// Everything is a config except the known non-config names.
     fn any_json_is_config(_: &Path) -> bool {
         true
+    }
+
+    #[test]
+    fn atomic_writes_leave_the_target_and_nothing_else() {
+        let root = scratch("atomic");
+        let target = root.join("cfg.json");
+        write_atomic(&target, b"{\"a\":1}").unwrap();
+        write_atomic(&target, b"{\"a\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":2}");
+        // No temp files left behind, and nothing a `.json`-filtering scanner
+        // would pick up besides the target itself.
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "cfg.json")
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn concurrent_atomic_writers_never_publish_a_torn_file() {
+        // With the old fixed `.json.tmp` name, two writers truncated and wrote
+        // the same temp file and the first rename could publish a mix of both.
+        let root = scratch("atomic_race");
+        let target = root.join("cfg.json");
+        let a = vec![b'a'; 4096];
+        let b = vec![b'b'; 4096];
+        write_atomic(&target, &a).unwrap();
+        std::thread::scope(|s| {
+            for contents in [&a, &b] {
+                s.spawn(|| {
+                    for _ in 0..50 {
+                        // A rename losing a same-instant race may fail on
+                        // Windows; that is fine — what must never happen is a
+                        // torn file being published.
+                        let _ = write_atomic(&target, contents);
+                    }
+                });
+            }
+        });
+        let published = std::fs::read(&target).unwrap();
+        assert!(published == a || published == b, "torn write published");
     }
 
     #[test]

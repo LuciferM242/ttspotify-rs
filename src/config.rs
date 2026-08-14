@@ -504,14 +504,9 @@ impl BotConfig {
     /// concurrent writers see whole files (last writer wins) rather than torn
     /// ones. `std::fs::rename` replaces the destination on both Unix and Windows.
     pub fn save(&self, path: &Path) -> Result<(), BotError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| BotError::Config(format!("Failed to serialize config: {e}")))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, path)?;
+        crate::paths::write_atomic(path, json.as_bytes())?;
         Ok(())
     }
 }

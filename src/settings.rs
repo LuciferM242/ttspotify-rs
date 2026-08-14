@@ -43,14 +43,9 @@ impl AppSettings {
     /// Persist atomically (tmp + rename), matching config.rs's write pattern.
     pub fn save(&self) -> Result<(), BotError> {
         let path = settings_path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| BotError::Config(format!("Failed to serialize settings: {e}")))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(&tmp, &path)?;
+        crate::paths::write_atomic(&path, json.as_bytes())?;
         Ok(())
     }
 }

@@ -412,14 +412,7 @@ impl LangPrefs {
                 return;
             }
         };
-        // The folder may not exist yet on a fresh install.
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        if let Err(e) =
-            std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &self.path))
-        {
+        if let Err(e) = crate::paths::write_atomic(&self.path, json.as_bytes()) {
             tracing::warn!(
                 "Could not save language prefs {}: {e}",
                 self.path.display()
