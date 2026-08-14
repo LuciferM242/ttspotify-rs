@@ -215,13 +215,18 @@ fn run_download(parent: &(impl GuiParent + 'static), info: UpdateInfo) -> bool {
     }
 
     {
-        // Closing mid-download cancels it rather than leaving the worker
-        // running against a dead window.
+        // Closing mid-download must not abandon the worker: past its last
+        // cancel check it is still verifying, extracting and replacing the
+        // exe. Ending the dialog here let all of that finish against a dead
+        // window — the executable was swapped despite the "cancel" and, with
+        // no relaunch, the running process was silently a different version
+        // from the one on disk. Behave exactly like the Cancel button:
+        // signal, say why the window stays up, and let Msg::Done close it.
         let cancel = cancel.clone();
-        let dlg2 = dlg.clone();
+        let label = label.clone();
         dlg.on().wm_close(move || {
             cancel.store(true, Ordering::Relaxed);
-            let _ = dlg2.hwnd().EndDialog(0);
+            let _ = label.hwnd().SetWindowText("Cancelling...");
             Ok(())
         });
     }
