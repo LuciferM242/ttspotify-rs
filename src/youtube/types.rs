@@ -81,11 +81,16 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
         }
     }
 
-    // Shorts: /shorts/<id>
-    if let Some(rest) = path_query.strip_prefix("shorts/") {
-        let id = rest.split(['?', '#', '/']).next().unwrap_or("");
-        if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Some(YouTubeRef::Video(id.to_string()));
+    // Path-embedded video ids: /shorts/<id>, /live/<id> (streams/premieres —
+    // the link keeps working as a normal VOD afterwards), /embed/<id> and the
+    // ancient /v/<id>. Without these the whole URL fell through to a music
+    // search on the literal link text, queueing an unrelated top hit.
+    for prefix in ["shorts/", "live/", "embed/", "v/"] {
+        if let Some(rest) = path_query.strip_prefix(prefix) {
+            let id = rest.split(['?', '#', '/']).next().unwrap_or("");
+            if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Some(YouTubeRef::Video(id.to_string()));
+            }
         }
     }
 
@@ -220,6 +225,30 @@ mod tests {
         assert_eq!(
             parse_youtube_ref("https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=PLabc"),
             Some(YouTubeRef::Playlist("PLabc".into()))
+        );
+    }
+
+    #[test]
+    fn parse_live_embed_and_old_style_urls() {
+        // /live/<id> is YouTube's canonical link for streams and premieres and
+        // keeps resolving as a normal video afterwards; /embed/ and /v/ are
+        // other path-embedded forms. All used to fall through to a search on
+        // the literal URL text.
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/live/dQw4w9WgXcQ"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/live/dQw4w9WgXcQ?feature=share"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/embed/dQw4w9WgXcQ"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
+        );
+        assert_eq!(
+            parse_youtube_ref("https://www.youtube.com/v/dQw4w9WgXcQ"),
+            Some(YouTubeRef::Video("dQw4w9WgXcQ".into()))
         );
     }
 
