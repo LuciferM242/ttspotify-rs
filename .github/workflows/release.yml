@@ -96,10 +96,10 @@ jobs:
         shell: pwsh
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
-      # NOTE: do not add an actions/cache step for wxWidgets here. Caches saved
-      # by tag-triggered runs are scoped to that tag ref and are never restored
+      # NOTE: do not add extra actions/cache steps here. Caches saved by
+      # tag-triggered runs are scoped to that tag ref and are never restored
       # by later tags (only default-branch caches are shared), so in a tag-only
-      # workflow it always misses and just adds minutes of cache upload.
+      # workflow they always miss and just add minutes of cache upload.
       - name: Build
         run: cargo build --release
       - name: Stage artifact

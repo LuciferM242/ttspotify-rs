@@ -36,27 +36,7 @@ if (Get-Command rustc -ErrorAction SilentlyContinue) {
     Info "Rust installed: $(rustc --version)"
 }
 
-# CMake (required for wxDragon)
-if (Get-Command cmake -ErrorAction SilentlyContinue) {
-    Info "CMake already installed: $(cmake --version | Select-Object -First 1)"
-} else {
-    Info "Installing CMake (required for wxDragon GUI)..."
-    winget install Kitware.CMake --silent --accept-package-agreements --accept-source-agreements
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-    if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
-        Warn "CMake installed but not in PATH. Please restart your terminal and run this script again."
-        exit 0
-    }
-}
-
-# Ninja (required for wxDragon)
-if (Get-Command ninja -ErrorAction SilentlyContinue) {
-    Info "Ninja already installed."
-} else {
-    Info "Installing Ninja (required for wxDragon GUI)..."
-    winget install Ninja-build.Ninja --silent --accept-package-agreements --accept-source-agreements
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
-}
+# The GUI is native Win32 (winsafe): no CMake, Ninja or toolkit downloads.
 
 # LLVM/Clang (required by teamtalk-sys bindgen)
 if (Get-Command clang -ErrorAction SilentlyContinue) {
