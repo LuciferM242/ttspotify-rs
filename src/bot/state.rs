@@ -105,18 +105,26 @@ pub struct PlayerState {
 pub type SharedState = Arc<Mutex<PlayerState>>;
 
 /// Words that mark a re-release of the same recording rather than a new one.
-/// Deliberately excludes "live", "acoustic" and "remix": those are genuinely
-/// different performances and should stay separate queue entries.
-const REISSUE_MARKERS: [&str; 9] = [
-    "remaster", "version", "edit", "mono", "stereo", "anniversary", "deluxe", "reissue", "mix",
+/// Deliberately excludes "live", "acoustic", "remix" and a bare "mix": those
+/// are genuinely different performances and should stay separate queue
+/// entries. "stereo"/"mono" still catch the "Stereo Mix" kind of qualifier.
+const REISSUE_MARKERS: [&str; 8] = [
+    "remaster", "version", "edit", "mono", "stereo", "anniversary", "deluxe", "reissue",
 ];
 
+/// Whether a qualifier segment marks a re-release rather than a new recording.
+///
+/// Matched word by word, not by substring. `contains("edit")` fired on
+/// "credits" and "meditation", and `contains("mix")` swallowed "extended mix"
+/// and "club mix" — different recordings this module deliberately keeps apart,
+/// so a radio batch silently lost them as duplicates.
+///
+/// A word only has to *start* with a marker, which is what keeps "remastered",
+/// "editions" and "anniversary" matching without listing every inflection.
 fn is_reissue_marker(segment: &str) -> bool {
-    // "remix" contains "mix" but is a different recording.
-    if segment.contains("remix") {
-        return false;
-    }
-    REISSUE_MARKERS.iter().any(|m| segment.contains(m))
+    segment
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| REISSUE_MARKERS.iter().any(|marker| word.starts_with(marker)))
 }
 
 /// A loose identity for a song: the same recording released twice should share
@@ -621,8 +629,60 @@ mod tests {
         let base = song_key("Artist - Song");
         assert_ne!(song_key("Artist - Song (Live)"), base, "a live take is a different recording");
         assert_ne!(song_key("Artist - Song (Acoustic)"), base);
+        assert_ne!(song_key("Artist - Song (Remix)"), base);
         assert_ne!(song_key("Artist - Other Song"), base);
         assert_ne!(song_key("Other Artist - Song"), base);
+    }
+
+    #[test]
+    fn a_mix_is_a_different_recording_not_a_re_release() {
+        // A bare "mix" marker collapsed these onto the plain title, so radio
+        // dropped them as duplicates of a song they only share a name with.
+        let base = song_key("Artist - Song");
+        assert_ne!(song_key("Artist - Song (Extended Mix)"), base);
+        assert_ne!(song_key("Artist - Song (Club Mix)"), base);
+        assert_ne!(song_key("Artist - Song - Dub Mix"), base);
+    }
+
+    #[test]
+    fn a_marker_buried_inside_another_word_is_not_a_marker() {
+        // Substring matching fired on any word with a marker anywhere in it:
+        // "credits" and "meditation" both contain "edit", and every track
+        // qualified that way was dropped as a duplicate. Matching from the
+        // start of a word is what fixes it — a marker in the middle no longer
+        // counts. (A word that genuinely *begins* with one, like "monologue",
+        // still does; that is the price of matching inflections without
+        // listing them, and it is far rarer than the cases above.)
+        let base = song_key("Artist - Song");
+        assert_ne!(song_key("Artist - Song (Credits)"), base, "'credits' is not 'edit'");
+        assert_ne!(song_key("Artist - Song (Meditation)"), base, "'meditation' is not 'edit'");
+        assert_ne!(song_key("Artist - Song (Premonition)"), base, "'premonition' is not 'mono'");
+    }
+
+    #[test]
+    fn marker_words_still_match_their_inflections() {
+        // The word only has to start with the marker, so the common endings
+        // keep working without listing each one.
+        let base = song_key("Artist - Song");
+        assert_eq!(song_key("Artist - Song (Remastered 2011)"), base);
+        assert_eq!(song_key("Artist - Song (Deluxe Edition)"), base);
+        assert_eq!(song_key("Artist - Song (Stereo Mix)"), base, "'stereo' still catches it");
+        assert_eq!(song_key("Artist - Song (Mono Version)"), base);
+        assert_eq!(song_key("Artist - Song - 40th Anniversary Reissue"), base);
+    }
+
+    #[test]
+    fn a_mix_survives_radio_deduplication() {
+        // The end the song_key change serves: a station handing back a remix
+        // or an extended mix beside the original must keep both.
+        let mut state = PlayerState::new();
+        state.enqueue_source(vec![named("a", "Artist - Song")], "u".into(), true);
+        let fresh = state.filter_unqueued_similar(vec![
+            named("b", "Artist - Song (Extended Mix)"),
+            named("c", "Artist - Song (Remastered 2011)"),
+        ]);
+        assert_eq!(fresh.len(), 1, "the remaster goes, the extended mix stays");
+        assert_eq!(fresh[0].id(), "b");
     }
 
     // -- rendered text --
