@@ -389,10 +389,12 @@ pub fn run_update_tools() -> Result<(), BotError> {
         return Ok(());
     }
 
-    // 1. yt-dlp self-update.
+    // 1. yt-dlp self-update. The socket timeout bounds a dead network, same
+    // as the tray's update path — a stalled connection should end in an error
+    // line, not a terminal that hangs until the OS gives up.
     println!("Updating yt-dlp...");
     match std::process::Command::new(&paths.yt_dlp)
-        .arg("--update")
+        .args(["--update", "--socket-timeout", "30"])
         .status()
     {
         Ok(status) if status.success() => {

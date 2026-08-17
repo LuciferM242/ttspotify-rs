@@ -34,7 +34,12 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut update_cmd = std::process::Command::new(&paths.yt_dlp);
-    update_cmd.arg("--update").creation_flags(CREATE_NO_WINDOW);
+    // The socket timeout bounds a dead network: this runs under the modal
+    // progress dialog, and yt-dlp waiting on a half-open socket held the
+    // whole tray hostage with no way to cancel.
+    update_cmd
+        .args(["--update", "--socket-timeout", "30"])
+        .creation_flags(CREATE_NO_WINDOW);
     match update_cmd.status() {
         Ok(s) if s.success() => {
             let after = setup::installed_tool_versions().yt_dlp;
