@@ -140,11 +140,18 @@ pub fn run_wizard(
 
     println!();
     println!("Admin Permissions");
-    let admin_mode = match ask("Admin mode [everyone/ttrights/list/both]", "both", false) {
-        Some(s) => match s.trim().to_lowercase().as_str() {
-            "everyone" => crate::config::AdminMode::Everyone,
-            "ttrights" => crate::config::AdminMode::TtRights,
-            "list" => crate::config::AdminMode::List,
+    println!("  Who may run the bot's admin commands:");
+    println!("  1. Everyone - no restrictions, any user can run every command");
+    println!("  2. TeamTalk server admins - admins from the server's user accounts");
+    println!("  3. Username list - only the usernames you enter next");
+    println!("  4. Both - TeamTalk server admins or the username list");
+    let admin_mode = match ask("Which admin mode should this bot use? (1-4)", "4", false) {
+        Some(s) => match s.trim() {
+            "1" => crate::config::AdminMode::Everyone,
+            "2" => crate::config::AdminMode::TtRights,
+            "3" => crate::config::AdminMode::List,
+            // Anything else lands on the restrictive choice, same as the GUI:
+            // a misread must not hand out access.
             _ => crate::config::AdminMode::Both,
         },
         None => return Ok(None),
