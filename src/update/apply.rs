@@ -69,7 +69,12 @@ async fn get_bytes(
         return Err(UpdateError::Http(format!("HTTP {}", resp.status())));
     }
     let total = resp.content_length();
-    let mut out = Vec::with_capacity(total.unwrap_or(0) as usize);
+    // Pre-allocate from Content-Length, but capped: the header is
+    // server-supplied, and a bogus huge value must not become a huge
+    // allocation up front. Real assets are tens of MB; past the cap the
+    // vector just grows normally.
+    const PREALLOC_CAP: usize = 64 * 1024 * 1024;
+    let mut out = Vec::with_capacity((total.unwrap_or(0) as usize).min(PREALLOC_CAP));
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         if cancel.load(Ordering::Relaxed) {
@@ -92,8 +97,14 @@ pub async fn download_and_apply(
     progress: &(dyn Fn(u64, Option<u64>) + Sync),
     cancel: &AtomicBool,
 ) -> Result<(), UpdateError> {
+    // Stall timeouts, not a total deadline: `.timeout()` capped the WHOLE
+    // download at 300 s, so a slow-but-healthy connection failed the update
+    // partway through a large asset. `read_timeout` bounds silence between
+    // chunks instead — a stalled socket still dies in 30 s, a slow link is
+    // free to take as long as it needs.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(30))
         .user_agent(concat!("ttspotify-rs/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| UpdateError::Http(e.to_string()))?;
