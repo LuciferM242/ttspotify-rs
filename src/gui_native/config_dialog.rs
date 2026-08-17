@@ -26,6 +26,8 @@ use super::resource_ids::*;
 const GENDERS: [&str; 3] = ["neutral", "male", "female"];
 const SERVICES: [&str; 2] = ["Spotify", "YouTube"];
 const QUALITIES: [&str; 3] = ["VERY_HIGH", "HIGH", "NORMAL"];
+const NORM_TYPES: [&str; 3] = ["auto", "album", "track"];
+const NORM_METHODS: [&str; 2] = ["dynamic", "basic"];
 
 /// Controls on the Server page.
 struct ServerPage {
@@ -54,6 +56,11 @@ struct ServerPage {
 struct AudioPage {
     quality: gui::ComboBox,
     normalize: gui::CheckBox,
+    norm_gain: gui::Edit,
+    norm_type: gui::ComboBox,
+    norm_method: gui::ComboBox,
+    norm_threshold: gui::Edit,
+    norm_knee: gui::Edit,
     volume: gui::Edit,
     max_volume: gui::Edit,
     jitter: gui::Edit,
@@ -108,6 +115,11 @@ pub fn show(
     let audio = Rc::new(AudioPage {
         quality: gui::ComboBox::new_dlg(&audio_pg, IDC_QUALITY, (gui::Horz::None, gui::Vert::None)),
         normalize: gui::CheckBox::new_dlg(&audio_pg, IDC_NORMALIZE, (gui::Horz::None, gui::Vert::None)),
+        norm_gain: gui::Edit::new_dlg(&audio_pg, IDC_NORM_GAIN, (gui::Horz::None, gui::Vert::None)),
+        norm_type: gui::ComboBox::new_dlg(&audio_pg, IDC_NORM_TYPE, (gui::Horz::None, gui::Vert::None)),
+        norm_method: gui::ComboBox::new_dlg(&audio_pg, IDC_NORM_METHOD, (gui::Horz::None, gui::Vert::None)),
+        norm_threshold: gui::Edit::new_dlg(&audio_pg, IDC_NORM_THRESHOLD, (gui::Horz::None, gui::Vert::None)),
+        norm_knee: gui::Edit::new_dlg(&audio_pg, IDC_NORM_KNEE, (gui::Horz::None, gui::Vert::None)),
         volume: gui::Edit::new_dlg(&audio_pg, IDC_VOLUME, (gui::Horz::None, gui::Vert::None)),
         max_volume: gui::Edit::new_dlg(&audio_pg, IDC_MAX_VOLUME, (gui::Horz::None, gui::Vert::None)),
         jitter: gui::Edit::new_dlg(&audio_pg, IDC_JITTER, (gui::Horz::None, gui::Vert::None)),
@@ -183,6 +195,13 @@ pub fn show(
             let _ = server.cookies.set_text(&form.youtube_cookies_file);
             select_or_first(&audio.quality, &QUALITIES, &form.spotify_quality);
             audio.normalize.set_check(form.spotify_enable_normalization);
+            let _ = audio.norm_gain.set_text(&form.normalisation_gain_db);
+            let _ = audio.norm_type.items().add(&NORM_TYPES);
+            select_or_first(&audio.norm_type, &NORM_TYPES, &form.normalisation_type);
+            let _ = audio.norm_method.items().add(&NORM_METHODS);
+            select_or_first(&audio.norm_method, &NORM_METHODS, &form.normalisation_method);
+            let _ = audio.norm_threshold.set_text(&form.normalisation_threshold_dbfs);
+            let _ = audio.norm_knee.set_text(&form.normalisation_knee_db);
             let _ = audio.volume.set_text(&form.volume.to_string());
             let _ = audio.max_volume.set_text(&form.max_volume.to_string());
             let _ = audio.jitter.set_text(&form.jitter_buffer_ms.to_string());
@@ -390,6 +409,11 @@ fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> Confi
         admin_users: text(&server.admin_users),
         spotify_quality: combo_text(&audio.quality),
         spotify_enable_normalization: audio.normalize.is_checked(),
+        normalisation_gain_db: text(&audio.norm_gain),
+        normalisation_type: combo_text(&audio.norm_type),
+        normalisation_method: combo_text(&audio.norm_method),
+        normalisation_threshold_dbfs: text(&audio.norm_threshold),
+        normalisation_knee_db: text(&audio.norm_knee),
         volume: number(&audio.volume, 50),
         max_volume: number(&audio.max_volume, 100),
         jitter_buffer_ms: number(&audio.jitter, 0),

@@ -74,6 +74,11 @@ pub struct ConfigForm {
     // Audio
     pub spotify_quality: String,
     pub spotify_enable_normalization: bool,
+    pub normalisation_gain_db: String,
+    pub normalisation_type: String,
+    pub normalisation_method: String,
+    pub normalisation_threshold_dbfs: String,
+    pub normalisation_knee_db: String,
     pub volume: i32,
     pub max_volume: i32,
     pub jitter_buffer_ms: i32,
@@ -110,6 +115,11 @@ impl ConfigForm {
             admin_users: cfg.admins.join(", "),
             spotify_quality: cfg.spotify_quality.clone(),
             spotify_enable_normalization: cfg.spotify_enable_normalization,
+            normalisation_gain_db: cfg.normalisation_pregain_db.to_string(),
+            normalisation_type: cfg.normalisation_type.clone(),
+            normalisation_method: cfg.normalisation_method.clone(),
+            normalisation_threshold_dbfs: cfg.normalisation_threshold_dbfs.to_string(),
+            normalisation_knee_db: cfg.normalisation_knee_db.to_string(),
             volume: cfg.volume as i32,
             max_volume: cfg.max_volume as i32,
             jitter_buffer_ms: cfg.jitter_buffer_ms as i32,
@@ -164,6 +174,26 @@ impl ConfigForm {
 
         cfg.spotify_quality = self.spotify_quality.clone();
         cfg.spotify_enable_normalization = self.spotify_enable_normalization;
+        // Numbers that will not parse keep the previous value, same rule as
+        // volume_ramp_step below: silently becoming zero would change the
+        // sound, and 0.0 is a meaningful setting for all three.
+        cfg.normalisation_pregain_db = self
+            .normalisation_gain_db
+            .trim()
+            .parse()
+            .unwrap_or(original.normalisation_pregain_db);
+        cfg.normalisation_type = self.normalisation_type.to_lowercase();
+        cfg.normalisation_method = self.normalisation_method.to_lowercase();
+        cfg.normalisation_threshold_dbfs = self
+            .normalisation_threshold_dbfs
+            .trim()
+            .parse()
+            .unwrap_or(original.normalisation_threshold_dbfs);
+        cfg.normalisation_knee_db = self
+            .normalisation_knee_db
+            .trim()
+            .parse()
+            .unwrap_or(original.normalisation_knee_db);
         cfg.volume = self.volume.clamp(0, 255) as u8;
         cfg.max_volume = self.max_volume.clamp(0, 255) as u8;
         cfg.jitter_buffer_ms = self.jitter_buffer_ms.max(0) as u32;
@@ -236,21 +266,40 @@ mod tests {
 
     #[test]
     fn settings_the_form_never_shows_are_preserved() {
-        // The reason apply() starts from the original. These have no controls,
-        // so a form built from defaults would silently reset them.
+        // The reason apply() starts from the original. These have no controls
+        // (they are runtime state the bot itself persists), so a form built
+        // from defaults would silently reset them.
         let mut cfg = base();
-        cfg.normalisation_type = "album".to_string();
-        cfg.normalisation_pregain_db = -3.5;
-        cfg.normalisation_knee_db = 7.0;
+        cfg.repeat_track = true;
+        cfg.repeat_queue = true;
+        cfg.shuffle = true;
 
         let mut form = ConfigForm::from_config(&cfg);
         form.host = "changed.example.com".to_string();
         let saved = form.apply(&cfg);
 
         assert_eq!(saved.host, "changed.example.com");
-        assert_eq!(saved.normalisation_type, "album");
-        assert_eq!(saved.normalisation_pregain_db, -3.5);
-        assert_eq!(saved.normalisation_knee_db, 7.0);
+        assert!(saved.repeat_track);
+        assert!(saved.repeat_queue);
+        assert!(saved.shuffle);
+    }
+
+    #[test]
+    fn normalisation_settings_round_trip_and_reject_garbage() {
+        // These were "advanced, file-only" until the editor grew controls for
+        // them; a number that does not parse keeps the original value, since
+        // 0.0 is a meaningful gain and a silent reset would change the sound.
+        let mut cfg = base();
+        cfg.normalisation_pregain_db = -3.5;
+        let mut form = ConfigForm::from_config(&cfg);
+        assert_eq!(form.normalisation_gain_db, "-3.5");
+        form.normalisation_gain_db = "6".to_string();
+        form.normalisation_type = "Album".to_string();
+        form.normalisation_knee_db = "not a number".to_string();
+        let saved = form.apply(&cfg);
+        assert_eq!(saved.normalisation_pregain_db, 6.0);
+        assert_eq!(saved.normalisation_type, "album", "combo text is lowercased");
+        assert_eq!(saved.normalisation_knee_db, cfg.normalisation_knee_db);
     }
 
     #[test]
