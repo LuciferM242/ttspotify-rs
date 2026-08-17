@@ -33,6 +33,12 @@ pub fn configs_dir() -> PathBuf {
     root().join("config")
 }
 
+/// The config file for a bot name — the one place the `<name>.json` shape is
+/// spelled out, shared by the wizard, `--setup` and the GUI's name prompt.
+pub fn config_file(name: &str) -> PathBuf {
+    configs_dir().join(format!("{name}.json"))
+}
+
 /// Language template and user translations.
 pub fn lang_dir() -> PathBuf {
     root().join("lang")

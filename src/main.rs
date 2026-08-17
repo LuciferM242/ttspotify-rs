@@ -306,7 +306,7 @@ fn main() {
         let _ = tt_spotify_bot::paths::migrate_data_layout();
 
         let (config, path) = if let Some(name) = name_arg {
-            let p = tt_spotify_bot::paths::configs_dir().join(format!("{name}.json"));
+            let p = tt_spotify_bot::paths::config_file(name);
             if p.exists() {
                 let cfg = tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or(""))
                     .unwrap_or_default();

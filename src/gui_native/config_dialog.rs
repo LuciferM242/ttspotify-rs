@@ -472,7 +472,7 @@ fn select_or_first(combo: &gui::ComboBox, items: &[&str], value: &str) {
 /// Ask for a name and turn it into a path inside the configs folder.
 fn ask_for_path(parent: &(impl GuiParent + 'static), hwnd: &w::HWND) -> Option<PathBuf> {
     let name = ask_for_name(parent)?;
-    let path = crate::paths::configs_dir().join(format!("{name}.json"));
+    let path = crate::paths::config_file(&name);
     if path.exists() {
         let answer = hwnd.MessageBox(
             &format!("{} already exists.\n\nOverwrite it?", path.display()),

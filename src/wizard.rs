@@ -94,9 +94,8 @@ pub fn run_wizard(
     // Configs live in <root>/config/ — the directory list_configs(), the CLI
     // auto-detect and the systemd unit all read. Writing to the data root put
     // every post-first-run setup where nothing would ever find it.
-    let dir = crate::paths::configs_dir();
-    std::fs::create_dir_all(&dir)?;
-    let config_path = dir.join(format!("{name}.json"));
+    std::fs::create_dir_all(crate::paths::configs_dir())?;
+    let config_path = crate::paths::config_file(&name);
 
     if config_path.exists() {
         let overwrite = ask(
