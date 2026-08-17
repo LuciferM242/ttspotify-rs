@@ -87,6 +87,13 @@ pub struct PlayerState {
     // Switched via `/sp` or `/yt`. In-memory only — resets on restart.
     pub active_service: Service,
 
+    /// Which services this bot may use, seeded from the config at startup.
+    /// `/sp` and `/yt` refuse to switch to a disabled one, and config
+    /// validation guarantees `active_service` starts on an enabled one — so a
+    /// disabled service is unreachable for the whole run.
+    pub spotify_enabled: bool,
+    pub youtube_enabled: bool,
+
     /// Bumped on stop/clear and each new bulk load; a background bulk loader
     /// captures the value at spawn and dies when it no longer matches.
     pub bulk_load_generation: u64,
@@ -182,6 +189,8 @@ impl PlayerState {
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
+            spotify_enabled: true,
+            youtube_enabled: true,
             bulk_load_generation: 0,
             auto_advance_pending: false,
         }

@@ -274,6 +274,8 @@ pub async fn run_bot(
     initial_state.repeat = crate::bot::state::RepeatMode::from_flags(config.repeat_track, config.repeat_queue);
     initial_state.shuffle = config.shuffle;
     initial_state.active_service = config.default_service;
+    initial_state.spotify_enabled = config.enabled_services.spotify;
+    initial_state.youtube_enabled = config.enabled_services.youtube;
     let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
     let volume = Arc::new(AtomicU8::new(config.volume.min(config.max_volume)));
 
@@ -363,7 +365,14 @@ pub async fn run_bot(
     // is infeasible (systemd: no browser, no stdin) a failure must NOT abort —
     // we've already logged into TeamTalk, so exiting turns Restart=on-failure
     // into a nonstop login/logout loop on the server.
-    let spotify_connected = match startup_auth_plan(
+    let spotify_connected = if !config.enabled_services.spotify {
+        // Spotify is disabled in this config: never touch the cached login,
+        // even though one may exist install-wide. This is the whole point of
+        // the switch — a bot on someone else's server must not be able to
+        // reach the owner's account.
+        tracing::info!("Spotify is disabled in this config; skipping auth entirely");
+        false
+    } else { match startup_auth_plan(
         auth.has_cached_credentials(),
         config.default_service == crate::services::Service::Spotify,
         auth.oauth_feasible(),
@@ -390,7 +399,7 @@ pub async fn run_bot(
             tracing::info!("Skipping Spotify auth at startup; no cached credentials and default service is YouTube");
             false
         }
-    };
+    } };
 
     // Wrap the (possibly-connected) session in a shared holder so the recovery
     // routine can swap in a freshly-rebuilt session after a session death. The
@@ -411,7 +420,7 @@ pub async fn run_bot(
     // (reused for ~50 requests, persisted to rustypipe_cache.json) so a user's
     // first real search skips that fragile path. Fire-and-forget: the result is
     // ignored and a failure here is harmless (retry_once handles it later).
-    {
+    if config.enabled_services.youtube {
         let warm = youtube_metadata.clone();
         tokio::spawn(async move {
             match warm.search_tracks("music", 1).await {
@@ -2220,8 +2229,20 @@ async fn command_processor(
             }
 
             BotCommand::SetService { service, user_id: _ } => {
-                state.lock().active_service = service;
-                tracing::info!("Active service switched to {}", service.name());
+                let mut s = state.lock();
+                // The dispatcher already refuses the switch with a reply; this
+                // is the backstop that keeps a disabled service unreachable no
+                // matter what path produced the command.
+                let enabled = match service {
+                    crate::services::Service::Spotify => s.spotify_enabled,
+                    crate::services::Service::YouTube => s.youtube_enabled,
+                };
+                if enabled {
+                    s.active_service = service;
+                    tracing::info!("Active service switched to {}", service.name());
+                } else {
+                    tracing::warn!("Refusing switch to disabled service {}", service.name());
+                }
             }
 
             // Admin: change the server default language (glang). Updates the

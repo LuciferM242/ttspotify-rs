@@ -140,6 +140,7 @@ keys! {
     // Service switching
     AlreadyOnService => "already_on_service",
     SwitchedService => "switched_service",
+    ServiceNotEnabled => "service_not_enabled",
     // Bot management
     Nickname => "nickname",
     GenderSet => "gender_set",

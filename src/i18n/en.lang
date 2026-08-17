@@ -148,6 +148,9 @@ already_on_service = Already on {service}
 # Shown when the active service changes. {service} = Spotify or YouTube.
 switched_service = Switched to {service}
 
+# Shown when switching to a service this bot's config has disabled. {service} = Spotify or YouTube.
+service_not_enabled = {service} is not enabled on this bot
+
 # Bot management
 
 # Shown when the bot's nickname changes. {name} = the new nickname.
@@ -160,7 +163,8 @@ gender_set = Gender: {gender}
 gender_usage = Usage: gender [male|female|neutral]
 
 # The info command. {version} = the bot's version number.
-info = TeamTalk Spotify Bot (Rust) v{version}
+# {services} = the services enabled on this bot ("Spotify, YouTube" or one of them).
+info = TeamTalk Spotify Bot (Rust) v{version}\nServices: {services}
 
 # The stats command. {uptime} = time running, {tracks} = tracks played,
 # {queue} = queue length, {volume} = current volume.

@@ -44,6 +44,9 @@ const IDC_COOKIES_BROWSE: u16 = 625;
 const IDC_LANGUAGE: u16 = 626;
 const IDC_ADMIN_MODE: u16 = 627;
 const IDC_ADMIN_USERS: u16 = 628;
+const IDC_SP_ENABLED: u16 = 629;
+const IDC_YT_ENABLED: u16 = 630;
+const IDC_SERVICE_LABEL: u16 = 631;
 
 const IDD_CFG_AUDIO: u16 = 640;
 const IDC_QUALITY: u16 = 641;
@@ -80,6 +83,8 @@ struct ServerPage {
     channel: gui::Edit,
     channel_password: gui::Edit,
     gender: gui::ComboBox,
+    spotify_enabled: gui::CheckBox,
+    youtube_enabled: gui::CheckBox,
     service: gui::ComboBox,
     language: gui::ComboBox,
     license_name: gui::Edit,
@@ -133,6 +138,8 @@ pub fn show(
         channel: gui::Edit::new_dlg(&server_pg, IDC_CHANNEL, (gui::Horz::Resize, gui::Vert::None)),
         channel_password: gui::Edit::new_dlg(&server_pg, IDC_CHANPASS, (gui::Horz::Resize, gui::Vert::None)),
         gender: gui::ComboBox::new_dlg(&server_pg, IDC_GENDER, (gui::Horz::None, gui::Vert::None)),
+        spotify_enabled: gui::CheckBox::new_dlg(&server_pg, IDC_SP_ENABLED, (gui::Horz::None, gui::Vert::None)),
+        youtube_enabled: gui::CheckBox::new_dlg(&server_pg, IDC_YT_ENABLED, (gui::Horz::None, gui::Vert::None)),
         service: gui::ComboBox::new_dlg(&server_pg, IDC_SERVICE, (gui::Horz::None, gui::Vert::None)),
         language: gui::ComboBox::new_dlg(&server_pg, IDC_LANGUAGE, (gui::Horz::None, gui::Vert::None)),
         license_name: gui::Edit::new_dlg(&server_pg, IDC_LICNAME, (gui::Horz::Resize, gui::Vert::None)),
@@ -178,6 +185,7 @@ pub fn show(
     {
         let dlg2 = dlg.clone();
         let (server, audio, radio) = (server.clone(), audio.clone(), radio.clone());
+        let server_pg2 = server_pg.clone();
         let original = original.clone();
         let path = path.clone();
         dlg.on().wm_init_dialog(move |_| {
@@ -208,6 +216,9 @@ pub fn show(
             let _ = server.channel.set_text(&form.channel_name);
             let _ = server.channel_password.set_text(&form.channel_password);
             select_or_first(&server.gender, &GENDERS, &form.bot_gender);
+            server.spotify_enabled.set_check(form.spotify_enabled);
+            server.youtube_enabled.set_check(form.youtube_enabled);
+            update_service_row(&server_pg2, &server);
             select_or_first(&server.service, &SERVICES, &form.default_service);
             select_or_first(&server.language, &lang_refs, &form.default_language);
             let _ = server.license_name.set_text(&form.license_name);
@@ -252,6 +263,16 @@ pub fn show(
             }
 
             Ok(true)
+        });
+    }
+
+    // --- Service checkboxes decide whether the default-service row shows ---
+    for checkbox in [&server.spotify_enabled, &server.youtube_enabled] {
+        let server2 = server.clone();
+        let server_pg2 = server_pg.clone();
+        checkbox.on().bn_clicked(move || {
+            update_service_row(&server_pg2, &server2);
+            Ok(())
         });
     }
 
@@ -345,7 +366,7 @@ pub fn show(
             // Offer the YouTube tools only for a new config; an edit saves
             // quietly, and the tray menu can install them later.
             if path.is_none() {
-                offer_youtube_setup(&dlg2, cfg.default_service);
+                offer_youtube_setup(&dlg2, &cfg);
             }
 
             *saved.borrow_mut() = Some(save_path);
@@ -370,6 +391,25 @@ pub fn show(
     result
 }
 
+/// Show or hide the default-service row to match the service checkboxes.
+/// With one service enabled the default is obvious, so the row disappears and
+/// the (hidden) dropdown is snapped to the surviving service — read_form still
+/// reads it, and a stale value must not be what gets saved.
+fn update_service_row(server_pg: &gui::TabPage, server: &ServerPage) {
+    let spotify = server.spotify_enabled.is_checked();
+    let youtube = server.youtube_enabled.is_checked();
+    let both = spotify && youtube;
+    let mode = if both { co::SW::SHOW } else { co::SW::HIDE };
+    if let Ok(label) = server_pg.hwnd().GetDlgItem(IDC_SERVICE_LABEL) {
+        label.ShowWindow(mode);
+    }
+    server.service.hwnd().ShowWindow(mode);
+    if !both {
+        let only = if spotify { "Spotify" } else { "YouTube" };
+        select_or_first(&server.service, &SERVICES, only);
+    }
+}
+
 /// Read every control into a form.
 fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> ConfigForm {
     ConfigForm {
@@ -383,6 +423,8 @@ fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> Confi
         channel_name: text(&server.channel),
         channel_password: text(&server.channel_password),
         bot_gender: combo_text(&server.gender),
+        spotify_enabled: server.spotify_enabled.is_checked(),
+        youtube_enabled: server.youtube_enabled.is_checked(),
         default_service: combo_text(&server.service),
         license_name: text(&server.license_name),
         license_key: text(&server.license_key),
@@ -568,10 +610,15 @@ fn pick_cookies_file(parent: &w::HWND, current: &str) -> Option<String> {
 }
 
 /// Offer to install the YouTube tools after a new config is created.
-fn offer_youtube_setup(parent: &(impl GuiParent + 'static), default_service: crate::services::Service) {
+fn offer_youtube_setup(parent: &(impl GuiParent + 'static), cfg: &BotConfig) {
     use crate::services::Service;
     use crate::youtube::setup;
 
+    // A bot that may not use YouTube must not end its setup with a YouTube
+    // download offer — the wizard skips this step for the same reason.
+    if !cfg.enabled_services.youtube {
+        return;
+    }
     let paths = match setup::resolve_paths() {
         Ok(p) => p,
         Err(_) => return, // not user-actionable
@@ -580,7 +627,7 @@ fn offer_youtube_setup(parent: &(impl GuiParent + 'static), default_service: cra
         return;
     }
 
-    let prompt = if default_service == Service::YouTube {
+    let prompt = if cfg.default_service == Service::YouTube {
         "YouTube support needs extra programs (about 50 MB: yt-dlp, bgutil-pot and a JavaScript runtime).\n\nDownload them now?"
     } else {
         "You can also enable YouTube support. This downloads about 50 MB of programs (yt-dlp, bgutil-pot and a JavaScript runtime).\n\nSkip this if you only need Spotify.\n\nInstall YouTube support?"

@@ -188,18 +188,39 @@ pub fn run_wizard(
     };
 
     println!();
-    println!("Default Service");
-    let default_service = match ask("Which service should bare commands target? (spotify/youtube)", "spotify", true) {
-        Some(v) => Service::parse_or_default(&v),
+    println!("Services");
+    println!("  A bot limited to YouTube never touches the Spotify login saved on");
+    println!("  this machine - useful for a bot that sits on someone else's server.");
+    println!("  1. Both Spotify and YouTube");
+    println!("  2. Spotify only");
+    println!("  3. YouTube only");
+    let enabled_services = match ask("Which services should this bot offer? (1-3)", "1", false) {
+        Some(v) => match v.trim() {
+            "2" => crate::config::EnabledServices { spotify: true, youtube: false },
+            "3" => crate::config::EnabledServices { spotify: false, youtube: true },
+            _ => crate::config::EnabledServices::default(),
+        },
         None => return Ok(None),
     };
+    // With one service the default is that service — nothing to ask.
+    let default_service = match enabled_services.only() {
+        Some(only) => only,
+        None => match ask("Which service should bare commands target? (spotify/youtube)", "spotify", true) {
+            Some(v) => Service::parse_or_default(&v),
+            None => return Ok(None),
+        },
+    };
 
+    // Cookies only matter for YouTube; a Spotify-only bot skips the question.
+    let cookies_file = if !enabled_services.youtube {
+        String::new()
+    } else {
     println!();
     println!("YouTube Cookies (optional)");
     println!("  Cookies help with rate-limited or age-restricted videos.");
     println!("  Playback works without them in most cases.");
     let want_cookies = ask("Configure a cookies file path? (y/N)", "n", false);
-    let cookies_file = if matches!(
+    if matches!(
         want_cookies.as_deref(),
         Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
     ) {
@@ -215,6 +236,7 @@ pub fn run_wizard(
         }
     } else {
         String::new()
+    }
     };
 
     // Build config from defaults + user input
@@ -237,6 +259,7 @@ pub fn run_wizard(
         config.license_key = Some(license_key);
     }
     config.default_service = default_service;
+    config.enabled_services = enabled_services;
     config.youtube_cookies_file = cookies_file;
 
     config.save(&config_path)?;
@@ -244,42 +267,44 @@ pub fn run_wizard(
     println!();
     println!("  Config saved to: {}", config_path.display());
 
-    // Offer Spotify authentication
-    println!();
-    println!("Spotify Authentication");
-    let do_auth = ask("Authenticate with Spotify now? (Y/n)", "y", false);
-    match do_auth {
-        Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
-            println!("  Skipping Spotify authentication.");
-            println!("  You can authenticate later with: tt-spotify-bot --auth");
-        }
-        _ => {
-            println!("  Starting Spotify authentication...");
-            // Spawn a new thread with its own tokio runtime to avoid
-            // nested-runtime panic (wizard is sync, may be called from async main)
-            let auth_result = std::thread::spawn(|| {
-                let rt = match tokio::runtime::Runtime::new() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        eprintln!("  Failed to create async runtime: {e}");
-                        return None;
-                    }
-                };
-                let mut auth = crate::spotify::auth::SpotifyAuth::new();
-                Some(rt.block_on(auth.connect()))
-            }).join().ok().flatten();
+    // Offer Spotify authentication — skipped when this bot cannot use it.
+    if enabled_services.spotify {
+        println!();
+        println!("Spotify Authentication");
+        let do_auth = ask("Authenticate with Spotify now? (Y/n)", "y", false);
+        match do_auth {
+            Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
+                println!("  Skipping Spotify authentication.");
+                println!("  You can authenticate later with: tt-spotify-bot --auth");
+            }
+            _ => {
+                println!("  Starting Spotify authentication...");
+                // Spawn a new thread with its own tokio runtime to avoid
+                // nested-runtime panic (wizard is sync, may be called from async main)
+                let auth_result = std::thread::spawn(|| {
+                    let rt = match tokio::runtime::Runtime::new() {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            eprintln!("  Failed to create async runtime: {e}");
+                            return None;
+                        }
+                    };
+                    let mut auth = crate::spotify::auth::SpotifyAuth::new();
+                    Some(rt.block_on(auth.connect()))
+                }).join().ok().flatten();
 
-            match auth_result {
-                Some(Ok(_)) => {
-                    println!("  Spotify authentication successful! Credentials cached.");
-                }
-                Some(Err(e)) => {
-                    println!("  Spotify authentication failed: {e}");
-                    println!("  You can try again with: tt-spotify-bot --auth");
-                }
-                None => {
-                    println!("  Could not initialize authentication.");
-                    println!("  You can authenticate later with: tt-spotify-bot --auth");
+                match auth_result {
+                    Some(Ok(_)) => {
+                        println!("  Spotify authentication successful! Credentials cached.");
+                    }
+                    Some(Err(e)) => {
+                        println!("  Spotify authentication failed: {e}");
+                        println!("  You can try again with: tt-spotify-bot --auth");
+                    }
+                    None => {
+                        println!("  Could not initialize authentication.");
+                        println!("  You can authenticate later with: tt-spotify-bot --auth");
+                    }
                 }
             }
         }
@@ -291,7 +316,7 @@ pub fn run_wizard(
         .map(|p| setup::is_installed(&p))
         .unwrap_or(false);
 
-    if !yt_already_installed {
+    if enabled_services.youtube && !yt_already_installed {
         println!();
         println!("YouTube Support");
         let yt_default = if default_service == Service::YouTube { "y" } else { "n" };

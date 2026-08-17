@@ -74,13 +74,14 @@ radio_status_off = Radio: APAGADA
 
 already_on_service = Ya estás en {service}
 switched_service = Cambiado a {service}
+service_not_enabled = {service} no está habilitado en este bot
 
 # Bot
 
 nickname = Apodo: {name}
 gender_set = Género: {gender}
 gender_usage = Uso: gender [male|female|neutral]
-info = TeamTalk Spotify Bot (Rust) v{version}
+info = TeamTalk Spotify Bot (Rust) v{version}\nServicios: {services}
 stats = Tiempo activo: {uptime}\nPistas reproducidas: {tracks}\nCola: {queue} pistas\nVolumen: {volume}%
 
 # Mensajes del reproductor

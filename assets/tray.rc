@@ -135,6 +135,9 @@ END
 #define IDC_LANGUAGE      626
 #define IDC_ADMIN_MODE    627
 #define IDC_ADMIN_USERS   628
+#define IDC_SP_ENABLED    629
+#define IDC_YT_ENABLED    630
+#define IDC_SERVICE_LABEL 631
 
 #define IDD_CFG_AUDIO     640
 #define IDC_QUALITY       641
@@ -187,21 +190,24 @@ BEGIN
     EDITTEXT        IDC_CHANPASS,              106, 132, 194, 13, 0x0080 | 0x0020 | 0x00010000 | 0x00800000
     LTEXT           "Bot &gender:",        -1,  6, 150, 96, 10
     COMBOBOX        IDC_GENDER,                106, 148,  90, 60, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Default &service:",   -1,  6, 166, 96, 10
-    COMBOBOX        IDC_SERVICE,               106, 164,  90, 60, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Default &language:",  -1,  6, 182, 96, 10
-    COMBOBOX        IDC_LANGUAGE,              106, 180,  90, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "License na&me:",      -1,  6, 198, 96, 10
-    EDITTEXT        IDC_LICNAME,               106, 196, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "License &key:",       -1,  6, 214, 96, 10
-    EDITTEXT        IDC_LICKEY,                106, 212, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "YouTube c&ookies file:", -1, 6, 230, 96, 10
-    EDITTEXT        IDC_COOKIES,               106, 228, 148, 13, 0x0080 | 0x00010000 | 0x00800000
-    PUSHBUTTON      "B&rowse...", IDC_COOKIES_BROWSE, 258, 228, 42, 13
-    LTEXT           "&Admin mode:",        -1,  6, 246, 96, 10
-    COMBOBOX        IDC_ADMIN_MODE,            106, 244, 194, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 264, 294, 10
-    EDITTEXT        IDC_ADMIN_USERS,             6, 276, 294, 48,
+    LTEXT           "Enabled services:",   -1,  6, 166, 96, 10
+    AUTOCHECKBOX    "Spoti&fy",  IDC_SP_ENABLED, 106, 164,  70, 12
+    AUTOCHECKBOX    "&YouTube",  IDC_YT_ENABLED, 180, 164,  70, 12
+    LTEXT           "Default &service:",   IDC_SERVICE_LABEL,  6, 182, 96, 10
+    COMBOBOX        IDC_SERVICE,               106, 180,  90, 60, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Default &language:",  -1,  6, 198, 96, 10
+    COMBOBOX        IDC_LANGUAGE,              106, 196,  90, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "License na&me:",      -1,  6, 214, 96, 10
+    EDITTEXT        IDC_LICNAME,               106, 212, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "License &key:",       -1,  6, 230, 96, 10
+    EDITTEXT        IDC_LICKEY,                106, 228, 194, 13, 0x0080 | 0x00010000 | 0x00800000
+    LTEXT           "YouTube c&ookies file:", -1, 6, 246, 96, 10
+    EDITTEXT        IDC_COOKIES,               106, 244, 148, 13, 0x0080 | 0x00010000 | 0x00800000
+    PUSHBUTTON      "B&rowse...", IDC_COOKIES_BROWSE, 258, 244, 42, 13
+    LTEXT           "&Admin mode:",        -1,  6, 262, 96, 10
+    COMBOBOX        IDC_ADMIN_MODE,            106, 260, 194, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 280, 294, 10
+    EDITTEXT        IDC_ADMIN_USERS,             6, 292, 294, 32,
                     0x0004 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
 END
 

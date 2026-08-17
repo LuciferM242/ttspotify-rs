@@ -683,7 +683,18 @@ impl CommandDispatcher {
 
             // -- Service switching --
             "sp" | "spotify" => {
-                if self.state.lock().active_service == Service::Spotify {
+                let (active, enabled) = {
+                    let s = self.state.lock();
+                    (s.active_service, s.spotify_enabled)
+                };
+                // A refused switch is spoken, not silent: on a YouTube-only
+                // bot the user otherwise has no way to tell a disabled
+                // service from a broken command.
+                if !enabled {
+                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
+                        ("service", "Spotify".to_string()),
+                    ]);
+                } else if active == Service::Spotify {
                     self.reply_t(client, sender_id, Key::AlreadyOnService, &[
                         ("service", "Spotify".to_string()),
                     ]);
@@ -695,7 +706,15 @@ impl CommandDispatcher {
                 }
             }
             "yt" | "youtube" => {
-                if self.state.lock().active_service == Service::YouTube {
+                let (active, enabled) = {
+                    let s = self.state.lock();
+                    (s.active_service, s.youtube_enabled)
+                };
+                if !enabled {
+                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
+                        ("service", "YouTube".to_string()),
+                    ]);
+                } else if active == Service::YouTube {
                     self.reply_t(client, sender_id, Key::AlreadyOnService, &[
                         ("service", "YouTube".to_string()),
                     ]);
@@ -731,8 +750,19 @@ impl CommandDispatcher {
                 }
             }
             "info" | "about" => {
+                // Which services this bot offers, so an admin can see at a
+                // glance why /sp or /yt refuses without reading the config.
+                let services = {
+                    let s = self.state.lock();
+                    match (s.spotify_enabled, s.youtube_enabled) {
+                        (true, false) => "Spotify",
+                        (false, true) => "YouTube",
+                        _ => "Spotify, YouTube",
+                    }
+                };
                 self.reply_t(client, sender_id, Key::Info, &[
                     ("version", env!("CARGO_PKG_VERSION").to_string()),
+                    ("services", services.to_string()),
                 ]);
             }
 

@@ -62,6 +62,8 @@ pub struct ConfigForm {
     pub channel_name: String,
     pub channel_password: String,
     pub bot_gender: String,
+    pub spotify_enabled: bool,
+    pub youtube_enabled: bool,
     pub default_service: String,
     pub license_name: String,
     pub license_key: String,
@@ -97,6 +99,8 @@ impl ConfigForm {
             channel_name: cfg.channel_name.clone(),
             channel_password: cfg.channel_password.clone(),
             bot_gender: cfg.bot_gender.clone(),
+            spotify_enabled: cfg.enabled_services.spotify,
+            youtube_enabled: cfg.enabled_services.youtube,
             default_service: cfg.default_service.name().to_string(),
             license_name: cfg.license_name.clone().unwrap_or_default(),
             license_key: cfg.license_key.clone().unwrap_or_default(),
@@ -139,7 +143,16 @@ impl ConfigForm {
         };
         cfg.channel_password = self.channel_password.clone();
         cfg.bot_gender = self.bot_gender.clone();
-        cfg.default_service = crate::services::Service::parse_or_default(&self.default_service);
+        cfg.enabled_services = crate::config::EnabledServices {
+            spotify: self.spotify_enabled,
+            youtube: self.youtube_enabled,
+        };
+        // With exactly one service enabled the default IS that service; the
+        // dropdown is hidden in that state, so its stale value must not win.
+        cfg.default_service = cfg
+            .enabled_services
+            .only()
+            .unwrap_or_else(|| crate::services::Service::parse_or_default(&self.default_service));
         cfg.youtube_cookies_file = self.youtube_cookies_file.clone();
         // Absent, not empty: the config treats None and Some("") differently.
         cfg.license_name = non_empty(&self.license_name);
@@ -181,6 +194,9 @@ impl ConfigForm {
         }
         if self.volume > self.max_volume {
             errors.push("Default volume cannot exceed max volume.".to_string());
+        }
+        if !self.spotify_enabled && !self.youtube_enabled {
+            errors.push("At least one service must be enabled.".to_string());
         }
         errors
     }
@@ -254,6 +270,29 @@ mod tests {
         assert_eq!(saved.normalisation_type, "album");
         assert_eq!(saved.normalisation_pregain_db, -3.5);
         assert_eq!(saved.normalisation_knee_db, 7.0);
+    }
+
+    #[test]
+    fn service_checkboxes_round_trip_and_gate_the_save() {
+        // Unchecking Spotify must land in the config, and unchecking both is
+        // an error the dialog shows instead of saving a bot that can play
+        // nothing.
+        let cfg = base();
+        let mut form = ConfigForm::from_config(&cfg);
+        assert!(form.spotify_enabled && form.youtube_enabled, "defaults are on");
+        form.spotify_enabled = false;
+        let saved = form.apply(&cfg);
+        assert!(!saved.enabled_services.spotify);
+        assert!(saved.enabled_services.youtube);
+        // One service left: the (hidden) default dropdown must not win.
+        assert_eq!(saved.default_service, crate::services::Service::YouTube);
+        assert!(form.validate().is_empty());
+
+        form.youtube_enabled = false;
+        assert!(
+            form.validate().iter().any(|e| e.contains("service")),
+            "no-services form must fail validation"
+        );
     }
 
     #[test]

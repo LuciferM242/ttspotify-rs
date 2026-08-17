@@ -209,6 +209,79 @@ fn default_norm_threshold() -> f64 { -2.0 }
 fn default_norm_knee() -> f64 { 5.0 }
 fn default_language_en() -> String { "en".to_string() }
 
+/// Which services a bot may use, stored in the config as a list:
+/// `"enabledServices": ["spotify", "youtube"]`. A missing key means both, so
+/// configs from before the setting exist keep working. Entries are matched
+/// case-insensitively; unknown ones are ignored (a typo shows up as the
+/// service being off, and `validate()` refuses to leave a bot with nothing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnabledServices {
+    pub spotify: bool,
+    pub youtube: bool,
+}
+
+impl Default for EnabledServices {
+    fn default() -> Self {
+        Self { spotify: true, youtube: true }
+    }
+}
+
+impl EnabledServices {
+    pub fn allows(self, service: Service) -> bool {
+        match service {
+            Service::Spotify => self.spotify,
+            Service::YouTube => self.youtube,
+        }
+    }
+
+    /// The single enabled service, when there is exactly one. `None` means
+    /// both (or neither, which `validate()` corrects to both).
+    pub fn only(self) -> Option<Service> {
+        match (self.spotify, self.youtube) {
+            (true, false) => Some(Service::Spotify),
+            (false, true) => Some(Service::YouTube),
+            _ => None,
+        }
+    }
+
+    /// Human-readable list for logs and the `info` command.
+    pub fn display(self) -> &'static str {
+        match (self.spotify, self.youtube) {
+            (true, false) => "Spotify",
+            (false, true) => "YouTube",
+            _ => "Spotify, YouTube",
+        }
+    }
+}
+
+impl Serialize for EnabledServices {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut names = Vec::new();
+        if self.spotify {
+            names.push("spotify");
+        }
+        if self.youtube {
+            names.push("youtube");
+        }
+        names.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for EnabledServices {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let names = Vec::<String>::deserialize(deserializer)?;
+        let mut services = Self { spotify: false, youtube: false };
+        for name in &names {
+            match name.trim().to_lowercase().as_str() {
+                "spotify" | "sp" => services.spotify = true,
+                "youtube" | "yt" => services.youtube = true,
+                _ => {}
+            }
+        }
+        Ok(services)
+    }
+}
+
 /// Config format matches the Python ttspotify bot's data/config.json
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -301,6 +374,14 @@ pub struct BotConfig {
     #[serde(default, rename = "defaultService")]
     pub default_service: Service,
 
+    // Which services this bot may use at all, e.g. ["spotify", "youtube"].
+    // Both on by default. A bot on someone else's server can be limited to
+    // YouTube so the owner's Spotify account is never reachable from it: with
+    // Spotify off the runner skips auth entirely and /sp answers that the
+    // service is not enabled here.
+    #[serde(default, rename = "enabledServices")]
+    pub enabled_services: EnabledServices,
+
     // YouTube: path to a Netscape-format cookies file (optional).
     // Empty = check for `<config_dir>/cookies.txt`; if neither set nor
     // present, yt-dlp runs cookie-less and relies on bgutil-pot only.
@@ -353,6 +434,7 @@ impl Default for BotConfig {
             repeat_queue: false,
             shuffle: false,
             default_service: Service::default(),
+            enabled_services: EnabledServices::default(),
             youtube_cookies_file: String::new(),
         }
     }
@@ -491,6 +573,28 @@ impl BotConfig {
         if self.host.trim().is_empty() {
             warnings.push("host is empty, reset to localhost".to_string());
             self.host = "localhost".to_string();
+        }
+        // A bot with no services cannot do anything; treat it as a mistake
+        // (also what an enabledServices list full of typos degrades to).
+        if self.enabled_services.only().is_none()
+            && !(self.enabled_services.spotify && self.enabled_services.youtube)
+        {
+            warnings.push("enabledServices lists no known service, enabling both".to_string());
+            self.enabled_services = EnabledServices::default();
+        }
+        // The default service must be one the bot may use — everything that
+        // gates on "Spotify is disabled here" assumes the active service can
+        // never start on, or switch to, a disabled one. With exactly one
+        // service enabled the default IS that service, no questions asked.
+        if let Some(only) = self.enabled_services.only() {
+            if self.default_service != only {
+                warnings.push(format!(
+                    "defaultService {} is not enabled on this bot, using {}",
+                    self.default_service.name(),
+                    only.name()
+                ));
+                self.default_service = only;
+            }
         }
         if self.bot_name.trim().is_empty() {
             warnings.push("bot_name is empty, reset to Spotify".to_string());
@@ -745,6 +849,60 @@ mod tests {
         cfg.validate();
         assert_eq!(cfg.tcp_port, 10333);
         assert_eq!(cfg.udp_port, 10333);
+    }
+
+    #[test]
+    fn services_default_on_and_survive_old_configs() {
+        // An old config file has no enabledServices key; both must come up
+        // enabled or every existing install would lose a service on upgrade.
+        let cfg: BotConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.enabled_services.spotify);
+        assert!(cfg.enabled_services.youtube);
+    }
+
+    #[test]
+    fn the_enabled_services_list_reads_and_writes_names() {
+        let yt_only: BotConfig =
+            serde_json::from_str(r#"{"enabledServices": ["YouTube"]}"#).unwrap();
+        assert!(!yt_only.enabled_services.spotify, "matching is case-insensitive");
+        assert!(yt_only.enabled_services.youtube);
+        assert_eq!(yt_only.enabled_services.only(), Some(Service::YouTube));
+
+        let json = serde_json::to_value(&yt_only).unwrap();
+        assert_eq!(json["enabledServices"], serde_json::json!(["youtube"]));
+
+        let both = BotConfig::default();
+        let json = serde_json::to_value(&both).unwrap();
+        assert_eq!(json["enabledServices"], serde_json::json!(["spotify", "youtube"]));
+    }
+
+    #[test]
+    fn validate_reenables_services_when_none_are_left() {
+        // An empty list, or a list full of typos, degrades to nothing
+        // enabled — a bot that can play nothing helps nobody.
+        let mut cfg: BotConfig =
+            serde_json::from_str(r#"{"enabledServices": ["spotfy"]}"#).unwrap();
+        let warnings = cfg.validate();
+        assert!(cfg.enabled_services.spotify && cfg.enabled_services.youtube);
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn validate_moves_the_default_service_off_a_disabled_one() {
+        // Everything downstream assumes the active service can never start on
+        // a disabled one; validate is what upholds that.
+        let mut cfg = BotConfig::default();
+        cfg.enabled_services = EnabledServices { spotify: false, youtube: true };
+        cfg.default_service = Service::Spotify;
+        let warnings = cfg.validate();
+        assert_eq!(cfg.default_service, Service::YouTube);
+        assert!(!warnings.is_empty());
+
+        let mut cfg = BotConfig::default();
+        cfg.enabled_services = EnabledServices { spotify: true, youtube: false };
+        cfg.default_service = Service::YouTube;
+        cfg.validate();
+        assert_eq!(cfg.default_service, Service::Spotify);
     }
 
     #[test]
