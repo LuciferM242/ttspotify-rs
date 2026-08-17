@@ -311,7 +311,17 @@ impl PlayerState {
 
     /// Step back, given how far into the current track playback is.
     pub fn go_prev(&mut self, position_ms: u32) -> PrevAction {
-        self.queue.go_prev(position_ms)
+        let action = self.queue.go_prev(position_ms);
+        if action == PrevAction::MovedBack {
+            // Stepping back is the one way the current track changes without an
+            // advance being sent, so an advance armed for the track we just left
+            // can only ever arrive stale — and a stale advance no longer
+            // releases the gate. Release it here, or the gate stays claimed for
+            // good and the next end-of-track is swallowed as a duplicate,
+            // stopping playback dead.
+            self.auto_advance_pending = false;
+        }
+        action
     }
 
     /// The track that would play next, for preloading.
@@ -869,6 +879,48 @@ mod tests {
         assert!(state.try_arm_auto_advance());
         state.clear();
         assert!(state.try_arm_auto_advance());
+    }
+
+    #[test]
+    fn stepping_back_releases_a_pending_auto_advance() {
+        // `o` is the one way the current track changes without an advance
+        // being sent. The advance armed for the track we left can now only
+        // arrive stale, and a stale advance does not release the gate — so
+        // without this the gate stayed claimed and the next end-of-track was
+        // swallowed as a duplicate, stopping playback for good.
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        state.advance(); // now on track 1
+        assert!(state.try_arm_auto_advance(), "track 1 ended");
+        assert_eq!(state.go_prev(0), PrevAction::MovedBack);
+        assert!(
+            state.try_arm_auto_advance(),
+            "the track we stepped back to must be able to advance when it ends"
+        );
+    }
+
+    #[test]
+    fn restarting_the_current_track_leaves_a_pending_advance_alone() {
+        // Late in a track `o` means "play this one again", which does not
+        // change what is current — so an advance armed for it is still the
+        // live one and must keep its claim.
+        let mut state = PlayerState::new();
+        fill(&mut state, 3);
+        assert!(state.try_arm_auto_advance());
+        assert_eq!(state.go_prev(30_000), PrevAction::RestartCurrent);
+        assert!(
+            !state.try_arm_auto_advance(),
+            "the advance for this track is still in flight"
+        );
+    }
+
+    #[test]
+    fn nothing_behind_leaves_a_pending_advance_alone() {
+        let mut state = PlayerState::new();
+        fill(&mut state, 2);
+        assert!(state.try_arm_auto_advance());
+        assert_eq!(state.go_prev(0), PrevAction::NothingBehind);
+        assert!(!state.try_arm_auto_advance(), "nothing moved, nothing to release");
     }
 
     // -- active service --

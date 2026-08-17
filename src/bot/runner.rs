@@ -1672,15 +1672,19 @@ async fn command_processor(
             }
 
             BotCommand::Next { user_id, after_track, failed } => {
-                // Whatever happens below, this advance has been consumed: the
-                // next track is free to raise its own end-of-track signal.
-                state.lock().release_auto_advance();
-
                 // An auto-advance whose source track is no longer current lost
                 // the race against a manual `n`; executing it too would skip a
                 // track the user never heard.
+                //
+                // Checked BEFORE the gate is released, because a stale advance
+                // does not own the gate: whatever moved the queue past its
+                // track released it already, and the track playing now may have
+                // armed it since. Releasing here cleared a claim belonging to a
+                // newer track, letting one of its duplicate end-of-track
+                // signals through and skipping a track unheard.
                 {
-                    let current = state.lock().current().map(|e| e.track.uri().to_string());
+                    let mut s = state.lock();
+                    let current = s.current().map(|e| e.track.uri().to_string());
                     if auto_advance_is_stale(after_track.as_deref(), current.as_deref()) {
                         tracing::debug!(
                             "Dropping stale auto-advance (after {:?}, current {:?})",
@@ -1688,6 +1692,9 @@ async fn command_processor(
                         );
                         continue;
                     }
+                    // This advance is going ahead, so it consumes the gate: the
+                    // next track is free to raise its own end-of-track signal.
+                    s.release_auto_advance();
                 }
 
                 // A failure-driven advance (Spotify Unavailable) counts toward
