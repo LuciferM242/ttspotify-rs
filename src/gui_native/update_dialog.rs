@@ -18,18 +18,8 @@ use std::sync::Arc;
 use winsafe::prelude::*;
 use winsafe::{self as w, co, gui};
 
+use super::resource_ids::*;
 use crate::update::{download_and_apply, UpdateInfo};
-
-const IDD_UPDATE: u16 = 300;
-const IDC_UPD_HEADING: u16 = 301;
-const IDC_UPD_NOTES: u16 = 302;
-const IDC_UPD_DOWNLOAD: u16 = 303;
-const IDC_UPD_LATER: u16 = 304;
-
-const IDD_DOWNLOAD: u16 = 400;
-const IDC_DL_LABEL: u16 = 401;
-const IDC_DL_BAR: u16 = 402;
-const IDC_DL_CANCEL: u16 = 403;
 
 const TIMER_DRAIN: usize = 1;
 const TIMER_DRAIN_MS: u32 = 100;

@@ -21,51 +21,7 @@ use crate::config::BotConfig;
 use crate::gui_native::config_form::{
     mode_uses_username_list, ConfigForm, ADMIN_MODE_LABELS,
 };
-
-const IDD_CONFIG: u16 = 600;
-const IDC_CFG_TAB: u16 = 601;
-
-const IDD_CFG_SERVER: u16 = 610;
-const IDC_HOST: u16 = 611;
-const IDC_TCP_PORT: u16 = 612;
-const IDC_UDP_PORT: u16 = 613;
-const IDC_ENCRYPTED: u16 = 614;
-const IDC_USERNAME: u16 = 615;
-const IDC_PASSWORD: u16 = 616;
-const IDC_BOTNAME: u16 = 617;
-const IDC_CHANNEL: u16 = 618;
-const IDC_CHANPASS: u16 = 619;
-const IDC_GENDER: u16 = 620;
-const IDC_SERVICE: u16 = 621;
-const IDC_LICNAME: u16 = 622;
-const IDC_LICKEY: u16 = 623;
-const IDC_COOKIES: u16 = 624;
-const IDC_COOKIES_BROWSE: u16 = 625;
-const IDC_LANGUAGE: u16 = 626;
-const IDC_ADMIN_MODE: u16 = 627;
-const IDC_ADMIN_USERS: u16 = 628;
-const IDC_SP_ENABLED: u16 = 629;
-const IDC_YT_ENABLED: u16 = 630;
-const IDC_SERVICE_LABEL: u16 = 631;
-
-const IDD_CFG_AUDIO: u16 = 640;
-const IDC_QUALITY: u16 = 641;
-const IDC_NORMALIZE: u16 = 642;
-const IDC_VOLUME: u16 = 643;
-const IDC_MAX_VOLUME: u16 = 644;
-const IDC_JITTER: u16 = 645;
-const IDC_RAMP: u16 = 646;
-
-const IDD_CFG_RADIO: u16 = 660;
-const IDC_RADIO_ENABLED: u16 = 661;
-const IDC_RADIO_BATCH: u16 = 662;
-const IDC_RADIO_DELAY: u16 = 663;
-const IDC_SEARCH_LIMIT: u16 = 664;
-
-const IDD_NAME: u16 = 500;
-const IDC_NAME_EDIT: u16 = 501;
-const IDOK: u16 = 1;
-const IDCANCEL: u16 = 2;
+use super::resource_ids::*;
 
 const GENDERS: [&str; 3] = ["neutral", "male", "female"];
 const SERVICES: [&str; 2] = ["Spotify", "YouTube"];

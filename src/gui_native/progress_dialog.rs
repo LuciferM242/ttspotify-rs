@@ -15,9 +15,8 @@ use std::rc::Rc;
 use winsafe::prelude::*;
 use winsafe::gui;
 
-const IDD_PROGRESS: u16 = 200;
-const IDC_PROG_LOG: u16 = 201;
-const IDC_PROG_CLOSE: u16 = 202;
+use super::resource_ids::*;
+
 const TIMER_DRAIN: usize = 1;
 const TIMER_DRAIN_MS: u32 = 150;
 

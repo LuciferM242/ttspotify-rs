@@ -21,13 +21,11 @@ use crate::gui_native::manager::{BotManager, BotStatus};
 use crate::gui_native::facts::FactsCache;
 use crate::gui_native::menu::{BotAction, MenuAction, MenuBuilder, MenuEntry, MenuFacts};
 use crate::gui_native::tooltip::build_tooltip;
+use super::resource_ids::IDI_TRAY;
 
 /// Our icon's id within this window. Any constant works; it only has to be
 /// stable between the add, the updates and the delete.
 const TRAY_ICON_ID: u32 = 1;
-
-/// Icon resource id, matching `IDI_TRAY` in `assets/tray.rc`.
-const IDI_TRAY: u16 = 1;
 
 /// Private message the shell sends us about the icon.
 const WM_TRAY_CALLBACK: u32 = 0x8000 + 1; // WM_APP + 1

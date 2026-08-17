@@ -5,6 +5,12 @@
 //! from Windows rather than being reimplemented, and standard controls are what
 //! screen readers are built to read.
 
+/// Dialog and control ids, generated from `assets/tray.rc` by build.rs so
+/// the resource templates and the code can never disagree about a number.
+pub mod resource_ids {
+    include!(concat!(env!("OUT_DIR"), "/resource_ids.rs"));
+}
+
 pub mod autostart;
 pub mod config_dialog;
 pub mod config_form;

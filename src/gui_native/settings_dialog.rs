@@ -8,14 +8,9 @@
 use winsafe::prelude::*;
 use winsafe::{co, gui};
 
+use super::resource_ids::*;
 use crate::gui_native::autostart;
 use crate::settings::{self, AppSettings};
-
-const IDD_SETTINGS: u16 = 100;
-const IDC_CHECK_UPDATES: u16 = 101;
-const IDC_AUTOSTART: u16 = 102;
-const IDOK: u16 = 1;
-const IDCANCEL: u16 = 2;
 
 /// Show the Settings dialog, modal to `parent`. Blocks until it closes.
 pub fn show(parent: &impl GuiParent) {
