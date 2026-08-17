@@ -12,9 +12,12 @@
 
 use librespot_playback::mixer::mappings::{CubicMapping, VolumeMapping};
 
-/// Decibel range the curve spans. librespot's own default, and what its player
-/// uses; changing it would change what every setting sounds like.
-pub const DB_RANGE: f64 = 60.0;
+/// Decibel range the curve spans. librespot defaults to 60, which is tuned
+/// for personal listening and left the middle of the dial well below other
+/// sound on a TeamTalk server. 30 keeps the perceptual shape but lifts the
+/// middle (50 plays at amplitude ~0.29, 70 at ~0.50); 0 is still silence and
+/// 100 is still untouched full scale.
+pub const DB_RANGE: f64 = 30.0;
 
 /// Amplitude for a 0-100 setting, along the perceived-loudness curve.
 pub fn amplitude_for_percent(percent: u8) -> f32 {
@@ -115,7 +118,7 @@ mod tests {
         // The whole point of the change: half the dial is not half the
         // amplitude, because half the amplitude is nowhere near half as loud.
         let half = amplitude_for_percent(50);
-        assert!((half - 0.166_375).abs() < 1e-5, "got {half}");
+        assert!((half - 0.285_038).abs() < 1e-5, "got {half}");
         assert!(half < 0.5, "50% must be quieter than the old linear scaling");
     }
 
@@ -155,10 +158,10 @@ mod tests {
     #[test]
     fn a_volume_saved_under_the_old_scaling_keeps_its_loudness() {
         // Someone on 50% before the change was hearing amplitude 0.5. To sound
-        // the same on the curve they need about 77%, and that is what the
-        // migration has to write.
-        assert_eq!(percent_for_amplitude(0.5), 77);
-        let after = amplitude_for_percent(77);
+        // the same on the curve they need 70%, and that is what the migration
+        // has to write.
+        assert_eq!(percent_for_amplitude(0.5), 70);
+        let after = amplitude_for_percent(70);
         assert!((after - 0.5).abs() < 0.005, "got {after}, wanted about 0.5");
     }
 
@@ -179,8 +182,8 @@ mod tests {
         v.set_target(80, 70);
         let mut samples = [1000i16];
         v.apply(&mut samples);
-        // Capped to 70%, which is amplitude 0.389.
-        assert_eq!(samples[0], 389);
+        // Capped to 70%, which is amplitude 0.502.
+        assert_eq!(samples[0], 502);
     }
 
     #[test]
@@ -232,19 +235,19 @@ mod tests {
         // A step change in gain is audible as a click, which is why the ramp
         // exists at all.
         let mut v = VolumeController::new(50, 100, 0.1);
-        v.set_target(100, 100); // 0.166 -> 1.0, further than one step
+        v.set_target(100, 100); // 0.285 -> 1.0, further than one step
         let mut samples = [1000i16];
         v.apply(&mut samples);
-        assert_eq!(samples[0], 266, "one step of 0.1 above the starting 0.166");
+        assert_eq!(samples[0], 385, "one step of 0.1 above the starting 0.285");
     }
 
     #[test]
     fn ramping_down_moves_by_one_step_too() {
         let mut v = VolumeController::new(50, 100, 0.05);
-        v.set_target(0, 100); // target 0.0 from 0.166
+        v.set_target(0, 100); // target 0.0 from 0.285
         let mut samples = [1000i16];
         v.apply(&mut samples);
-        assert_eq!(samples[0], 116, "0.166 - 0.05");
+        assert_eq!(samples[0], 235, "0.285 - 0.05");
     }
 
     #[test]
@@ -266,6 +269,6 @@ mod tests {
         v.apply(&mut []);
         let mut samples = [1000i16];
         v.apply(&mut samples);
-        assert_eq!(samples[0], 366, "two steps above the starting 0.166");
+        assert_eq!(samples[0], 485, "two steps above the starting 0.285");
     }
 }

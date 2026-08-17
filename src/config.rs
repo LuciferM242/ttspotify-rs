@@ -692,8 +692,8 @@ mod tests {
             };
             cfg.migrate_volume_curve();
 
-            assert_eq!(cfg.volume, 77);
-            assert_eq!(cfg.max_volume, 92);
+            assert_eq!(cfg.volume, 70);
+            assert_eq!(cfg.max_volume, 90);
             assert!(cfg.volume_curve_migrated);
 
             // What matters is the loudness, not the number.
