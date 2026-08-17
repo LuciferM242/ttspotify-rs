@@ -274,8 +274,7 @@ pub async fn run_bot(
     initial_state.repeat = crate::bot::state::RepeatMode::from_flags(config.repeat_track, config.repeat_queue);
     initial_state.shuffle = config.shuffle;
     initial_state.active_service = config.default_service;
-    initial_state.spotify_enabled = config.enabled_services.spotify;
-    initial_state.youtube_enabled = config.enabled_services.youtube;
+    initial_state.enabled_services = config.enabled_services;
     let state: SharedState = Arc::new(parking_lot::Mutex::new(initial_state));
     let volume = Arc::new(AtomicU8::new(config.volume.min(config.max_volume)));
 
@@ -2233,11 +2232,7 @@ async fn command_processor(
                 // The dispatcher already refuses the switch with a reply; this
                 // is the backstop that keeps a disabled service unreachable no
                 // matter what path produced the command.
-                let enabled = match service {
-                    crate::services::Service::Spotify => s.spotify_enabled,
-                    crate::services::Service::YouTube => s.youtube_enabled,
-                };
-                if enabled {
+                if s.enabled_services.allows(service) {
                     s.active_service = service;
                     tracing::info!("Active service switched to {}", service.name());
                 } else {

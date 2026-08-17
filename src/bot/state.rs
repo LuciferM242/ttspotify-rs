@@ -91,8 +91,7 @@ pub struct PlayerState {
     /// `/sp` and `/yt` refuse to switch to a disabled one, and config
     /// validation guarantees `active_service` starts on an enabled one — so a
     /// disabled service is unreachable for the whole run.
-    pub spotify_enabled: bool,
-    pub youtube_enabled: bool,
+    pub enabled_services: crate::config::EnabledServices,
 
     /// Bumped on stop/clear and each new bulk load; a background bulk loader
     /// captures the value at spawn and dies when it no longer matches.
@@ -189,8 +188,7 @@ impl PlayerState {
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
-            spotify_enabled: true,
-            youtube_enabled: true,
+            enabled_services: crate::config::EnabledServices::default(),
             bulk_load_generation: 0,
             auto_advance_pending: false,
         }
