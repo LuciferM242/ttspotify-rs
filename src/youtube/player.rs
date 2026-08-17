@@ -303,14 +303,25 @@ async fn begin_download(
         // account of why - a 403, a missing format, a bot check.
         let complaint = stderr_handle.join().unwrap_or_default();
         let _ = watcher_handle.join();
-        let reason = complaint
-            .lines()
-            .find(|l| l.to_lowercase().contains("error"))
-            .unwrap_or_else(|| complaint.lines().last().unwrap_or("no output"));
-        return Err(reason.chars().take(300).collect());
+        let reason = ytdlp_complaint(&complaint);
+        return Err(if reason.is_empty() { "no output".to_string() } else { reason });
     }
 
     Ok(Started { stdout, first_chunk, stderr_handle, watcher_handle })
+}
+
+/// yt-dlp's account of a failure: the first stderr line mentioning an error,
+/// else the last line, capped so a page of output cannot flood a chat reply.
+/// Empty stderr gives an empty string — callers decide what silence means.
+fn ytdlp_complaint(stderr: &str) -> String {
+    stderr
+        .lines()
+        .find(|l| l.to_lowercase().contains("error"))
+        .or_else(|| stderr.lines().last())
+        .unwrap_or("")
+        .chars()
+        .take(300)
+        .collect()
 }
 
 /// Run yt-dlp, download the whole compressed m4a into memory, then decode +
@@ -426,18 +437,12 @@ async fn play_track(
         // A decode error is usually yt-dlp's error wearing a disguise: it
         // failed, we got a truncated stream, and symphonia complained about
         // that instead. Report what yt-dlp said.
-        let yt_err = stderr_text
-            .lines()
-            .find(|l| l.to_lowercase().contains("error"))
-            .unwrap_or_else(|| stderr_text.lines().last().unwrap_or(""));
+        let yt_err = ytdlp_complaint(&stderr_text);
         let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
         if yt_err.is_empty() {
             return Err(e);
         }
-        return Err(format!(
-            "{e} (yt-dlp exit={exit_code}, stderr: {})",
-            yt_err.chars().take(300).collect::<String>()
-        ));
+        return Err(format!("{e} (yt-dlp exit={exit_code}, stderr: {yt_err})"));
     }
     // Decode reached a clean end-of-stream, but if yt-dlp itself failed and
     // the user never stopped the track, that "end" is a truncation that
@@ -446,13 +451,10 @@ async fn play_track(
     if !was_stopped {
         if let Some(status) = exit_status {
             if !status.success() {
-                let yt_err = stderr_text
-                    .lines()
-                    .find(|l| l.to_lowercase().contains("error"))
-                    .unwrap_or_else(|| stderr_text.lines().last().unwrap_or("no output"));
+                let yt_err = ytdlp_complaint(&stderr_text);
+                let yt_err = if yt_err.is_empty() { "no output".to_string() } else { yt_err };
                 return Err(format!(
-                    "yt-dlp exited with {status} mid-download; track truncated (stderr: {})",
-                    yt_err.chars().take(300).collect::<String>()
+                    "yt-dlp exited with {status} mid-download; track truncated (stderr: {yt_err})"
                 ));
             }
         }
