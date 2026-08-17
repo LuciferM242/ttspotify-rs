@@ -50,6 +50,18 @@ fn ask_int(prompt: &str, default: i32) -> Option<i32> {
     }
 }
 
+/// Unwrap a wizard prompt, or cancel the whole wizard: `ask`/`ask_int` return
+/// `None` on EOF or interrupt, and every question treats that as "user backed
+/// out" — `Ok(None)` from `run_wizard`.
+macro_rules! or_cancel {
+    ($e:expr) => {
+        match $e {
+            Some(v) => v,
+            None => return Ok(None),
+        }
+    };
+}
+
 #[allow(clippy::field_reassign_with_default)] // building config field-by-field from wizard input reads clearer
 /// Run the interactive setup wizard.
 ///
@@ -80,10 +92,7 @@ pub fn run_wizard(
         }
     } else {
         loop {
-            let typed = match ask("Config name (used for file name and service name)", "config", true) {
-                Some(n) => n,
-                None => return Ok(None),
-            };
+            let typed = or_cancel!(ask("Config name (used for file name and service name)", "config", true));
             match crate::config::sanitise_config_name(&typed) {
                 Some(n) => break n,
                 None => println!("    Please use letters or numbers in the name."),
@@ -113,44 +122,20 @@ pub fn run_wizard(
     }
 
     println!("TeamTalk Server Settings");
-    let host = match ask("Server address", "", true) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let tcp_port = match ask_int("TCP port", 10333) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let udp_port = match ask_int("UDP port", tcp_port) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
+    let host = or_cancel!(ask("Server address", "", true));
+    let tcp_port = or_cancel!(ask_int("TCP port", 10333));
+    let udp_port = or_cancel!(ask_int("UDP port", tcp_port));
 
     println!();
     println!("Bot Credentials");
-    let username = match ask("Bot username", "", true) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let password = match ask("Bot password", "", false) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
+    let username = or_cancel!(ask("Bot username", "", true));
+    let password = or_cancel!(ask("Bot password", "", false));
 
     println!();
     println!("Bot Settings");
-    let bot_name = match ask("Bot nickname", "Spotify", true) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let channel = match ask("Channel to join (path or leave blank for root)", "/", false) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let channel_password = match ask("Channel password (if any)", "", false) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
+    let bot_name = or_cancel!(ask("Bot nickname", "Spotify", true));
+    let channel = or_cancel!(ask("Channel to join (path or leave blank for root)", "/", false));
+    let channel_password = or_cancel!(ask("Channel password (if any)", "", false));
 
     println!();
     println!("Admin Permissions");
@@ -159,25 +144,19 @@ pub fn run_wizard(
     println!("  2. TeamTalk server admins - admins from the server's user accounts");
     println!("  3. Username list - only the usernames you enter next");
     println!("  4. Both - TeamTalk server admins or the username list");
-    let admin_mode = match ask("Which admin mode should this bot use? (1-4)", "4", false) {
-        Some(s) => match s.trim() {
-            "1" => crate::config::AdminMode::Everyone,
-            "2" => crate::config::AdminMode::TtRights,
-            "3" => crate::config::AdminMode::List,
-            // Anything else lands on the restrictive choice, same as the GUI:
-            // a misread must not hand out access.
-            _ => crate::config::AdminMode::Both,
-        },
-        None => return Ok(None),
+    let admin_mode = match or_cancel!(ask("Which admin mode should this bot use? (1-4)", "4", false)).trim() {
+        "1" => crate::config::AdminMode::Everyone,
+        "2" => crate::config::AdminMode::TtRights,
+        "3" => crate::config::AdminMode::List,
+        // Anything else lands on the restrictive choice, same as the GUI:
+        // a misread must not hand out access.
+        _ => crate::config::AdminMode::Both,
     };
     let admins = if matches!(
         admin_mode,
         crate::config::AdminMode::List | crate::config::AdminMode::Both
     ) {
-        match ask("Admin usernames (comma separated)", "", false) {
-            Some(s) => crate::bot::auth::parse_admin_list(&s),
-            None => return Ok(None),
-        }
+        crate::bot::auth::parse_admin_list(&or_cancel!(ask("Admin usernames (comma separated)", "", false)))
     } else {
         Vec::new()
     };
@@ -185,28 +164,21 @@ pub fn run_wizard(
     println!();
     println!("Language");
     let lang_codes = crate::i18n::installed_language_codes(&config_dir());
-    let default_language = match ask(
-        &format!("Default language [{}]", lang_codes.join("/")),
-        "en",
-        false,
-    ) {
-        Some(s) => {
-            let code = s.trim().to_lowercase();
-            if code.is_empty() { "en".to_string() } else { code }
-        }
-        None => return Ok(None),
+    let default_language = {
+        let code = or_cancel!(ask(
+            &format!("Default language [{}]", lang_codes.join("/")),
+            "en",
+            false,
+        ))
+        .trim()
+        .to_lowercase();
+        if code.is_empty() { "en".to_string() } else { code }
     };
 
     println!();
     println!("License (optional)");
-    let license_name = match ask("License name", "", false) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-    let license_key = match ask("License key", "", false) {
-        Some(v) => v,
-        None => return Ok(None),
-    };
+    let license_name = or_cancel!(ask("License name", "", false));
+    let license_key = or_cancel!(ask("License key", "", false));
 
     println!();
     println!("Services");
@@ -215,49 +187,43 @@ pub fn run_wizard(
     println!("  1. Both Spotify and YouTube");
     println!("  2. Spotify only");
     println!("  3. YouTube only");
-    let enabled_services = match ask("Which services should this bot offer? (1-3)", "1", false) {
-        Some(v) => match v.trim() {
-            "2" => crate::config::EnabledServices { spotify: true, youtube: false },
-            "3" => crate::config::EnabledServices { spotify: false, youtube: true },
-            _ => crate::config::EnabledServices::default(),
-        },
-        None => return Ok(None),
+    let enabled_services = match or_cancel!(ask("Which services should this bot offer? (1-3)", "1", false)).trim() {
+        "2" => crate::config::EnabledServices { spotify: true, youtube: false },
+        "3" => crate::config::EnabledServices { spotify: false, youtube: true },
+        _ => crate::config::EnabledServices::default(),
     };
     // With one service the default is that service — nothing to ask.
     let default_service = match enabled_services.only() {
         Some(only) => only,
-        None => match ask("Which service should bare commands target? (spotify/youtube)", "spotify", true) {
-            Some(v) => Service::parse_or_default(&v),
-            None => return Ok(None),
-        },
+        None => Service::parse_or_default(&or_cancel!(ask(
+            "Which service should bare commands target? (spotify/youtube)",
+            "spotify",
+            true
+        ))),
     };
 
     // Cookies only matter for YouTube; a Spotify-only bot skips the question.
     let cookies_file = if !enabled_services.youtube {
         String::new()
     } else {
-    println!();
-    println!("YouTube Cookies (optional)");
-    println!("  Cookies help with rate-limited or age-restricted videos.");
-    println!("  Playback works without them in most cases.");
-    let want_cookies = ask("Configure a cookies file path? (y/N)", "n", false);
-    if matches!(
-        want_cookies.as_deref(),
-        Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
-    ) {
-        let default = setup::default_cookies_path().to_string_lossy().into_owned();
-        match ask("Cookies file path", &default, false) {
-            Some(p) => {
-                if !p.is_empty() && !std::path::Path::new(&p).is_file() {
-                    println!("  Warning: {p} doesn't exist yet. Saving anyway — drop the file there later.");
-                }
-                p
+        println!();
+        println!("YouTube Cookies (optional)");
+        println!("  Cookies help with rate-limited or age-restricted videos.");
+        println!("  Playback works without them in most cases.");
+        let want_cookies = ask("Configure a cookies file path? (y/N)", "n", false);
+        if matches!(
+            want_cookies.as_deref(),
+            Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
+        ) {
+            let default = setup::default_cookies_path().to_string_lossy().into_owned();
+            let p = or_cancel!(ask("Cookies file path", &default, false));
+            if !p.is_empty() && !std::path::Path::new(&p).is_file() {
+                println!("  Warning: {p} doesn't exist yet. Saving anyway — drop the file there later.");
             }
-            None => return Ok(None),
+            p
+        } else {
+            String::new()
         }
-    } else {
-        String::new()
-    }
     };
 
     // Build config from defaults + user input
