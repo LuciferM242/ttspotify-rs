@@ -19,7 +19,7 @@ use tt_spotify_bot::error::BotError;
 /// `TEAMTALK_SDK_VERSION` at runtime to choose which SDK to download; we set it
 /// (unless already set in the environment) so builds use a known-good version
 /// and never silently auto-update to a newer SDK. Bump this to move versions.
-const PINNED_TEAMTALK_SDK_VERSION: &str = "v5.19a";
+const PINNED_TEAMTALK_SDK_VERSION: &str = "v5.22a";
 
 /// Pin the TeamTalk SDK version unless the user explicitly overrode it, and
 /// pin the SDK directory to the config dir (migrating any old CWD/home copy).
