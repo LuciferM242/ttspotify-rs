@@ -325,8 +325,11 @@ pub async fn install(
     );
     let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
     download_verified(&client, &plugin_url, &zip_path, bgutil_digests.get(zip_asset).map(|s| s.as_str()), false).await?;
-    extract_plugin_zip(&zip_path, &paths.plugin_dir)?;
+    // The zip goes whether extraction worked or not — a failed extract used
+    // to strand bgutil-plugin.zip in lib/ permanently.
+    let extracted = extract_plugin_zip(&zip_path, &paths.plugin_dir);
     let _ = fs::remove_file(&zip_path);
+    extracted?;
     progress("  Plugin extracted.");
 
     // 4. JavaScript runtime. Since yt-dlp 2025.11.12 YouTube's player
@@ -654,8 +657,11 @@ pub async fn install_bgutil_version(
     download_verified(&client, &plugin_url, &zip_path, digests.get(zip_asset).map(|s| s.as_str()), false).await?;
     // Wipe the old plugin dir to avoid stale files lingering after a version bump.
     let _ = fs::remove_dir_all(&paths.plugin_dir);
-    extract_plugin_zip(&zip_path, &paths.plugin_dir)?;
+    // The zip goes whether extraction worked or not — a failed extract used
+    // to strand bgutil-plugin.zip in lib/ permanently.
+    let extracted = extract_plugin_zip(&zip_path, &paths.plugin_dir);
     let _ = fs::remove_file(&zip_path);
+    extracted?;
 
     let _ = fs::write(paths.lib_dir.join(BGUTIL_VERSION_FILE), version);
     progress(&format!("bgutil-pot updated to {version}."));
