@@ -350,13 +350,10 @@ impl YouTubeMetadata {
             cmd.arg(&self.cookies_file);
         }
 
-        // The tray is a GUI process with no console, so a child console app
-        // flashes a command window on each spawn.
-        //
-        // This covers yt-dlp itself and no further. A console is inherited, and
-        // this flag denies yt-dlp one, so anything yt-dlp starts is given a
-        // fresh console by Windows - which is why deno opens a black window
-        // titled with its own path while a track is playing.
+        // Covers yt-dlp itself and no further: the flag denies yt-dlp a
+        // console, so anything yt-dlp starts is given a fresh one by Windows —
+        // which is why deno opens a black window titled with its own path
+        // while a track is playing.
         //
         // Not fixable from here. yt-dlp offers no say over how it spawns a
         // runtime, and deno has no flag for it; the runtimes yt-dlp supports
@@ -369,12 +366,7 @@ impl YouTubeMetadata {
         //
         // The only remaining lever is giving this process a console of its own
         // and hiding it, so the whole tree inherits it.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        crate::proc::hide_console_window(&mut cmd);
 
         cmd.arg("--").arg(&url)
             .stdout(Stdio::piped())

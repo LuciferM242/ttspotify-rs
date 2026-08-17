@@ -654,15 +654,11 @@ fn open_logs(hwnd: &w::HWND, name: &str) {
 fn open_path(path: &std::path::Path) {
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     // `start` via cmd keeps the shell "open" verb, so an unassociated file
-    // offers the "Open with" picker instead of failing. CREATE_NO_WINDOW hides
-    // the console that would otherwise flash.
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    if let Err(e) = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &abs.display().to_string()])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-    {
+    // offers the "Open with" picker instead of failing.
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args(["/c", "start", "", &abs.display().to_string()]);
+    crate::proc::hide_console_window(&mut cmd);
+    if let Err(e) = cmd.spawn() {
         tracing::error!("Could not open {}: {e}", abs.display());
     }
 }

@@ -29,17 +29,12 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
     // --version (not parsing --update's prose) keeps this robust across yt-dlp
     // release-message changes.
     let before = setup::installed_tool_versions().yt_dlp;
-    // Suppress the console-window flash: this GUI process has no console, so a
-    // bare yt-dlp spawn pops a command window (same reason as spawn_ytdlp).
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut update_cmd = std::process::Command::new(&paths.yt_dlp);
     // The socket timeout bounds a dead network: this runs under the modal
     // progress dialog, and yt-dlp waiting on a half-open socket held the
     // whole tray hostage with no way to cancel.
-    update_cmd
-        .args(["--update", "--socket-timeout", "30"])
-        .creation_flags(CREATE_NO_WINDOW);
+    update_cmd.args(["--update", "--socket-timeout", "30"]);
+    crate::proc::hide_console_window(&mut update_cmd);
     match update_cmd.status() {
         Ok(s) if s.success() => {
             let after = setup::installed_tool_versions().yt_dlp;

@@ -214,11 +214,7 @@ pub fn installed_tool_versions() -> ToolVersions {
     let yt_dlp = yt_dlp_exe.and_then(|exe| {
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("--version");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
+        crate::proc::hide_console_window(&mut cmd);
         let out = cmd.output().ok()?;
         if out.status.success() {
             Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -407,15 +403,7 @@ fn deno_is_supported(version: (u32, u32, u32)) -> bool {
 fn deno_version_of(exe: &Path) -> Option<(u32, u32, u32)> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--version");
-    // Without this the tray, which has no console of its own, makes Windows
-    // give deno a new one: a black window titled with deno's path, at startup
-    // and again whenever a bundled deno is looked up. The other probes in this
-    // file already do it.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    crate::proc::hide_console_window(&mut cmd);
     let out = cmd.output().ok()?;
     parse_deno_version(&String::from_utf8_lossy(&out.stdout))
 }
@@ -569,11 +557,7 @@ pub fn probed_bgutil_version(paths: &YoutubeSetupPaths) -> Option<String> {
     }
     let mut cmd = std::process::Command::new(&paths.bgutil_pot);
     cmd.arg("--version");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+    crate::proc::hide_console_window(&mut cmd);
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
