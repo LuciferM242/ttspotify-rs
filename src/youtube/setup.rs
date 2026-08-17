@@ -17,6 +17,36 @@ use crate::error::BotError;
 
 const BGUTIL_VERSION: &str = "v0.8.1";
 
+/// The GitHub repo bgutil-pot and its yt-dlp plugin are released from.
+const BGUTIL_REPO: &str = "jim60105/bgutil-ytdlp-pot-provider-rs";
+
+/// This platform's yt-dlp release asset.
+fn yt_dlp_asset_name() -> &'static str {
+    if cfg!(windows) {
+        "yt-dlp.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "yt-dlp_linux_aarch64"
+    } else {
+        "yt-dlp_linux"
+    }
+}
+
+/// This platform's bgutil-pot release asset.
+fn bgutil_asset_name() -> &'static str {
+    if cfg!(windows) {
+        "bgutil-pot-windows-x86_64.exe"
+    } else if cfg!(target_arch = "aarch64") {
+        "bgutil-pot-linux-aarch64"
+    } else {
+        "bgutil-pot-linux-x86_64"
+    }
+}
+
+/// Download URL for a bgutil release asset at a version.
+fn bgutil_download_url(version: &str, asset: &str) -> String {
+    format!("https://github.com/{BGUTIL_REPO}/releases/download/{version}/{asset}")
+}
+
 /// Filename for the sidecar that records which bgutil version is on disk.
 /// Lives next to the bgutil binary in `lib/`.
 const BGUTIL_VERSION_FILE: &str = ".bgutil-version";
@@ -266,13 +296,7 @@ pub async fn install(
     // SHA2-256SUMS manifest. The `latest` alias redirects to the current tag;
     // fetching the asset and its manifest from the same alias keeps them paired.
     progress("Downloading yt-dlp (latest)...");
-    let yt_dlp_asset = if cfg!(windows) {
-        "yt-dlp.exe"
-    } else if cfg!(target_arch = "aarch64") {
-        "yt-dlp_linux_aarch64"
-    } else {
-        "yt-dlp_linux"
-    };
+    let yt_dlp_asset = yt_dlp_asset_name();
     let yt_dlp_url = format!(
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{yt_dlp_asset}"
     );
@@ -291,24 +315,12 @@ pub async fn install(
     progress("  yt-dlp installed.");
 
     // Fetch bgutil release asset digests once for the binary + zip.
-    let bgutil_digests = fetch_release_asset_digests(
-        &client,
-        "jim60105/bgutil-ytdlp-pot-provider-rs",
-        BGUTIL_VERSION,
-    ).await;
+    let bgutil_digests = fetch_release_asset_digests(&client, BGUTIL_REPO, BGUTIL_VERSION).await;
 
     // 2. bgutil-pot
     progress(&format!("Downloading bgutil-pot {BGUTIL_VERSION}..."));
-    let bgutil_asset = if cfg!(windows) {
-        "bgutil-pot-windows-x86_64.exe"
-    } else if cfg!(target_arch = "aarch64") {
-        "bgutil-pot-linux-aarch64"
-    } else {
-        "bgutil-pot-linux-x86_64"
-    };
-    let bgutil_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/{bgutil_asset}"
-    );
+    let bgutil_asset = bgutil_asset_name();
+    let bgutil_url = bgutil_download_url(BGUTIL_VERSION, bgutil_asset);
     download_verified(&client, &bgutil_url, &paths.bgutil_pot, bgutil_digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
     make_executable(&paths.bgutil_pot)?;
     progress("  bgutil-pot installed.");
@@ -316,9 +328,7 @@ pub async fn install(
     // 3. plugin zip
     progress(&format!("Downloading bgutil yt-dlp plugin {BGUTIL_VERSION}..."));
     let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
-    let plugin_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{BGUTIL_VERSION}/{zip_asset}"
-    );
+    let plugin_url = bgutil_download_url(BGUTIL_VERSION, zip_asset);
     let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
     download_verified(&client, &plugin_url, &zip_path, bgutil_digests.get(zip_asset).map(|s| s.as_str()), false).await?;
     // The zip goes whether extraction worked or not — a failed extract used
@@ -612,31 +622,17 @@ pub async fn install_bgutil_version(
 
     let client = http_client()?;
 
-    let digests = fetch_release_asset_digests(
-        &client,
-        "jim60105/bgutil-ytdlp-pot-provider-rs",
-        version,
-    ).await;
+    let digests = fetch_release_asset_digests(&client, BGUTIL_REPO, version).await;
 
     progress(&format!("Downloading bgutil-pot {version}..."));
-    let bgutil_asset = if cfg!(windows) {
-        "bgutil-pot-windows-x86_64.exe"
-    } else if cfg!(target_arch = "aarch64") {
-        "bgutil-pot-linux-aarch64"
-    } else {
-        "bgutil-pot-linux-x86_64"
-    };
-    let bgutil_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/{bgutil_asset}"
-    );
+    let bgutil_asset = bgutil_asset_name();
+    let bgutil_url = bgutil_download_url(version, bgutil_asset);
     download_verified(&client, &bgutil_url, &paths.bgutil_pot, digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
     make_executable(&paths.bgutil_pot)?;
 
     progress(&format!("Downloading bgutil yt-dlp plugin {version}..."));
     let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
-    let plugin_url = format!(
-        "https://github.com/jim60105/bgutil-ytdlp-pot-provider-rs/releases/download/{version}/{zip_asset}"
-    );
+    let plugin_url = bgutil_download_url(version, zip_asset);
     let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
     download_verified(&client, &plugin_url, &zip_path, digests.get(zip_asset).map(|s| s.as_str()), false).await?;
     // Wipe the old plugin dir to avoid stale files lingering after a version bump.
@@ -656,7 +652,7 @@ pub async fn install_bgutil_version(
 pub async fn latest_bgutil_version() -> Result<String, BotError> {
     let client = http_client()?;
     let response = client
-        .get("https://api.github.com/repos/jim60105/bgutil-ytdlp-pot-provider-rs/releases/latest")
+        .get(format!("https://api.github.com/repos/{BGUTIL_REPO}/releases/latest"))
         .send().await
         .map_err(|e| BotError::Config(format!("GitHub API: {e}")))?;
     if !response.status().is_success() {
