@@ -1270,9 +1270,7 @@ async fn command_processor(
     // dispatch; falls back to the server default for internally-generated
     // events like radio auto-advance where user_id is 0-or-unseeded).
     let reply_t = |user_id: i32, key: crate::i18n::Key, args: &[(&str, String)]| {
-        if user_id > 0 {
-            crate::bot::commands::send_reply(&client, user_id, &i18n.tr(user_id, key, args));
-        }
+        crate::bot::commands::send_reply_t(&client, &i18n, user_id, key, args);
     };
 
     let set_status = |text: &str| {

@@ -138,6 +138,22 @@ pub fn send_reply(client: &Client, user_id: i32, text: &str) {
     }
 }
 
+/// Translated reply with the shared delivery rule: internally-generated events
+/// (radio auto-advance, end-of-track) carry user_id 0 — no real recipient —
+/// so those are dropped here rather than re-checked at every call site. The
+/// one place both the dispatcher and the command processor deliver through.
+pub fn send_reply_t(
+    client: &Client,
+    i18n: &crate::i18n::I18n,
+    user_id: i32,
+    key: Key,
+    args: &[(&str, String)],
+) {
+    if user_id > 0 {
+        send_reply(client, user_id, &i18n.tr(user_id, key, args));
+    }
+}
+
 /// Result of the first-pass classification of an incoming message, before any
 /// command-specific handling. Pure and unit-tested (see tests below).
 #[derive(Debug, PartialEq)]
@@ -327,7 +343,7 @@ impl CommandDispatcher {
     /// language (seeded at dispatch). Help and the language-control surface
     /// keep using plain `reply` (always English) per the i18n design.
     fn reply_t(&self, client: &Client, user_id: i32, key: Key, args: &[(&str, String)]) {
-        self.reply(client, user_id, &self.i18n.tr(user_id, key, args));
+        send_reply_t(client, &self.i18n, user_id, key, args);
     }
 
     /// Whether the caller may use admin-gated commands. Resolves the sender's
