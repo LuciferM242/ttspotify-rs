@@ -32,23 +32,6 @@ pub fn amplitude_for_percent(percent: u8) -> f32 {
     }
 }
 
-/// The setting that produces `amplitude`, i.e. the inverse of
-/// [`amplitude_for_percent`]. Used once per config to carry a volume saved
-/// under the old linear scaling onto the curve without changing how loud it is.
-pub fn percent_for_amplitude(amplitude: f32) -> u8 {
-    let mapped = (amplitude as f64).clamp(0.0, 1.0);
-    // Mirrors the guards in `amplitude_for_percent`, so the two round-trip at
-    // the ends instead of the inverse curve pulling 0 up off silence.
-    if mapped <= 0.0 {
-        return 0;
-    }
-    if mapped >= 1.0 {
-        return 100;
-    }
-    let linear = CubicMapping::mapped_to_linear(mapped, DB_RANGE);
-    (linear * 100.0).round().clamp(0.0, 100.0) as u8
-}
-
 /// Volume controller with smooth ramping between volume levels.
 pub struct VolumeController {
     target_scale: f32,
@@ -140,38 +123,6 @@ mod tests {
     #[test]
     fn a_setting_above_the_scale_is_treated_as_full() {
         assert_eq!(amplitude_for_percent(200), 1.0);
-    }
-
-    // -- the inverse, used once to carry old settings across --
-
-    #[test]
-    fn the_inverse_returns_the_setting_it_came_from() {
-        for percent in 0..=100u8 {
-            let round_tripped = percent_for_amplitude(amplitude_for_percent(percent));
-            assert!(
-                round_tripped.abs_diff(percent) <= 1,
-                "{percent}% came back as {round_tripped}%"
-            );
-        }
-    }
-
-    #[test]
-    fn a_volume_saved_under_the_old_scaling_keeps_its_loudness() {
-        // Someone on 50% before the change was hearing amplitude 0.5. To sound
-        // the same on the curve they need 70%, and that is what the migration
-        // has to write.
-        assert_eq!(percent_for_amplitude(0.5), 70);
-        let after = amplitude_for_percent(70);
-        assert!((after - 0.5).abs() < 0.005, "got {after}, wanted about 0.5");
-    }
-
-    #[test]
-    fn the_ends_survive_the_inverse_too() {
-        assert_eq!(percent_for_amplitude(0.0), 0);
-        assert_eq!(percent_for_amplitude(1.0), 100);
-        // Out of range rather than panicking.
-        assert_eq!(percent_for_amplitude(-1.0), 0);
-        assert_eq!(percent_for_amplitude(2.0), 100);
     }
 
     // -- the controller --
