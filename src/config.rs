@@ -209,6 +209,26 @@ fn default_norm_threshold() -> f64 { -2.0 }
 fn default_norm_knee() -> f64 { 5.0 }
 fn default_language_en() -> String { "en".to_string() }
 
+/// Strip a trailing `.json` and any path separators from a name typed for a new
+/// config, so it can only ever name a file inside the configs folder. Used by
+/// both the GUI's name prompt and the CLI wizard (including `--setup <name>`).
+pub fn sanitise_config_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .trim()
+        .trim_end_matches(".json")
+        .chars()
+        // A name is a file name, not a path: anything that could climb out of
+        // the configs folder is dropped rather than escaped.
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 /// Which services a bot may use, stored in the config as a list:
 /// `"enabledServices": ["spotify", "youtube"]`. A missing key means both, so
 /// configs from before the setting exist keep working. Entries are matched
@@ -849,6 +869,28 @@ mod tests {
         cfg.validate();
         assert_eq!(cfg.tcp_port, 10333);
         assert_eq!(cfg.udp_port, 10333);
+    }
+
+    #[test]
+    fn a_config_name_cannot_escape_the_configs_folder() {
+        // The name is typed by hand and turned straight into a file path.
+        assert_eq!(sanitise_config_name("../../evil"), Some("evil".to_string()));
+        assert_eq!(sanitise_config_name(r"C:\windows\system32"), Some("Cwindowssystem32".to_string()));
+        assert_eq!(sanitise_config_name("my/server"), Some("myserver".to_string()));
+    }
+
+    #[test]
+    fn a_config_name_loses_a_typed_json_suffix() {
+        assert_eq!(sanitise_config_name("myserver.json"), Some("myserver".to_string()));
+        assert_eq!(sanitise_config_name(" myserver "), Some("myserver".to_string()));
+    }
+
+    #[test]
+    fn a_name_that_is_only_punctuation_is_rejected() {
+        assert_eq!(sanitise_config_name("   "), None);
+        assert_eq!(sanitise_config_name("..."), None);
+        assert_eq!(sanitise_config_name("/"), None);
+        assert_eq!(sanitise_config_name(".json"), None);
     }
 
     #[test]

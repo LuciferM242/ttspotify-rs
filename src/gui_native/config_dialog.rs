@@ -19,7 +19,7 @@ use winsafe::{self as w, co, gui};
 
 use crate::config::BotConfig;
 use crate::gui_native::config_form::{
-    mode_uses_username_list, sanitise_config_name, ConfigForm, ADMIN_MODE_LABELS,
+    mode_uses_username_list, ConfigForm, ADMIN_MODE_LABELS,
 };
 
 const IDD_CONFIG: u16 = 600;
@@ -508,7 +508,7 @@ fn ask_for_name(parent: &(impl GuiParent + 'static)) -> Option<String> {
         let result = result.clone();
         dlg.on().wm_command_acc_menu(IDOK, move || {
             let typed = edit.text().unwrap_or_default();
-            match sanitise_config_name(&typed) {
+            match crate::config::sanitise_config_name(&typed) {
                 Some(name) => {
                     *result.borrow_mut() = Some(name);
                     let _ = dlg2.hwnd().EndDialog(IDOK as isize);

@@ -67,12 +67,27 @@ pub fn run_wizard(
     println!("TTSpotify Configuration Setup");
     println!();
 
+    // The name becomes a file path, so it goes through the same sanitiser the
+    // GUI's name prompt uses — path separators dropped, `.json` stripped —
+    // whether it was typed here or passed as `--setup <name>`.
     let name = if let Some(n) = config_name {
-        n.to_string()
+        match crate::config::sanitise_config_name(n) {
+            Some(n) => n,
+            None => {
+                println!("Invalid config name: {n}");
+                return Ok(None);
+            }
+        }
     } else {
-        match ask("Config name (used for file name and service name)", "config", true) {
-            Some(n) => n.replace(".json", ""),
-            None => return Ok(None),
+        loop {
+            let typed = match ask("Config name (used for file name and service name)", "config", true) {
+                Some(n) => n,
+                None => return Ok(None),
+            };
+            match crate::config::sanitise_config_name(&typed) {
+                Some(n) => break n,
+                None => println!("    Please use letters or numbers in the name."),
+            }
         }
     };
 
