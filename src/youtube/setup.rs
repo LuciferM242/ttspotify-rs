@@ -681,19 +681,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Shared HTTP client for all tool downloads. The stall timeouts matter more
-/// than they look: these requests run under the tray's modal progress dialog,
-/// which cannot be closed until the worker finishes — with no read timeout a
-/// half-open socket kept that dialog (and the whole tray) hostage until the
-/// OS TCP keepalive gave up, hours later. `read_timeout` bounds silence, not
-/// total transfer time, so a slow-but-progressing download is unaffected.
+/// Shared HTTP client for all tool downloads — the crate-wide stall-bounded
+/// policy (see `crate::net`), with this module's error type.
 fn http_client() -> Result<reqwest::Client, BotError> {
-    reqwest::Client::builder()
-        .user_agent(concat!("tt-spotify-bot/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .read_timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| BotError::Config(format!("HTTP client: {e}")))
+    crate::net::stall_bounded_client().map_err(|e| BotError::Config(format!("HTTP client: {e}")))
 }
 
 /// Verify `bytes` hash against an expected hex digest (case-insensitive).

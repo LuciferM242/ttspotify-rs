@@ -6,6 +6,7 @@ pub mod error;
 pub mod gui_native;
 pub mod i18n;
 pub mod logging;
+pub mod net;
 pub mod paths;
 pub mod player;
 pub mod proc;

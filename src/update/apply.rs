@@ -97,17 +97,10 @@ pub async fn download_and_apply(
     progress: &(dyn Fn(u64, Option<u64>) + Sync),
     cancel: &AtomicBool,
 ) -> Result<(), UpdateError> {
-    // Stall timeouts, not a total deadline: `.timeout()` capped the WHOLE
-    // download at 300 s, so a slow-but-healthy connection failed the update
-    // partway through a large asset. `read_timeout` bounds silence between
-    // chunks instead — a stalled socket still dies in 30 s, a slow link is
-    // free to take as long as it needs.
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .read_timeout(std::time::Duration::from_secs(30))
-        .user_agent(concat!("ttspotify-rs/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| UpdateError::Http(e.to_string()))?;
+    // Stall-bounded, not a total deadline: a total timeout capped the WHOLE
+    // download and failed slow-but-healthy connections partway through the
+    // asset. The shared policy bounds silence between bytes instead.
+    let client = crate::net::stall_bounded_client().map_err(|e| UpdateError::Http(e.to_string()))?;
 
     // 1. SHA256SUMS + signature (small; no progress).
     let sums = get_bytes(&client, &info.sums_url, None, cancel).await?;
