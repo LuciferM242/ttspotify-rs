@@ -346,18 +346,144 @@ pub fn offer_restart_running_bots() {
     }
 }
 
+/// Raw `systemctl --user list-unit-files 'ttspotify@*'` output, or empty when
+/// systemctl is unavailable.
+fn list_unit_files_output() -> String {
+    Command::new("systemctl")
+        .args([
+            "--user",
+            "list-unit-files",
+            "ttspotify@*",
+            "--plain",
+            "--no-legend",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Every `ttspotify@` instance worth disabling, from three sources: unit files
+/// systemd lists (an enabled instance leaves a symlink in `default.target.wants`
+/// that outlives the template file), units currently running, and one per config
+/// on disk. Deduped, order stable.
+///
+/// The bare template `ttspotify@.service` is not an instance and is dropped —
+/// `disable` on it would be a no-op at best.
+fn known_instances(unit_files: &str, running: &[String], config_names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |unit: String| {
+        if unit != SERVICE_NAME && !out.contains(&unit) {
+            out.push(unit);
+        }
+    };
+
+    for unit in unit_files
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|u| u.starts_with("ttspotify@") && u.ends_with(".service"))
+    {
+        push(unit.to_string());
+    }
+    for unit in running {
+        push(unit.clone());
+    }
+    for name in config_names {
+        push(format!("ttspotify@{}.service", systemd_escape_instance(name)));
+    }
+    out
+}
+
+/// Stop and un-enable every instance before the template file goes away.
+/// Deleting the template alone leaves the enable symlinks behind (systemd then
+/// complains about them at every login) and strands running bots as processes
+/// systemd can no longer stop or restart.
+///
+/// `disable --now` does both in one call, and is a silent no-op on an instance
+/// that was never enabled and isn't running.
+fn stop_and_disable_instances() {
+    let config_names: Vec<String> = list_configs().into_iter().map(|(name, _)| name).collect();
+    let running = running_bot_units();
+    let units = known_instances(&list_unit_files_output(), &running, &config_names);
+
+    for unit in units {
+        let was_running = running.contains(&unit);
+        let link = wants_symlink(&unit);
+        let was_enabled = link_present(&link);
+
+        // `output()` rather than `status()`: systemctl writes a line to stderr
+        // for an instance that was never enabled, which is the common case here
+        // and not something to show the user.
+        let disabled = Command::new("systemctl")
+            .args(["--user", "disable", "--now", &unit])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        // With the template file already deleted — the state an older version
+        // of this command left behind — `disable` clears the dangling symlink
+        // but still exits non-zero ("Unit file ... does not exist"). So the
+        // symlink, not the exit status, says whether anything was cleaned up.
+        // Remove it directly if systemd left it in place.
+        let mut cleaned = was_enabled && !link_present(&link);
+        if link_present(&link) && std::fs::remove_file(&link).is_ok() {
+            cleaned = true;
+        }
+
+        // `disable --now` succeeds on an instance that was neither enabled nor
+        // running, so the report follows the state we saw beforehand rather
+        // than the exit status — otherwise every config on disk gets announced
+        // as stopped when nothing was.
+        match (disabled, was_enabled, was_running, cleaned) {
+            (true, true, true, _) => println!("  {unit} stopped and disabled."),
+            (true, true, false, _) => println!("  {unit} disabled."),
+            (true, false, true, _) => println!("  {unit} stopped."),
+            (_, _, _, true) => println!("  {unit} disabled (left enabled by an earlier uninstall)."),
+            _ => {}
+        }
+    }
+}
+
+/// Where systemd puts the symlink that marks an instance as enabled. Our unit
+/// is `WantedBy=default.target`, so that is the only target to look in.
+fn wants_symlink(unit: &str) -> PathBuf {
+    systemd_dir().join("default.target.wants").join(unit)
+}
+
+/// Whether the enable symlink is there at all — `Path::exists` follows the
+/// link and answers "no" for the exact case that matters here: a symlink left
+/// pointing at a template file an older uninstall already deleted.
+fn link_present(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 pub fn uninstall_service() -> Result<(), BotError> {
+    // Runs even when the template file is already gone: a unit removed by an
+    // older version of this command left its enable symlinks behind, and this
+    // is what clears them.
+    if systemd_booted() {
+        stop_and_disable_instances();
+    }
+
     let service_path = systemd_dir().join(SERVICE_NAME);
     if service_path.exists() {
         std::fs::remove_file(&service_path)?;
-        let _ = Command::new("systemctl")
-            .args(["--user", "daemon-reload"])
-            .status();
         println!("TTSpotify service removed.");
-        println!("Running instances are not affected until stopped.");
     } else {
         println!("No service file found at {}", service_path.display());
     }
+
+    // Runs whether or not the template file was there: the sweep above may
+    // have removed enable symlinks by hand, and systemd keeps serving the old
+    // state until it is told to re-read it.
+    if systemd_booted() {
+        let _ = Command::new("systemctl")
+            .args(["--user", "daemon-reload"])
+            .status();
+    }
+
+    println!("Configs, logs and the binary itself are untouched.");
     Ok(())
 }
 
@@ -473,5 +599,75 @@ mod tests {
     #[test]
     fn empty_output_is_empty() {
         assert!(parse_running_units("").is_empty());
+    }
+
+    #[test]
+    fn known_instances_takes_enabled_units_and_drops_the_template() {
+        // `list-unit-files 'ttspotify@*'` lists the template itself alongside
+        // any enabled instance. The template is not something to disable.
+        let unit_files = "ttspotify@.service     enabled enabled\n\
+                          ttspotify@home.service enabled enabled\n";
+        assert_eq!(
+            super::known_instances(unit_files, &[], &[]),
+            vec!["ttspotify@home.service"]
+        );
+    }
+
+    #[test]
+    fn known_instances_merges_sources_without_duplicates() {
+        // The same bot can show up as an enabled unit file, as a running unit,
+        // and as a config on disk; it must be disabled once.
+        let unit_files = "ttspotify@home.service enabled enabled\n";
+        let running = vec!["ttspotify@home.service".to_string(), "ttspotify@work.service".to_string()];
+        let configs = vec!["home".to_string(), "spare".to_string()];
+        assert_eq!(
+            super::known_instances(unit_files, &running, &configs),
+            vec![
+                "ttspotify@home.service",
+                "ttspotify@work.service",
+                "ttspotify@spare.service",
+            ]
+        );
+    }
+
+    #[test]
+    fn known_instances_escapes_config_names() {
+        // A config named "my server" is addressed as the escaped instance, the
+        // same string `--install-service` enabled it under.
+        assert_eq!(
+            super::known_instances("", &[], &["my server".to_string()]),
+            vec![r"ttspotify@my\x20server.service"]
+        );
+    }
+
+    #[test]
+    fn link_present_sees_a_symlink_whose_target_is_gone() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_service_{}_{}",
+            std::process::id(),
+            "dangling"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("ttspotify@gone.service");
+        let _ = std::fs::remove_file(&link);
+        symlink(dir.join("ttspotify@.service"), &link).unwrap();
+
+        // The reason this helper exists: an enable symlink left behind by an
+        // older uninstall points at a template file that is no longer there,
+        // and `exists()` follows the link and answers "no".
+        assert!(!link.exists());
+        assert!(super::link_present(&link));
+
+        std::fs::remove_file(&link).unwrap();
+        assert!(!super::link_present(&link));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn known_instances_ignores_foreign_units_and_empty_input() {
+        assert!(super::known_instances("", &[], &[]).is_empty());
+        assert!(super::known_instances("other@x.service enabled enabled\n", &[], &[]).is_empty());
     }
 }
