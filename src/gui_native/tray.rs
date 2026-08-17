@@ -149,7 +149,7 @@ pub fn run() {
     // icon it is gone for the rest of the session.
     let taskbar_created = w::RegisterWindowMessage("TaskbarCreated").unwrap_or(0);
 
-    register_events(&wnd, &tray, taskbar_created, has_configs);
+    register_events(&wnd, &tray, taskbar_created);
 
     if let Err(e) = wnd.run_main(Some(co::SW::HIDE)) {
         tracing::error!("Tray message loop ended with an error: {e}");
@@ -158,12 +158,7 @@ pub fn run() {
 
 /// Wire up every window message the tray reacts to. Must happen before the
 /// window is created, which is why it is separate from `run`.
-fn register_events(
-    wnd: &gui::WindowMain,
-    tray: &Rc<Tray>,
-    taskbar_created: u32,
-    has_configs: bool,
-) {
+fn register_events(wnd: &gui::WindowMain, tray: &Rc<Tray>, taskbar_created: u32) {
     // --- Created: show the icon, start the status timer, start the bots ---
     {
         let tray = tray.clone();
@@ -172,11 +167,12 @@ fn register_events(
             add_icon(wnd2.hwnd(), &tray.icon);
             update_tooltip(wnd2.hwnd(), &tray);
             let _ = wnd2.hwnd().SetTimer(TIMER_STATUS, TIMER_STATUS_MS, None);
-            // With an update check in flight, the timer starts the bots once
-            // the user has answered; otherwise there is nothing to wait for.
-            if !has_configs || tray.update_rx.is_none() {
-                start_bots(&wnd2, &tray);
-            }
+            // Bots start immediately; the update check runs alongside them.
+            // Gating startup on the check cost every launch the whole GitHub
+            // round trip (measured 2.5 s cold, 8 s worst case) to cover the
+            // rare day an update exists — and accepting one stops all bots
+            // through the relaunch hook anyway.
+            start_bots(&wnd2, &tray);
             Ok(0)
         });
     }
@@ -698,29 +694,21 @@ fn poll_startup_update(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
         Ok(result) => result,
         // Not yet — keep polling.
         Err(crossbeam_channel::TryRecvError::Empty) => return,
-        // The worker died without sending (a panic in the check). Bot startup
-        // is gated on this poll, so treating this like Empty meant the timer
-        // polled a dead channel every 200 ms forever and no bot ever started,
-        // with no message anywhere.
+        // The worker died without sending (a panic in the check). Nothing
+        // depends on the result — bots started at wm_create — but the flag
+        // stops the timer polling a dead channel every 200 ms forever.
         Err(crossbeam_channel::TryRecvError::Disconnected) => {
-            tracing::warn!("The startup update check ended without reporting; starting bots without it");
+            tracing::warn!("The startup update check ended without reporting");
             tray.update_done.set(true);
-            start_bots(wnd, tray);
             return;
         }
     };
     tray.update_done.set(true);
-    match result {
-        Some(info) => {
-            // Offering the update gates bot startup on the user's answer. The
-            // dialog returns false only when the process is about to relaunch,
-            // in which case starting bots here would be pointless work in a
-            // dying process.
-            if crate::gui_native::update_dialog::show_update_available(wnd, info) {
-                start_bots(wnd, tray);
-            }
-        }
-        None => start_bots(wnd, tray),
+    if let Some(info) = result {
+        // Bots are already running; accepting the update stops them all
+        // through the relaunch hook, declining changes nothing. The return
+        // value only mattered when startup was gated on this dialog.
+        let _ = crate::gui_native::update_dialog::show_update_available(wnd, info);
     }
 }
 
