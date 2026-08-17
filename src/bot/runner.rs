@@ -267,7 +267,12 @@ pub async fn run_bot(
 
     tracing::info!("TeamTalk Spotify Bot starting...");
     tracing::info!("Config loaded from {}", config_path);
-    log_startup_versions();
+    // On a background worker, not inline: the tool probes RUN the tools to ask
+    // their versions, and yt-dlp alone (a PyInstaller binary that unpacks
+    // itself every start) costs ~0.9 s warm and several seconds cold — that
+    // was sitting between launch and the TeamTalk login. The log line arriving
+    // a moment later is fine; delaying the connect for it is not.
+    tokio::task::spawn_blocking(log_startup_versions);
 
     let mut initial_state = PlayerState::new();
     initial_state.radio_enabled = config.radio_enabled;
