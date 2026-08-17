@@ -924,6 +924,20 @@ pub(crate) fn queue_wait_info(
     }
 }
 
+/// Which reply a failed search or resolve deserves.
+///
+/// "Nothing matched" is an ordinary outcome, not a failure — but both providers
+/// report it as `Err(NoResults)` rather than an empty `Ok`, so the single
+/// failure arm dressed it up as one and every fruitless search came back as
+/// "Search failed: No results found". Callers pass the `{error}` slot either
+/// way; the no-results template has no slot to fill, so it is simply ignored.
+fn search_error_key(error: &BotError) -> Key {
+    match error {
+        BotError::NoResults => Key::NoResults,
+        _ => Key::SearchFailed,
+    }
+}
+
 /// All shared context needed by the command processor, bundled to avoid parameter explosion.
 struct CmdContext {
     player: SpotifyPlayer,
@@ -1616,7 +1630,7 @@ async fn command_processor(
                         }
                     }
                     Err(e) => {
-                        reply_t(user_id, Key::SearchFailed, &[
+                        reply_t(user_id, search_error_key(&e), &[
                             ("error", crate::bot::commands::user_error(&e)),
                         ]);
                     }
@@ -2014,7 +2028,7 @@ async fn command_processor(
                         state.lock().insert_search_results(user_id, tracks);
                     }
                     Err(e) => {
-                        reply_t(user_id, Key::SearchFailed, &[
+                        reply_t(user_id, search_error_key(&e), &[
                             ("error", crate::bot::commands::user_error(&e)),
                         ]);
                     }
@@ -2420,6 +2434,43 @@ mod tests {
             radio_skip_reason(radio_on, allow_recommend, at_end, repeat_active),
             expected
         );
+    }
+
+    // -- search_error_key --
+
+    #[test]
+    fn an_empty_search_is_reported_as_no_results_not_as_a_failure() {
+        // Both providers signal "nothing matched" as Err(NoResults) rather
+        // than an empty Ok, so the single failure arm rendered it through the
+        // failure template: "Search failed: No results found".
+        assert_eq!(search_error_key(&BotError::NoResults), Key::NoResults);
+    }
+
+    #[test]
+    fn a_real_search_failure_still_reports_its_error() {
+        for e in [
+            BotError::Playback("YouTube search failed: timeout".into()),
+            BotError::SpotifyAuth("session died".into()),
+            BotError::Config("bad".into()),
+        ] {
+            assert_eq!(search_error_key(&e), Key::SearchFailed, "{e}");
+        }
+    }
+
+    #[test]
+    fn the_no_results_reply_carries_no_error_text() {
+        // Callers pass the {error} slot for both keys; the no-results template
+        // must have no slot to fill, or the reply would leak "No results
+        // found" into its own body.
+        let dir = std::env::temp_dir().join(format!(
+            "ttspotify_noresults_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let i18n = crate::i18n::I18n::load(&dir, "en");
+        let rendered = i18n.tr(0, Key::NoResults, &[("error", "No results found".to_string())]);
+        assert_eq!(rendered, "No results found");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- startup_auth_plan --
