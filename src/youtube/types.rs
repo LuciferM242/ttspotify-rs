@@ -40,14 +40,20 @@ pub enum YouTubeRef {
     Album(String),
 }
 
+/// Whether `s` has the shape of a YouTube video id: exactly 11 characters of
+/// alphanumerics, `-` and `_`.
+fn is_video_id(s: &str) -> bool {
+    s.len() == 11 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 /// Recognize common YouTube / YouTube Music URL forms and bare IDs.
 /// Returns `None` for anything that should be treated as a search query.
 pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
     let input = input.trim();
 
-    // Bare 11-char video ID (alphanum + - _). Tagged BareVideo: could just as
-    // well be an 11-letter search word, so the resolver may fall back.
-    if input.len() == 11 && input.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    // Bare 11-char video ID. Tagged BareVideo: could just as well be an
+    // 11-letter search word, so the resolver may fall back.
+    if is_video_id(input) {
         return Some(YouTubeRef::BareVideo(input.to_string()));
     }
 
@@ -70,7 +76,7 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
 
     // youtu.be/<id> short URLs land here as `<id>` (or `<id>?...`).
     if let Some(id) = path_query.split(['?', '#', '/']).next() {
-        if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if is_video_id(id) {
             // Only treat it as a video if there's no extra path
             // (e.g. avoid matching `playlist?...` whose first split is "playlist").
             if !path_query.starts_with("playlist") && !path_query.starts_with("watch")
@@ -88,7 +94,7 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
     for prefix in ["shorts/", "live/", "embed/", "v/"] {
         if let Some(rest) = path_query.strip_prefix(prefix) {
             let id = rest.split(['?', '#', '/']).next().unwrap_or("");
-            if id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            if is_video_id(id) {
                 return Some(YouTubeRef::Video(id.to_string()));
             }
         }
@@ -112,7 +118,7 @@ pub fn parse_youtube_ref(input: &str) -> Option<YouTubeRef> {
                     return Some(YouTubeRef::Playlist(value.to_string()));
                 }
             } else if let Some(value) = pair.strip_prefix("v=") {
-                if value.len() == 11 {
+                if is_video_id(value) {
                     video_id = Some(value);
                 }
             }
