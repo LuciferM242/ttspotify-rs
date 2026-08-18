@@ -40,12 +40,22 @@ fn known_names(program: &str) -> Vec<String> {
 fn candidate_dirs(path_env: &str, home: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |dir: PathBuf| {
-        if !dir.as_os_str().is_empty() && !dirs.contains(&dir) {
+        // Merged-/usr systems list both /usr/bin and /bin, which are one
+        // directory behind a symlink. Comparing the paths as written reports
+        // one install as two, and then advises deleting the "other copy" —
+        // which is the binary that was just installed.
+        if !dir.as_os_str().is_empty() && !dirs.iter().any(|seen| same_dir(seen, &dir)) {
             dirs.push(dir);
         }
     };
     for entry in path_env.split(':') {
-        push(PathBuf::from(entry));
+        // A relative entry (`.`, or anything not rooted) means a different
+        // directory depending on where the command was run, so it is no place
+        // to install to or delete from.
+        let dir = PathBuf::from(entry);
+        if dir.is_absolute() {
+            push(dir);
+        }
     }
     push(home.join(".local/bin"));
     push(PathBuf::from("/usr/local/bin"));
@@ -68,9 +78,18 @@ fn destination(existing: &[PathBuf], home: &Path) -> PathBuf {
     }
 }
 
+/// Whether two paths name the same thing on disk, following symlinks when they
+/// resolve and falling back to a plain comparison when they do not.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 /// Copies of the bot already installed, in `dirs` order.
 fn find_existing(dirs: &[PathBuf], names: &[String], skip: Option<&Path>) -> Vec<PathBuf> {
-    let mut found = Vec::new();
+    let mut found: Vec<PathBuf> = Vec::new();
     for dir in dirs {
         for name in names {
             let candidate = dir.join(name);
@@ -78,12 +97,9 @@ fn find_existing(dirs: &[PathBuf], names: &[String], skip: Option<&Path>) -> Vec
                 continue;
             }
             // The copy we are running from is the source, not a rival install.
-            let same_as_source = skip
-                .and_then(|s| s.canonicalize().ok())
-                .zip(candidate.canonicalize().ok())
-                .map(|(a, b)| a == b)
-                .unwrap_or(false);
-            if same_as_source || found.contains(&candidate) {
+            let same_as_source = skip.is_some_and(|s| same_dir(s, &candidate));
+            // Two spellings of one file (/usr/bin and /bin) are one install.
+            if same_as_source || found.iter().any(|seen| same_dir(seen, &candidate)) {
                 continue;
             }
             found.push(candidate);
@@ -114,14 +130,28 @@ fn place_binary(src: &Path, dst: &Path) -> Result<(), BotError> {
         dst.file_name().and_then(|n| n.to_str()).unwrap_or(DEFAULT_NAME)
     ));
 
-    match std::fs::copy(src, &tmp) {
-        Ok(_) => {
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-            std::fs::rename(&tmp, dst)?;
-            Ok(())
-        }
+    // Write, chmod, rename as one step so no failure can leave the hidden temp
+    // file behind: the set_permissions and rename used to return through `?`
+    // with the temp still on disk, and a rename can fail on its own (a sticky
+    // destination directory, a read-only remount) even when the copy did not.
+    let placed = std::fs::copy(src, &tmp).and_then(|_| {
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(&tmp, dst)
+    });
+
+    match placed {
+        Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             let _ = std::fs::remove_file(&tmp);
+            // The copy also reports PermissionDenied when the *source* cannot
+            // be read, so name the directory only when it is really the one at
+            // fault.
+            if std::fs::metadata(src).is_err() {
+                return Err(BotError::Config(format!(
+                    "Cannot read {}: {e}",
+                    src.display()
+                )));
+            }
             println!("{} is not writable by you.", dir.display());
             if !prompt_yes_no("Install there with sudo?") {
                 return Err(BotError::Config(format!(
@@ -220,7 +250,16 @@ pub fn install() -> Result<(), BotError> {
 
     let names = known_names(&crate::paths::program_name());
     let dirs = candidate_dirs(&path_env, &home);
-    let existing = find_existing(&dirs, &names, Some(&src));
+    let mut existing = find_existing(&dirs, &names, Some(&src));
+
+    // Running from a directory that installs go to means this copy IS the
+    // install. Without this it looks like nothing is installed at all — the
+    // running copy is skipped as "the source" — and a second copy lands in
+    // ~/.local/bin while the first stays on PATH, which is the one outcome
+    // this command exists to prevent.
+    if src.parent().is_some_and(|parent| dirs.iter().any(|dir| same_dir(dir, parent))) {
+        existing.insert(0, src.clone());
+    }
 
     if !existing.is_empty() {
         println!("Already installed:");
@@ -313,11 +352,30 @@ fn reconcile_unit(dst: &Path) {
 /// named, because they hold configs, cached credentials and logs that no
 /// uninstall should assume are disposable.
 pub fn uninstall(purge: bool) -> Result<(), BotError> {
+    use std::io::IsTerminal;
+
+    // Every question below defaults to no, so without someone to answer them
+    // this would tear down the services and then remove nothing, which is the
+    // worst half of the job done on its own.
+    if !std::io::stdin().is_terminal() {
+        return Err(BotError::Usage(
+            "uninstall asks before each step, so it needs a terminal.".to_string(),
+        ));
+    }
+
     let src = std::env::current_exe().ok();
     let home = home_dir();
 
-    // Stops and disables every instance, removes the unit file.
-    crate::service::remove_service(false)?;
+    // Asked, not assumed: this stops running bots and un-enables them, which
+    // is not something to do to someone who is still deciding.
+    if crate::service::service_installed() {
+        println!("This stops every running bot and removes the systemd service.");
+        if prompt_yes_no("Remove the service and stop the bots?") {
+            crate::service::remove_service(false)?;
+        } else {
+            println!("Service left alone.");
+        }
+    }
 
     let names = known_names(&crate::paths::program_name());
     let dirs = candidate_dirs(&path_env(), &home);
@@ -384,20 +442,37 @@ pub fn uninstall(purge: bool) -> Result<(), BotError> {
 fn data_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![crate::config::config_dir()];
     if let Ok(paths) = crate::youtube::setup::resolve_paths() {
-        // The tools live under a data home of their own; take its parent so
-        // the sidecar files next to lib/ go with it.
-        let tools_root = paths.lib_dir.parent().unwrap_or(&paths.lib_dir).to_path_buf();
-        if !dirs.contains(&tools_root) {
-            dirs.push(tools_root);
+        let tools = tools_root(&paths.lib_dir);
+        if !dirs.contains(&tools) {
+            dirs.push(tools);
         }
     }
     dirs
 }
 
+/// The directory that holds the YouTube tools and nothing else.
+///
+/// They live in `<data>/ttspotify/lib` when we installed them, and in
+/// `<exe-dir>/lib` on older installs and when there is no data directory to
+/// use. Taking the parent unconditionally was a mistake with teeth: for the
+/// second layout the parent is whatever directory the binary sits in, so
+/// `uninstall --purge` offered to delete `~/.local/bin` — every other program
+/// the user keeps there — under the heading "these hold your configs".
+fn tools_root(lib_dir: &Path) -> PathBuf {
+    match lib_dir.parent() {
+        Some(parent) if parent.file_name().and_then(|n| n.to_str()) == Some("ttspotify") => {
+            parent.to_path_buf()
+        }
+        _ => lib_dir.to_path_buf(),
+    }
+}
+
 /// Lingering was offered at install time, but it is a per-user setting other
 /// services may also rely on, so it is never turned off without asking.
 fn offer_linger_off() {
-    let user = std::env::var("USER").unwrap_or_default();
+    // The same lookup install_service uses: $USER is often unset under su,
+    // cron and systemd, and `id -un` still knows who we are.
+    let user = crate::service::linger_user();
     if user.is_empty() {
         return;
     }
@@ -478,6 +553,32 @@ mod tests {
         // A directory whose name merely starts the same must not count.
         assert!(!path_lists_dir("/usr/binary", Path::new("/usr/bin")));
         assert!(!path_lists_dir("", Path::new("/usr/bin")));
+    }
+
+    #[test]
+    fn purge_never_offers_the_directory_the_binary_lives_in() {
+        // The tools can sit in `<exe-dir>/lib`, and taking the parent of that
+        // meant offering to delete ~/.local/bin and every other program in it,
+        // labelled as bot data.
+        assert_eq!(
+            tools_root(Path::new("/home/u/.local/bin/lib")),
+            PathBuf::from("/home/u/.local/bin/lib")
+        );
+        // Our own data home is ours to offer, sidecar files and all.
+        assert_eq!(
+            tools_root(Path::new("/home/u/.local/share/ttspotify/lib")),
+            PathBuf::from("/home/u/.local/share/ttspotify")
+        );
+    }
+
+    #[test]
+    fn a_relative_path_entry_is_not_an_install_directory() {
+        // `.` in PATH means a different directory depending on where the
+        // command was run, so it is no place to install to or delete from.
+        let dirs = candidate_dirs(".:/usr/bin:relative/bin", Path::new("/home/u"));
+        assert!(!dirs.iter().any(|d| d == Path::new(".")));
+        assert!(!dirs.iter().any(|d| d == Path::new("relative/bin")));
+        assert!(dirs.iter().any(|d| d == Path::new("/usr/bin")));
     }
 
     #[test]

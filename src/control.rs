@@ -226,8 +226,17 @@ pub fn remove(name: Option<&str>) -> Result<(), BotError> {
         },
     };
 
-    // Before the file goes: a systemd instance for a config that no longer
-    // exists starts, fails to find it, and stops again on every login.
+    println!();
+    println!("This deletes {}.", path.display());
+    if !service::prompt_yes_no(&format!("Remove the bot \"{name}\"?")) {
+        println!("Nothing deleted.");
+        return Ok(());
+    }
+
+    // Only after the answer. Stopping first would knock a running bot off the
+    // server and un-enable it before the user had agreed to anything, and
+    // "Nothing deleted." would then be a lie about a bot that had just been
+    // killed and would not come back at the next login.
     if service::systemd_booted() && service::service_installed() {
         let unit = unit_for(&name);
         let _ = Command::new("systemctl")
@@ -235,13 +244,9 @@ pub fn remove(name: Option<&str>) -> Result<(), BotError> {
             .output();
     }
 
-    println!();
-    println!("This deletes {}.", path.display());
-    if !service::prompt_yes_no(&format!("Remove the bot \"{name}\"?")) {
-        println!("Nothing deleted.");
-        return Ok(());
-    }
     std::fs::remove_file(&path)?;
+    // The lock is named after the config; nothing will ever take it again.
+    let _ = std::fs::remove_file(crate::runlock::lock_path(&path));
     println!("Removed \"{name}\".");
 
     // Logs are often both the reason a bot is being deleted and the record of
