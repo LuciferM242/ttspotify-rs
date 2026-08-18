@@ -690,9 +690,72 @@ impl ConfigStore {
             *guard = on_disk;
         }
         f(&mut guard);
+        // A config file that is no longer there belongs to a bot someone is
+        // removing. Saving would write it straight back — the bot persists its
+        // volume and modes as they change and again on the way out, so a
+        // deleted bot would reappear seconds later and be running again after
+        // the next login. (Deleting between this check and the write is still
+        // possible, but that window is microseconds rather than the lifetime
+        // of a running bot.)
+        if !self.path.exists() {
+            tracing::info!(
+                "Not saving {}: the config file has been deleted",
+                self.path.display()
+            );
+            return;
+        }
         if let Err(e) = guard.save(&self.path) {
             tracing::error!("Failed to save config {}: {e}", self.path.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ttspotify_store_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn update_writes_the_change_through_to_disk() {
+        let dir = scratch("writes");
+        let path = dir.join("home.json");
+        let cfg = BotConfig {
+            host: "tt.example.org".to_string(),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+
+        let store = ConfigStore::new(path.clone(), cfg);
+        store.update(|c| c.volume = 42);
+
+        let reloaded = BotConfig::parse_file(&path).unwrap();
+        assert_eq!(reloaded.volume, 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_does_not_recreate_a_config_that_was_deleted() {
+        // Removing a bot deletes its config while the bot may still be
+        // running. The bot saves its volume and modes as they change and again
+        // on the way out; if that recreated the file, the bot would come back
+        // from the dead and start again at the next login.
+        let dir = scratch("deleted");
+        let path = dir.join("gone.json");
+        let cfg = BotConfig::default();
+        cfg.save(&path).unwrap();
+
+        let store = ConfigStore::new(path.clone(), cfg);
+        std::fs::remove_file(&path).unwrap();
+        store.update(|c| c.volume = 99);
+
+        assert!(!path.exists(), "a deleted config must stay deleted");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

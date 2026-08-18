@@ -458,6 +458,7 @@ fn handle_action(
             }
             BotAction::Logs => open_logs(hwnd, &name),
             BotAction::Config => edit_config(wnd, tray, &name),
+            BotAction::Remove => remove_server(wnd, tray, &name),
         },
         MenuAction::SpotifyAuth => {
             spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
@@ -539,6 +540,69 @@ fn edit_config(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
         tray.facts.borrow().mark_stale();
         update_tooltip(wnd.hwnd(), tray);
     }
+}
+
+/// Delete a bot: stop it, remove its config, then ask about its logs.
+///
+/// The same set of things the CLI's `remove` deletes, and nothing else — the
+/// language choices in `state/` and the Spotify login in `auth/` belong to the
+/// whole install, so one bot leaving must not sign the others out.
+fn remove_server(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
+    let Some(path) = tray.manager.borrow().config_path(name) else {
+        return;
+    };
+
+    let answer = wnd.hwnd().MessageBox(
+        &format!(
+            "Remove the bot \"{name}\"?\n\nThis stops it and deletes\n{}\n\nThis cannot be undone.",
+            path.display()
+        ),
+        "TT Spotify",
+        // Defaulting to No: the item sits in the same menu as Start and Stop,
+        // and a mis-click here is not recoverable.
+        co::MB::YESNO | co::MB::ICONWARNING | co::MB::DEFBUTTON2,
+    );
+    if !matches!(answer, Ok(co::DLGID::YES)) {
+        return;
+    }
+
+    // Stop before deleting: a running bot writes its volume and modes back to
+    // the config, so a bot still alive when the file goes could recreate it.
+    tray.manager
+        .borrow_mut()
+        .forget(name, std::time::Duration::from_secs(5));
+
+    if let Err(e) = std::fs::remove_file(&path) {
+        let _ = wnd.hwnd().MessageBox(
+            &format!("Could not delete {}: {e}", path.display()),
+            "TT Spotify",
+            co::MB::OK | co::MB::ICONERROR,
+        );
+        return;
+    }
+
+    // Logs are both the reason a bot is often removed and the record of why,
+    // so they are a separate question.
+    let logs = crate::paths::root().join("logs").join(name);
+    if logs.is_dir() {
+        let answer = wnd.hwnd().MessageBox(
+            &format!("Also delete this bot's logs?\n\n{}", logs.display()),
+            "TT Spotify",
+            co::MB::YESNO | co::MB::ICONQUESTION | co::MB::DEFBUTTON2,
+        );
+        if matches!(answer, Ok(co::DLGID::YES)) {
+            if let Err(e) = std::fs::remove_dir_all(&logs) {
+                let _ = wnd.hwnd().MessageBox(
+                    &format!("Could not delete the logs: {e}"),
+                    "TT Spotify",
+                    co::MB::OK | co::MB::ICONERROR,
+                );
+            }
+        }
+    }
+
+    tray.facts.borrow().mark_stale();
+    update_tooltip(wnd.hwnd(), tray);
 }
 
 /// The manual "check for updates". Runs the network call on a worker thread and
@@ -828,8 +892,9 @@ mod hmenu_tests {
     fn a_bot_becomes_a_submenu_holding_its_commands() {
         with_menu(&[bot("alpha", true)], |hmenu, _| {
             let sub = hmenu.GetSubMenu(0).expect("the first entry should be a submenu");
-            // Start, Stop, Restart, separator, View Logs, Edit Config.
-            assert_eq!(sub.GetMenuItemCount().expect("sub count"), 6);
+            // Start, Stop, Restart, separator, View Logs, Edit Config,
+            // Remove Server.
+            assert_eq!(sub.GetMenuItemCount().expect("sub count"), 7);
         });
     }
 

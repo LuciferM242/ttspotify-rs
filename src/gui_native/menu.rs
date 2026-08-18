@@ -16,6 +16,8 @@ pub enum BotAction {
     Restart,
     Logs,
     Config,
+    /// Delete this bot's config, after confirmation.
+    Remove,
 }
 
 /// What activating a menu item does.
@@ -155,6 +157,9 @@ impl MenuBuilder {
             for (offset, action, label) in [
                 (3u16, BotAction::Logs, "View Logs"),
                 (4, BotAction::Config, "Edit Config"),
+                // Last, and behind a confirmation: it is the only item here
+                // that destroys anything.
+                (5, BotAction::Remove, "Remove Server"),
             ] {
                 let id = base + offset;
                 items.push(MenuEntry::Item {
@@ -367,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn each_bot_gets_its_own_five_commands() {
+    fn each_bot_gets_its_own_six_commands() {
         let bots = [
             bot("alpha", "Connected, Idle", true),
             bot("beta", "Stopped", false),
@@ -387,6 +392,7 @@ mod tests {
                 vec![
                     BotAction::Config,
                     BotAction::Logs,
+                    BotAction::Remove,
                     BotAction::Restart,
                     BotAction::Start,
                     BotAction::Stop

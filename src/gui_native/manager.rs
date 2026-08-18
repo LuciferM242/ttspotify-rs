@@ -332,6 +332,38 @@ impl BotManager {
         }
     }
 
+    /// Stop a bot and forget it, for when its config is being deleted.
+    ///
+    /// The wait is bounded the way exit's is: a connected bot answers the
+    /// shutdown flag within one poll and leaves the server cleanly, while one
+    /// stuck in a connect/login wait cannot answer until the SDK's own timeout
+    /// and is not worth freezing the menu for. Either way the instance is
+    /// dropped, so nothing tries to start it again from a config that is about
+    /// to go.
+    pub fn forget(&mut self, name: &str, timeout: std::time::Duration) -> bool {
+        self.stop_nonblocking(name);
+        let deadline = std::time::Instant::now() + timeout;
+        if let Some(inst) = self.instances.get_mut(name) {
+            if let Some(handle) = inst.thread.take() {
+                while !handle.is_finished() {
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!("[{name}] did not stop in time; removing it anyway");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if handle.is_finished() {
+                    let _ = handle.join();
+                }
+            }
+        }
+        let removed = self.instances.remove(name).is_some();
+        if removed {
+            let _ = self.status_tx.send((name.to_string(), BotStatus::Stopped));
+        }
+        removed
+    }
+
     pub fn config_path(&self, name: &str) -> Option<PathBuf> {
         self.instances.get(name).map(|i| i.config_path.clone())
     }
