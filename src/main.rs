@@ -35,114 +35,157 @@ fn pin_teamtalk_sdk_version() {
 #[derive(Parser)]
 #[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot", version)]
 struct Args {
-    /// Path to config file
-    #[arg(short, long)]
+    // Every generated systemd unit runs the bot as `--config <path>`, so this
+    // stays a top-level option instead of becoming part of `run`: making it a
+    // subcommand argument would break every service already on disk.
+    /// Run the bot configured in this file
+    #[arg(short, long, value_name = "PATH")]
     config: Option<String>,
 
-    /// Run the interactive config setup wizard
-    #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
-    setup: Option<String>,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
 
-    /// Change an existing config (name optional; asks when omitted)
+#[cfg(not(windows))]
+#[derive(clap::Subcommand)]
+enum Commands {
+    /// Run a bot in this terminal
+    Run {
+        /// Which bot; asks when there is more than one and you do not say
+        name: Option<String>,
+    },
+
+    /// Create a bot
+    Add {
+        /// Name for the new bot, used for its file and its service
+        name: Option<String>,
+    },
+
+    /// Delete a bot
     #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
-    edit: Option<String>,
+    Remove {
+        /// Which bot; asks when you do not say
+        name: Option<String>,
+    },
+
+    /// Change a bot's settings
+    #[cfg(target_os = "linux")]
+    Edit {
+        /// Which bot; asks when you do not say
+        name: Option<String>,
+    },
 
     /// List the bots configured on this machine
     #[cfg(target_os = "linux")]
-    #[arg(long)]
-    list: bool,
+    List,
 
     /// Show which bots are running
     #[cfg(target_os = "linux")]
-    #[arg(long)]
-    status: bool,
+    Status,
 
-    /// Start a bot by config name, or "all"
+    /// Start a bot in the background
     #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "NAME")]
-    start: Option<String>,
+    Start {
+        /// A bot's name, or "all"
+        name: String,
+    },
 
-    /// Stop a bot by config name, or "all"
+    /// Stop a bot running in the background
     #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "NAME")]
-    stop: Option<String>,
+    Stop {
+        /// A bot's name, or "all"
+        name: String,
+    },
 
-    /// Restart a bot by config name, or "all"
+    /// Restart a bot running in the background
     #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "NAME")]
-    restart: Option<String>,
+    Restart {
+        /// A bot's name, or "all"
+        name: String,
+    },
 
     /// Show a bot's log
     #[cfg(target_os = "linux")]
-    #[arg(long, value_name = "NAME")]
-    logs: Option<String>,
+    Logs {
+        /// Which bot's log to show
+        name: String,
+        /// Keep printing new lines as they arrive
+        #[arg(short, long)]
+        follow: bool,
+    },
 
-    /// With --logs: keep printing new lines as they arrive
+    /// Check this install and say what to fix
     #[cfg(target_os = "linux")]
-    #[arg(long, requires = "logs")]
-    follow: bool,
+    Doctor,
 
-    /// Show what is installed, what is running, and what to fix
+    /// Copy this binary onto your PATH
     #[cfg(target_os = "linux")]
-    #[arg(long)]
-    doctor: bool,
+    Install,
 
-    /// Copy this binary onto your PATH (does not touch systemd)
+    /// Remove the binary, and optionally everything else
     #[cfg(target_os = "linux")]
-    #[arg(long)]
-    install: bool,
+    Uninstall {
+        /// Also ask about deleting configs, logins and logs
+        #[arg(long)]
+        purge: bool,
+    },
 
-    /// Remove the binary, and optionally the service, configs and tools
+    /// Install or remove the systemd service
     #[cfg(target_os = "linux")]
-    #[arg(long)]
-    uninstall: bool,
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
 
-    /// With --uninstall: also ask about deleting configs, logins and logs
-    #[cfg(target_os = "linux")]
-    #[arg(long, requires = "uninstall")]
-    purge: bool,
+    /// Install or update the YouTube tools
+    Youtube {
+        #[command(subcommand)]
+        action: YoutubeAction,
+    },
 
+    /// Sign in to Spotify
+    Auth {
+        #[command(subcommand)]
+        action: Option<AuthAction>,
+    },
+
+    /// Update the bot itself
+    Update,
+
+    /// Print a completion script for your shell
+    Completions {
+        /// bash, zsh, fish, elvish or powershell
+        shell: clap_complete::Shell,
+    },
+
+    /// Print this program's man page (roff)
+    Man,
+}
+
+#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[derive(clap::Subcommand)]
+enum ServiceAction {
     /// Install the systemd user service (does not move the binary)
-    #[cfg(target_os = "linux")]
-    #[arg(long)]
-    install_service: bool,
-
+    Install,
     /// Remove the systemd user service only
-    #[cfg(target_os = "linux")]
-    #[arg(long)]
-    uninstall_service: bool,
+    Remove,
+}
 
-    /// Authenticate with Spotify and exit (no bot startup)
-    #[arg(long)]
-    auth: bool,
+#[cfg(not(windows))]
+#[derive(clap::Subcommand)]
+enum YoutubeAction {
+    /// Download yt-dlp, bgutil-pot and a JavaScript runtime
+    Install,
+    /// Update those tools in place
+    Update,
+}
 
-    /// Check if Spotify credentials are cached and exit
-    #[arg(long)]
-    auth_status: bool,
-
-    /// Download YouTube support binaries (yt-dlp, bgutil-pot, plugin) into
-    /// the bot's lib/ folder. Skips if already installed.
-    #[arg(long)]
-    setup_yt: bool,
-
-    /// Update YouTube tools: runs `yt-dlp --update` for the binary's self-
-    /// update, then checks GitHub for a newer bgutil-pot release.
-    #[arg(long)]
-    update_tools: bool,
-
-    /// Check GitHub for a newer release; if found, show the changelog and
-    /// (with confirmation) download, verify, and replace this binary.
-    #[arg(long)]
-    update: bool,
-
-    /// Print a completion script for your shell (bash, zsh, fish, ...)
-    #[arg(long, value_name = "SHELL")]
-    completions: Option<clap_complete::Shell>,
-
-    /// Print this program's man page (roff) to standard output
-    #[arg(long)]
-    man: bool,
+#[cfg(not(windows))]
+#[derive(clap::Subcommand)]
+enum AuthAction {
+    /// Say whether a Spotify login is already cached
+    Status,
 }
 
 #[cfg(not(windows))]
@@ -160,175 +203,43 @@ async fn main() -> Result<(), BotError> {
     // TeamTalk socket the server has closed would otherwise kill the process
     // instead of returning an error — so only the commands that print and
     // exit hand SIGPIPE back to the kernel.
-    {
-        let prints_and_exits = args.completions.is_some() || args.man || args.auth_status;
-        #[cfg(target_os = "linux")]
-        let prints_and_exits = prints_and_exits
-            || args.doctor
-            || args.list
-            || args.status
-            || args.logs.is_some();
-        if prints_and_exits {
-            // SAFETY: setting a signal disposition before any thread is
-            // spawned, to the value every other Unix program uses.
-            unsafe {
-                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-            }
+    if prints_and_exits(&args.command) {
+        // SAFETY: setting a signal disposition before any thread is spawned,
+        // to the value every other Unix program uses.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
         }
     }
 
-    // Generated from the same clap definition as --help, so a flag added
-    // later cannot be missing from either.
-    if let Some(shell) = args.completions {
-        use clap::CommandFactory;
-        let mut command = Args::command();
-        let name = tt_spotify_bot::paths::program_name();
-        clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
-        return Ok(());
-    }
-    if args.man {
-        use clap::CommandFactory;
-        clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
-        return Ok(());
-    }
-
-    if let Some(ref name) = args.setup {
-        let name = if name.is_empty() { None } else { Some(name.as_str()) };
-        return tt_spotify_bot::wizard::run_wizard(name, true).map(|_| ());
-    }
-
-    #[cfg(target_os = "linux")]
-    if args.doctor {
-        tt_spotify_bot::doctor::report();
-        return Ok(());
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(ref name) = args.edit {
-        let name = if name.is_empty() { None } else { Some(name.as_str()) };
-        finish(tt_spotify_bot::editor::run(name));
-    }
-    #[cfg(target_os = "linux")]
-    if args.list {
-        tt_spotify_bot::control::list();
-        return Ok(());
-    }
-    #[cfg(target_os = "linux")]
-    if args.status {
-        tt_spotify_bot::control::status();
-        return Ok(());
-    }
-    #[cfg(target_os = "linux")]
-    for (verb, target) in [
-        ("start", &args.start),
-        ("stop", &args.stop),
-        ("restart", &args.restart),
-    ] {
-        if let Some(target) = target {
-            finish(tt_spotify_bot::control::control(verb, target));
-        }
-    }
-    #[cfg(target_os = "linux")]
-    if let Some(ref name) = args.logs {
-        finish(tt_spotify_bot::control::logs(name, args.follow));
-    }
-    #[cfg(target_os = "linux")]
-    if args.install {
-        finish(tt_spotify_bot::install::install());
-    }
-    #[cfg(target_os = "linux")]
-    if args.uninstall {
-        finish(tt_spotify_bot::install::uninstall(args.purge));
-    }
-    #[cfg(target_os = "linux")]
-    if args.install_service {
-        return tt_spotify_bot::service::install_service();
-    }
-    #[cfg(target_os = "linux")]
-    if args.uninstall_service {
-        return tt_spotify_bot::service::uninstall_service();
-    }
-
-    if args.auth_status {
-        let auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
-        if auth.has_cached_credentials() {
-            println!("Spotify: Cached credentials found.");
-            println!("  (Note: credentials may be expired or revoked.)");
-            std::process::exit(0);
-        } else {
-            println!("Spotify: No cached credentials.");
-            println!("  Run with --auth to authenticate.");
-            std::process::exit(1);
-        }
-    }
-
-    if args.setup_yt {
-        match tt_spotify_bot::wizard::run_youtube_setup() {
-            Ok(()) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("YouTube setup failed: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if args.update_tools {
-        match tt_spotify_bot::wizard::run_update_tools() {
-            Ok(()) => std::process::exit(0),
-            Err(e) => {
-                eprintln!("Tool update failed: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if args.update {
-        return run_cli_update().await;
-    }
-
-    if args.auth {
-        tracing_subscriber::fmt()
-            .with_target(false)
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
-            )
-            .init();
-
-        let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
-        match auth.connect().await {
-            Ok(_) => {
-                println!("Spotify authentication successful. Credentials cached.");
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("Spotify authentication failed: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
 
     // Sort a legacy flat data folder into config/state/cache/auth before
     // anything reads from it. Logging is not up yet, so the report is logged
     // below once it is.
     let layout_migration = tt_spotify_bot::paths::migrate_data_layout();
 
-    let config_path = match args.config {
-        Some(path) => path,
-        None => {
-            use std::io::IsTerminal;
-            let configs = tt_spotify_bot::config::list_configs();
-            let interactive = std::io::stdin().is_terminal();
-            match tt_spotify_bot::config::choose_config(&configs, interactive) {
-                Some(path) => path.to_string_lossy().into_owned(),
-                // No configs: this path leads to the first-run wizard. Having
-                // configs but choosing none means the user backed out.
-                None if configs.is_empty() => tt_spotify_bot::paths::configs_dir()
-                    .join("config.json")
-                    .to_string_lossy()
-                    .into_owned(),
-                None => return Ok(()),
+    // Everything except running a bot is done here and exits; `run` and a bare
+    // `--config` fall through to the bot itself.
+    let named = match args.command {
+        Some(Commands::Run { ref name }) => {
+            match tt_spotify_bot::control::resolve_run_target(name.as_deref()) {
+                Ok(Some(path)) => Some(path.to_string_lossy().into_owned()),
+                Ok(None) => return Ok(()), // Picker cancelled.
+                Err(e) => finish(Err(e)),
             }
         }
+        Some(command) => return run_command(command).await,
+        None => None,
+    };
+
+    let config_path = match named.or(args.config) {
+        Some(path) => path,
+        // No arguments at all: set the machine up if nothing is set up yet,
+        // otherwise show what the commands are. Starting a bot nobody named
+        // is what this used to do, and it hid every other command.
+        None => match first_run_or_help()? {
+            Some(path) => path,
+            None => return Ok(()),
+        },
     };
 
     // An old systemd unit may still name the pre-move location.
@@ -409,12 +320,160 @@ async fn main() -> Result<(), BotError> {
     }
 }
 
+/// Whether this command only prints and exits, and so should die quietly when
+/// piped into something that stops reading (`doctor | head`).
+#[cfg(not(windows))]
+fn prints_and_exits(command: &Option<Commands>) -> bool {
+    match command {
+        Some(Commands::Completions { .. }) | Some(Commands::Man) => true,
+        Some(Commands::Auth { action: Some(AuthAction::Status) }) => true,
+        #[cfg(target_os = "linux")]
+        Some(Commands::List) | Some(Commands::Status) | Some(Commands::Doctor) => true,
+        #[cfg(target_os = "linux")]
+        Some(Commands::Logs { .. }) => true,
+        _ => false,
+    }
+}
+
+/// Everything that is not "run a bot".
+#[cfg(not(windows))]
+async fn run_command(command: Commands) -> Result<(), BotError> {
+    use clap::CommandFactory;
+
+    match command {
+        // Handled by the caller, which needs the config path rather than an
+        // exit code.
+        Commands::Run { .. } => Ok(()),
+
+        Commands::Add { name } => {
+            tt_spotify_bot::wizard::run_wizard(name.as_deref(), true).map(|_| ())
+        }
+
+        #[cfg(target_os = "linux")]
+        Commands::Remove { name } => finish(tt_spotify_bot::control::remove(name.as_deref())),
+        #[cfg(target_os = "linux")]
+        Commands::Edit { name } => finish(tt_spotify_bot::editor::run(name.as_deref())),
+        #[cfg(target_os = "linux")]
+        Commands::List => {
+            tt_spotify_bot::control::list();
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Commands::Status => {
+            tt_spotify_bot::control::status();
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Commands::Start { name } => finish(tt_spotify_bot::control::control("start", &name)),
+        #[cfg(target_os = "linux")]
+        Commands::Stop { name } => finish(tt_spotify_bot::control::control("stop", &name)),
+        #[cfg(target_os = "linux")]
+        Commands::Restart { name } => finish(tt_spotify_bot::control::control("restart", &name)),
+        #[cfg(target_os = "linux")]
+        Commands::Logs { name, follow } => finish(tt_spotify_bot::control::logs(&name, follow)),
+        #[cfg(target_os = "linux")]
+        Commands::Doctor => {
+            tt_spotify_bot::doctor::report();
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Commands::Install => finish(tt_spotify_bot::install::install()),
+        #[cfg(target_os = "linux")]
+        Commands::Uninstall { purge } => finish(tt_spotify_bot::install::uninstall(purge)),
+        #[cfg(target_os = "linux")]
+        Commands::Service { action } => match action {
+            ServiceAction::Install => tt_spotify_bot::service::install_service(),
+            ServiceAction::Remove => tt_spotify_bot::service::uninstall_service(),
+        },
+
+        Commands::Youtube { action } => {
+            let result = match action {
+                YoutubeAction::Install => tt_spotify_bot::wizard::run_youtube_setup(),
+                YoutubeAction::Update => tt_spotify_bot::wizard::run_update_tools(),
+            };
+            finish(result)
+        }
+
+        Commands::Auth { action: Some(AuthAction::Status) } => {
+            let auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
+            if auth.has_cached_credentials() {
+                println!("Spotify: signed in (the login may still have expired).");
+                std::process::exit(0);
+            }
+            println!("Spotify: not signed in.");
+            println!("  Sign in with: {} auth", tt_spotify_bot::paths::program_name());
+            std::process::exit(1);
+        }
+        Commands::Auth { action: None } => {
+            tracing_subscriber::fmt()
+                .with_target(false)
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                )
+                .init();
+
+            let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
+            match auth.connect().await {
+                Ok(_) => {
+                    println!("Signed in to Spotify. The login is cached for every bot here.");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("Spotify sign-in failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        Commands::Update => run_cli_update().await,
+
+        Commands::Completions { shell } => {
+            let mut command = Args::command();
+            let name = tt_spotify_bot::paths::program_name();
+            clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
+            Ok(())
+        }
+        Commands::Man => {
+            clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
+            Ok(())
+        }
+    }
+}
+
+/// A run with no arguments at all.
+///
+/// Nothing configured yet means this is someone's first go: offer to install,
+/// then walk them through creating a bot, then run it — the shortest path from
+/// a downloaded file to music. Once bots exist, the useful thing to show is
+/// what the commands are, since starting an unnamed bot is now `run`'s job.
+///
+/// Returns the config to run, or `None` when the help was printed instead.
+#[cfg(not(windows))]
+fn first_run_or_help() -> Result<Option<String>, BotError> {
+    use clap::CommandFactory;
+
+    if !tt_spotify_bot::config::list_configs().is_empty() {
+        let _ = Args::command().print_help();
+        println!();
+        return Ok(None);
+    }
+
+    #[cfg(target_os = "linux")]
+    tt_spotify_bot::install::offer_first_run_install();
+
+    match tt_spotify_bot::wizard::run_wizard(None, true)? {
+        Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
+        None => Ok(None),
+    }
+}
+
 /// End a one-shot command: its message, then an exit code.
 ///
 /// Returning the error from `main` instead would print it through `Debug`
 /// ("Usage(\"No config named ...\")"), which is not a sentence anyone wants to
 /// read at the end of a mistyped command.
-#[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 fn finish(result: Result<(), BotError>) -> ! {
     match result {
         Ok(()) => std::process::exit(0),

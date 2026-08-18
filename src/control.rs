@@ -195,6 +195,121 @@ pub fn logs(name: &str, follow: bool) -> Result<(), BotError> {
     show_log_file(name, follow)
 }
 
+/// `remove [name]`: delete a bot.
+///
+/// A bot owns exactly two things: its config and its log folder. The rest of
+/// the data root is shared — `state/` holds per-TeamTalk-user language choices
+/// for every bot, and `auth/` holds the one Spotify login this install uses, so
+/// deleting either because one bot went away would take the others with it.
+/// (When a bot can have its own Spotify account, that credential joins the list
+/// below.)
+pub fn remove(name: Option<&str>) -> Result<(), BotError> {
+    let configs = crate::config::list_configs();
+    if configs.is_empty() {
+        return Err(BotError::Usage("There are no bots to remove.".to_string()));
+    }
+
+    let (name, path) = match name {
+        Some(wanted) => configs
+            .iter()
+            .find(|(n, _)| n == wanted)
+            .cloned()
+            .ok_or_else(|| {
+                BotError::Usage(format!(
+                    "No bot named \"{wanted}\". Available: {}.",
+                    configs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                ))
+            })?,
+        None => match pick_bot(&configs) {
+            Some(chosen) => chosen,
+            None => return Ok(()),
+        },
+    };
+
+    // Before the file goes: a systemd instance for a config that no longer
+    // exists starts, fails to find it, and stops again on every login.
+    if service::systemd_booted() && service::service_installed() {
+        let unit = unit_for(&name);
+        let _ = Command::new("systemctl")
+            .args(["--user", "disable", "--now", &unit])
+            .output();
+    }
+
+    println!();
+    println!("This deletes {}.", path.display());
+    if !service::prompt_yes_no(&format!("Remove the bot \"{name}\"?")) {
+        println!("Nothing deleted.");
+        return Ok(());
+    }
+    std::fs::remove_file(&path)?;
+    println!("Removed \"{name}\".");
+
+    // Logs are often both the reason a bot is being deleted and the record of
+    // why, so they are a separate question.
+    let logs = crate::paths::root().join("logs").join(&name);
+    if logs.is_dir() {
+        let count = std::fs::read_dir(&logs).map(|d| d.count()).unwrap_or(0);
+        let files = if count == 1 { "file" } else { "files" };
+        println!();
+        if service::prompt_yes_no(&format!(
+            "Also delete its logs ({count} {files} in {})?",
+            logs.display()
+        )) {
+            match std::fs::remove_dir_all(&logs) {
+                Ok(()) => println!("Logs deleted."),
+                Err(e) => println!("Could not delete the logs: {e}"),
+            }
+        } else {
+            println!("Logs kept in {}", logs.display());
+        }
+    }
+    Ok(())
+}
+
+/// The numbered list shown when a command that needs a bot was not told which.
+fn pick_bot(configs: &[(String, std::path::PathBuf)]) -> Option<(String, std::path::PathBuf)> {
+    let names: Vec<String> = configs.iter().map(|(n, _)| n.clone()).collect();
+    println!("Which bot?");
+    for (i, name) in names.iter().enumerate() {
+        println!("  {}. {name}", i + 1);
+    }
+    for _ in 0..3 {
+        let raw = crate::wizard::ask("Number or name", "", false)?;
+        if let Some(index) = crate::config::parse_config_choice(&raw, &names) {
+            return Some(configs[index].clone());
+        }
+        println!("  Not one of the choices.");
+    }
+    None
+}
+
+/// The config `run` should start: the named one, or one picked from the list.
+pub fn resolve_run_target(name: Option<&str>) -> Result<Option<std::path::PathBuf>, BotError> {
+    let configs = crate::config::list_configs();
+    match name {
+        Some(wanted) => configs
+            .iter()
+            .find(|(n, _)| n == wanted)
+            .map(|(_, path)| Some(path.clone()))
+            .ok_or_else(|| {
+                BotError::Usage(format!(
+                    "No bot named \"{wanted}\". Available: {}.",
+                    if configs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        configs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                    }
+                ))
+            }),
+        None if configs.len() == 1 => Ok(Some(configs[0].1.clone())),
+        None if configs.is_empty() => Err(BotError::Usage(format!(
+            "No bots yet. Create one with: {} add",
+            crate::paths::program_name()
+        ))),
+        None => Ok(pick_bot(&configs).map(|(_, path)| path)),
+    }
+}
+
 /// Newest log file for a bot, if any: `<root>/logs/<name>/<date>.log`.
 fn newest_log_file(dir: &PathBuf) -> Option<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)

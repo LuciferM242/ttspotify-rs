@@ -150,6 +150,67 @@ fn place_binary(src: &Path, dst: &Path) -> Result<(), BotError> {
     }
 }
 
+/// Whether this copy looks like an installed one: either it is running from a
+/// directory installs go to, or a copy of it already sits in one.
+fn looks_installed(src: &Path, dirs: &[PathBuf], names: &[String]) -> bool {
+    if src.parent().is_some_and(|parent| dirs.iter().any(|dir| dir == parent)) {
+        return true;
+    }
+    !find_existing(dirs, names, Some(src)).is_empty()
+}
+
+/// Whether this binary is one `cargo build` just produced.
+///
+/// Without this check, `cargo run` would offer to install itself on every
+/// first run during development, which is nobody's idea of helpful.
+fn is_cargo_build(src: &Path) -> bool {
+    let parent_is_profile = src
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "debug" || n == "release");
+    let under_target = src
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        == Some("target");
+    parent_is_profile && under_target
+}
+
+/// Offer to install before the first-run wizard, so a fresh download becomes a
+/// working command without a second step. Only ever asks — putting a file on
+/// someone's PATH unbidden is a side effect they did not request.
+pub fn offer_first_run_install() {
+    use std::io::IsTerminal;
+
+    let Ok(src) = std::env::current_exe() else { return };
+    if !std::io::stdin().is_terminal() || is_cargo_build(&src) {
+        return;
+    }
+    let home = home_dir();
+    let names = known_names(&crate::paths::program_name());
+    let dirs = candidate_dirs(&path_env(), &home);
+    if looks_installed(&src, &dirs, &names) {
+        return;
+    }
+
+    println!();
+    println!("This copy is not installed yet, so \"{DEFAULT_NAME}\" will not be a command");
+    println!("you can type from anywhere.");
+    if !prompt_yes_no("Install it now?") {
+        println!(
+            "Skipped. Install later with: {} --install",
+            src.display()
+        );
+        return;
+    }
+    if let Err(e) = install() {
+        println!("Install failed: {e}");
+        println!("Carrying on with setup; the bot still runs from here.");
+    }
+}
+
 /// `--install`: put this binary on PATH.
 pub fn install() -> Result<(), BotError> {
     let src = std::env::current_exe()
@@ -414,6 +475,27 @@ mod tests {
         // A directory whose name merely starts the same must not count.
         assert!(!path_lists_dir("/usr/binary", Path::new("/usr/bin")));
         assert!(!path_lists_dir("", Path::new("/usr/bin")));
+    }
+
+    #[test]
+    fn a_cargo_build_is_never_offered_an_install() {
+        assert!(is_cargo_build(Path::new("/home/u/src/bot/target/debug/tt-spotify-bot")));
+        assert!(is_cargo_build(Path::new("/home/u/src/bot/target/release/tt-spotify-bot")));
+        // A real install, and a build laid out some other way, are not.
+        assert!(!is_cargo_build(Path::new("/usr/local/bin/ttspotify")));
+        assert!(!is_cargo_build(Path::new("/home/u/.local/bin/ttspotify")));
+        assert!(!is_cargo_build(Path::new("/opt/debug/ttspotify")));
+    }
+
+    #[test]
+    fn running_from_an_install_directory_counts_as_installed() {
+        let dirs = vec![PathBuf::from("/usr/local/bin"), PathBuf::from("/home/u/.local/bin")];
+        let names = known_names("ttspotify");
+        // No filesystem lookup needed: the running copy is already in place.
+        assert!(looks_installed(Path::new("/usr/local/bin/ttspotify"), &dirs, &names));
+        // An unpacked tarball in a download folder is not installed, and
+        // nothing else exists to find in this test environment.
+        assert!(!looks_installed(Path::new("/home/u/Downloads/tt-spotify-bot"), &dirs, &names));
     }
 
     #[test]
