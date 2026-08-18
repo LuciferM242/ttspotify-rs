@@ -43,6 +43,11 @@ struct Args {
     #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     setup: Option<String>,
 
+    /// Show what is installed, what is running, and what to fix
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    doctor: bool,
+
     /// Copy this binary onto your PATH (does not touch systemd)
     #[cfg(target_os = "linux")]
     #[arg(long)]
@@ -107,6 +112,11 @@ async fn main() -> Result<(), BotError> {
         return tt_spotify_bot::wizard::run_wizard(name, true).map(|_| ());
     }
 
+    #[cfg(target_os = "linux")]
+    if args.doctor {
+        tt_spotify_bot::doctor::report();
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     if args.install {
         return tt_spotify_bot::install::install();

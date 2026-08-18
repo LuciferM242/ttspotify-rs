@@ -10,6 +10,21 @@ use crate::error::BotError;
 /// Virtual sound device ID (TT_SOUNDDEVICE_ID_TEAMTALK_VIRTUAL = 1978)
 const VIRTUAL_DEVICE_ID: SoundDeviceId = SoundDeviceId(1978);
 
+/// Explain a client-creation failure in terms of what to install.
+///
+/// The SDK links against libpulse and fails with a message about
+/// initialisation when it is absent, which reads like a bug in the bot rather
+/// than one missing package — the single most common first-run stumble on a
+/// fresh Debian or Raspberry Pi.
+fn client_error_hint(error: &str) -> String {
+    let base = format!("Failed to create client: {error}");
+    #[cfg(target_os = "linux")]
+    if let Some(hint) = crate::doctor::libpulse_hint() {
+        return format!("{base}\n{hint}");
+    }
+    base
+}
+
 /// Set up the TeamTalk client: connect, login, init virtual devices, join channel.
 pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     // Set license before creating client (compile-time env vars take priority over config)
@@ -26,8 +41,7 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
         tracing::info!("TeamTalk license set for '{name}'");
     }
 
-    let client = Client::new()
-        .map_err(|e| BotError::TeamTalk(format!("Failed to create client: {e}")))?;
+    let client = Client::new().map_err(|e| BotError::TeamTalk(client_error_hint(&e.to_string())))?;
 
     tracing::info!("Connecting to TeamTalk server {}:{}...", config.host, config.tcp_port);
     client.connect(&config.host, config.tcp_port, config.udp_port, config.encrypted)

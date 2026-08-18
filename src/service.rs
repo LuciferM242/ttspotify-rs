@@ -51,6 +51,37 @@ pub fn installed_unit() -> Option<String> {
     std::fs::read_to_string(systemd_dir().join(SERVICE_NAME)).ok()
 }
 
+/// Version stamp of the installed unit file, and the version this build
+/// writes, so a check can say whether a refresh is waiting.
+pub fn installed_unit_version() -> Option<(u32, u32)> {
+    installed_unit().map(|u| (unit_version_from_contents(&u), UNIT_FILE_VERSION))
+}
+
+/// The `ttspotify@` instances systemd has enabled.
+pub fn enabled_instance_units() -> Vec<String> {
+    known_instances(&list_unit_files_output(), &[], &[])
+}
+
+/// Whether user services survive logout. `None` when the answer cannot be
+/// determined (no loginctl, or no idea who we are).
+pub fn linger_state() -> Option<bool> {
+    let user = current_user();
+    if user.is_empty() {
+        return None;
+    }
+    Command::new("loginctl")
+        .args(["show-user", &user, "--property=Linger"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Linger=yes")
+}
+
+/// The login name lingering would be enabled for.
+pub fn linger_user() -> String {
+    current_user()
+}
+
 /// Escape a config name for use as a systemd template instance, matching
 /// `systemd-escape`: `/` becomes `-`, a leading `.` and every byte outside
 /// `[A-Za-z0-9:_.]` become `\xNN`. Without this, a config like
