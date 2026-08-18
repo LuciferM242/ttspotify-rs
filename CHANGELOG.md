@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 ### Added
+- The bot now says how much music it has saved, and lets you delete it. On
+  Windows it is "Clear cache" in the tray menu; on Linux, "cache" shows the
+  size and "cache clear" empties it. "doctor" shows it too. The saved music is
+  shared by every bot on the computer, and clearing it costs nothing but
+  downloading those tracks again next time somebody asks.
 - Linux now has commands for the jobs the Windows tray does with menus. "list"
   and "status" show your bots and which are running; "start", "stop" and
   "restart" take a bot's name or "all"; "logs" shows what a bot has been doing
@@ -73,6 +78,13 @@
   2 or 3 instead of spelling the answer out.
 
 ### Fixed
+- Saved music no longer fills your disk. Every track played was kept forever
+  and nothing ever removed it, so the bot's folder grew for as long as it ran -
+  on a Raspberry Pi, until the card was full. There is now a limit, 1 GB by
+  default, and the least recently played tracks are dropped to stay under it.
+  Tracks people still ask for are kept, so they still start instantly. If your
+  install is already over the limit it is tidied up the next time it starts.
+  You can change the figure with "cacheLimitMb" in settings.json.
 - Music on YouTube plays again. Songs uploaded by record labels and the
   automatic "- Topic" channels, which is most of what people ask for, had
   started coming back refused while ordinary videos still played, so the bot
