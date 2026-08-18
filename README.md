@@ -49,13 +49,13 @@ Download the latest build from the [**Releases page**](https://github.com/Lucife
 
 1. Download `tt-spotify-bot-windows-x86_64.zip`, extract it, and run the `.exe` — a tray icon appears.
 2. On first run it prompts you to create a config (a setup dialog). Fill it in and the bot connects.
-3. Use the tray menu for **Spotify auth**, **Install YouTube tools**, and start/stop/restart/logs.
+3. Use the tray menu for **Spotify auth**, **Install YouTube tools**, and each bot's start / stop / restart / logs / edit / **Remove Server**.
 
 ### Linux (x86_64, Ubuntu 22.04+ / glibc)
 
 Install the one runtime dependency — `libpulse0`, a shared library the TeamTalk
-SDK links against (the bot tells you if it is missing, and `--doctor` checks
-for it):
+SDK links against (the bot tells you if it is missing, and `ttspotify doctor`
+checks for it):
 
 ```bash
 sudo apt install -y libpulse0
@@ -71,10 +71,11 @@ Put the binary on your `PATH` — it installs itself, into `~/.local/bin` when
 that is writable, and tells you if that directory is not on your `PATH` yet:
 
 ```bash
-./tt-spotify-bot --install
+./tt-spotify-bot install
 ```
 
-Run it — on first launch (no config yet) it walks you through the **setup wizard**, then connects:
+Run it — on first launch, with nothing configured yet, it offers to install
+itself on your `PATH`, walks you through the **setup wizard**, then connects:
 
 ```bash
 ttspotify
@@ -84,28 +85,28 @@ To install the YouTube tools (yt-dlp, bgutil-pot, and Deno — the JavaScript
 runtime YouTube playback now needs; an existing Deno is used as-is):
 
 ```bash
-ttspotify --setup-yt
+ttspotify youtube install
 ```
 
 To update the YouTube tools later:
 
 ```bash
-ttspotify --update-tools
+ttspotify youtube update
 ```
 
 Optional systemd service — install it once:
 
 ```bash
-ttspotify --install-service
+ttspotify service install
 ```
 
 then start a bot by its config name:
 
 ```bash
-ttspotify --start myserver
+ttspotify start myserver
 ```
 
-If something does not work, `ttspotify --doctor` prints what is installed, what
+If something does not work, `ttspotify doctor` prints what is installed, what
 is running, and the command that fixes whatever looks wrong.
 
 ### Linux (aarch64 / Raspberry Pi)
@@ -123,7 +124,7 @@ tar -xzf tt-spotify-bot-linux-aarch64.tar.gz
 ```
 
 ```bash
-./tt-spotify-bot --install
+./tt-spotify-bot install
 ```
 
 > **Platform support:** Windows x64, Linux x86_64, and Linux aarch64 (glibc,
@@ -137,23 +138,23 @@ binary in place. No manual re-download needed.
 
 - **Windows:** the tray checks on startup and offers the update; there's also
   a **Check for updates** item in the tray menu.
-- **Linux:** run `ttspotify --update`. If bots are running as systemd
+- **Linux:** run `ttspotify update`. If bots are running as systemd
   services, it offers to restart them on the new version — and to refresh
   your service file when a release improves it.
 
 Updating the YouTube tools (yt-dlp and friends) is separate:
-`ttspotify --update-tools`, or **Update tools** in the tray menu.
+`ttspotify youtube update`, or **Update tools** in the tray menu.
 
 ## Running multiple bots
 
 Multiple instances are supported out of the box — one per config file, each with its own server and account.
 
-**Windows:** the tray manages them all. Right-click → **Add Server** once per bot; every config shows up in the tray menu with its own start / stop / restart / logs.
+**Windows:** the tray manages them all. Right-click → **Add Server** once per bot; every config shows up in the tray menu with its own start / stop / restart / logs, and a **Remove Server** that asks before deleting anything.
 
 **Linux:** create each bot's config with the wizard, giving it a name:
 
 ```bash
-ttspotify --setup server1
+ttspotify add server1
 ```
 
 On systemd systems the wizard ends by offering to enable and start
@@ -163,30 +164,35 @@ installed yet, it offers to install it first).
 After that, manage bots by the name you gave them — no systemd unit names
 needed:
 
-- `ttspotify --list` — the bots configured here
-- `ttspotify --status` — which are running, and since when
-- `ttspotify --start server1` — also `--stop` and `--restart`; each takes a bot
-  name or `all`
-- `ttspotify --logs server1` — add `--follow` to keep watching
-- `ttspotify --edit server1` — change any setting, with the current value
-  offered as the default for every question
-- `ttspotify --doctor` — what is installed, what is running, what to fix
+- `ttspotify list` — the bots configured here
+- `ttspotify status` — which are running, and since when
+- `ttspotify start server1` — also `stop` and `restart`; each takes a bot name
+  or `all`
+- `ttspotify logs server1` — what the bot has been doing
+- `ttspotify watch server1` — follow the log live (Ctrl+C stops watching, not
+  the bot)
+- `ttspotify edit server1` — change any setting, with the current value offered
+  as the default for every question
+- `ttspotify remove server1` — delete a bot, after confirming, and ask about
+  its logs separately
+- `ttspotify doctor` — what is installed, what is running, what to fix
 
-Each instance reads `~/.config/ttspotify/config/<name>.json`. Running
-`ttspotify` with no `--config` asks which bot you mean when there is more than
-one; pass `--config ~/.config/ttspotify/config/<name>.json` to skip the
-question. See `ttspotify --help` for everything else.
+Each instance reads `~/.config/ttspotify/config/<name>.json`. To run one in
+your terminal rather than in the background, use `ttspotify run server1`.
+Running `ttspotify` with no arguments lists the commands. See
+`ttspotify --help` for everything else.
 
 Shell completion, if you want it — this is bash, and `zsh`, `fish` and others
 work the same way:
 
 ```bash
-ttspotify --completions bash > ~/.local/share/bash-completion/completions/ttspotify
+ttspotify completions bash > ~/.local/share/bash-completion/completions/ttspotify
 ```
 
-To remove the bot, `ttspotify --uninstall` stops the bots, removes the service
-and the binary, and leaves your configs and logs alone unless you add
-`--purge`.
+To remove the program entirely, `ttspotify uninstall` stops the bots, removes
+the service and the binary, and leaves your configs and logs alone unless you
+add `--purge`. (To remove one bot rather than the program, use
+`ttspotify remove <name>`.)
 
 ## Configuration
 
