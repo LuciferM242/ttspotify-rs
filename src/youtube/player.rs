@@ -338,10 +338,7 @@ async fn play_track(
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
-    // Work down the client list until one produces audio. Which client YouTube
-    // answers is decided per video, so the ones that fail do so before any
-    // audio arrives and cost only their own start-up; see PLAYER_CLIENTS for
-    // the order and the measurements behind it.
+    // Work down the client list until one produces audio.
     let mut started = None;
     let mut last_error = String::new();
     for (attempt, client) in crate::youtube::metadata::PLAYER_CLIENTS

@@ -47,30 +47,7 @@ pub struct YouTubeMetadata {
     yt_dlp_exe: PathBuf,
 }
 
-/// The player clients tried in turn, in order, until one yields audio bytes.
-///
-/// Which client works is decided per video, not per install, so no single one
-/// covers the catalogue. Measured 2026-08-18 over four videos:
-///
-/// - `web_embedded` played all four, including the two the others were refused
-///   on. It costs the most to start - roughly 8s to the first audio byte,
-///   because it fetches a PO token and solves the player JS challenge - but it
-///   is the only client that answers for label-uploaded and auto-generated
-///   "- Topic" music tracks, which is most of what this bot is asked to play.
-///   Those two came back `HTTP Error 403: Forbidden` on every other client.
-/// - `tv_simply` played the two ordinary uploads in about 5s and was refused on
-///   both music tracks. Kept because it does not depend on the video being
-///   embeddable, which is the one case `web_embedded` cannot serve.
-/// - `android_vr` needs no PO token and so reaches bytes in about 2s, but it
-///   managed only one of the four. Last because it is the cheapest to try and
-///   the likeliest to be refused; YouTube turns away token-less requests first,
-///   and yt-dlp's PO Token Guide warns such requests "may return HTTP Error
-///   403, or result in your account or IP address being blocked".
-///
-/// The order is deliberately reliability-first rather than speed-first. Trying
-/// the fast clients ahead of `web_embedded` would save ~6s on the tracks they
-/// can serve and cost ~7s on the ones they cannot, and the refused set is the
-/// larger one for a music bot.
+/// The player clients tried in turn until one yields audio bytes.
 pub const PLAYER_CLIENTS: [&str; 3] = ["web_embedded", "tv_simply", "android_vr"];
 
 /// The client tried first. See [`PLAYER_CLIENTS`].
@@ -433,14 +410,8 @@ mod tests {
     use super::{retry_once, PLAYER_CLIENTS, PRIMARY_CLIENT};
     use std::cell::Cell;
 
-    /// Find the bundled YouTube tools for the live test below.
-    ///
-    /// `resolve_paths` looks beside the running executable, and a test binary
-    /// runs from `target/<profile>/deps`, one level below the `lib/` a dev
-    /// checkout actually installs into. Without this the test would spawn a
-    /// bare `yt-dlp` off PATH with no plugin dir and no PO token provider, and
-    /// every client would come back 403 - a failure about the test's own
-    /// environment, not about YouTube.
+    /// `resolve_paths` looks beside the running executable; a test binary runs
+    /// from `target/<profile>/deps`, one level below the real `lib/`.
     fn find_bundled_tools() -> Option<crate::youtube::setup::YoutubeSetupPaths> {
         let exe = std::env::current_exe().ok()?;
         let mut dir = exe.parent()?;
@@ -449,7 +420,6 @@ mod tests {
         } else {
             ("yt-dlp", "bgutil-pot")
         };
-        // deps -> profile dir -> target: the tools sit in one of their `lib/`s.
         for _ in 0..3 {
             let lib_dir = dir.join("lib");
             if lib_dir.join(yt_dlp_name).is_file() {
@@ -466,16 +436,8 @@ mod tests {
         None
     }
 
-    /// Ask YouTube, for real, which clients still play a track.
-    ///
-    /// Ignored by default: it needs the network and the bundled tools, so it
-    /// belongs to nobody's CI run. Run it by hand when playback breaks -
-    /// `cargo test --lib -- --ignored chain_plays_a_topic_track --nocapture` -
-    /// to learn which clients YouTube is still answering before changing the
-    /// order in [`PLAYER_CLIENTS`].
-    ///
-    /// The video is an auto-generated "- Topic" upload on purpose: that is the
-    /// kind YouTube gates hardest and the kind this bot mostly plays.
+    /// Which clients still play a gated "- Topic" track. Run by hand when
+    /// playback breaks, before changing the order in [`PLAYER_CLIENTS`].
     #[test]
     #[ignore = "hits the network and needs the bundled YouTube tools"]
     fn chain_plays_a_topic_track() {
@@ -499,8 +461,6 @@ mod tests {
                     continue;
                 }
             };
-            // Bytes on stdout are the only proof: a refused URL exits having
-            // produced none, exactly as the player's own attempt would see it.
             let mut buf = [0u8; 16384];
             let read = child
                 .stdout
@@ -531,9 +491,6 @@ mod tests {
 
     #[test]
     fn player_clients_are_distinct_and_non_empty() {
-        // A repeat would spend a whole start-up asking a client that has
-        // already answered, which on the slowest of them is several seconds
-        // before the track can begin.
         for (i, client) in PLAYER_CLIENTS.iter().enumerate() {
             assert!(!client.is_empty(), "client {i} is empty");
             assert!(
@@ -545,8 +502,6 @@ mod tests {
 
     #[test]
     fn player_clients_are_names_yt_dlp_accepts() {
-        // They are pasted into `youtube:player_client=`, where a stray space
-        // or comma would silently change which clients yt-dlp queries.
         for client in PLAYER_CLIENTS {
             assert!(
                 client
@@ -559,10 +514,6 @@ mod tests {
 
     #[test]
     fn web_embedded_is_tried_before_the_clients_it_covers_for() {
-        // The catalogue this bot plays is mostly label-uploaded and
-        // auto-generated "- Topic" music, which as of 2026-08-18 answers only
-        // web_embedded; the others return 403 on it. Ordering the cheap
-        // clients first would cost a refusal on most tracks.
         let pos = |name: &str| PLAYER_CLIENTS.iter().position(|c| *c == name);
         let web = pos("web_embedded").expect("web_embedded must stay in the chain");
         for later in ["tv_simply", "android_vr"] {
