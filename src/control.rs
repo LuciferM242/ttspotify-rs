@@ -110,6 +110,14 @@ pub fn status() {
         print_problems(&problems);
         return;
     }
+    // Without a session bus every unit reads as not running, so listing them
+    // all as "stopped" would be a made-up answer rather than a report.
+    if !service::systemd_reachable() {
+        println!("{}", service::no_session_hint());
+        println!("Configured bots: {}", configs.join(", "));
+        print_problems(&problems);
+        return;
+    }
 
     let enabled = service::enabled_instance_units();
     for name in configs {

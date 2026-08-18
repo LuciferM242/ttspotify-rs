@@ -159,16 +159,6 @@ pub fn report() {
         println!("  none configured");
         fixes.push(format!("Create one - {}", crate::hints::create_bot()));
     }
-    for problem in &problems {
-        println!("  {problem}");
-    }
-    if !problems.is_empty() {
-        fixes.push(format!(
-            "Repair or delete the unusable file(s) in {}",
-            crate::paths::configs_dir().display()
-        ));
-    }
-
     let running = crate::service::running_bot_units();
     let enabled = crate::service::enabled_instance_units();
     let mut wants_spotify = false;
@@ -206,6 +196,19 @@ pub fn report() {
                 ));
             }
         }
+    }
+
+    // After the bots, not before them: these are files that failed to become
+    // bots, and reading them first made the section look like the bot list.
+    if !problems.is_empty() {
+        println!("  files that are not usable as bots:");
+        for problem in &problems {
+            println!("    {problem}");
+        }
+        fixes.push(format!(
+            "Repair or delete the unusable file(s) in {}",
+            crate::paths::configs_dir().display()
+        ));
     }
 
     println!();

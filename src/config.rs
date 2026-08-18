@@ -79,14 +79,23 @@ fn load_valid_config(path: &Path) -> Option<BotConfig> {
 /// hunting for a bot that had simply been written with the wrong spelling in
 /// one field.
 fn read_config_file(path: &Path) -> Result<BotConfig, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot be read ({e})"))?;
-    let cfg: BotConfig = serde_json::from_str(&text).map_err(|e| {
-        if text.trim().is_empty() {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        // io::Error's own wording ends in "(os error 13)", which is a number
+        // for the program, not for whoever has to fix the permissions.
+        let reason = e.to_string();
+        let reason = reason.split(" (os error").next().unwrap_or(&reason).to_string();
+        format!("cannot be read ({reason})")
+    })?;
+    // Parsed as plain JSON first, so a file that is not JSON at all is
+    // reported as that rather than as whichever field serde reached first.
+    if let Err(e) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Err(if text.trim().is_empty() {
             "is empty".to_string()
         } else {
-            format!("is not valid: {e}")
-        }
-    })?;
+            format!("is not valid JSON: {e}")
+        });
+    }
+    let cfg: BotConfig = serde_json::from_str(&text).map_err(|e| format!("is not valid: {e}"))?;
     // Exactly the rule the loader uses, so the set of files listed as bots and
     // the set that will actually run are the same set. They used to differ in
     // both directions: a file relying on the default host was listed and then
