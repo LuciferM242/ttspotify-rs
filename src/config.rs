@@ -69,8 +69,24 @@ pub fn is_bot_config(path: &Path) -> bool {
 }
 
 fn load_valid_config(path: &Path) -> Option<BotConfig> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let cfg: BotConfig = serde_json::from_str(&text).ok()?;
+    read_config_file(path).ok()
+}
+
+/// Read one config, or say in one sentence why it cannot be used.
+///
+/// The reason matters: a file that fails to parse disappears from every
+/// command, and "skipping invalid or incomplete config file" left people
+/// hunting for a bot that had simply been written with the wrong spelling in
+/// one field.
+fn read_config_file(path: &Path) -> Result<BotConfig, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot be read ({e})"))?;
+    let cfg: BotConfig = serde_json::from_str(&text).map_err(|e| {
+        if text.trim().is_empty() {
+            "is empty".to_string()
+        } else {
+            format!("is not valid: {e}")
+        }
+    })?;
     // Exactly the rule the loader uses, so the set of files listed as bots and
     // the set that will actually run are the same set. They used to differ in
     // both directions: a file relying on the default host was listed and then
@@ -78,9 +94,9 @@ fn load_valid_config(path: &Path) -> Option<BotConfig> {
     // ran fine but was invisible to every command and skipped by the layout
     // migration.
     if !names_a_server(&text) {
-        return None;
+        return Err("does not say which server to connect to (no \"host\")".to_string());
     }
-    Some(cfg)
+    Ok(cfg)
 }
 
 /// Whether the file itself says where the server is.
@@ -202,15 +218,31 @@ pub fn resolve_config_path(given: &str) -> PathBuf {
 /// (empty host/username, junk, or a bare `{}` placeholder). Split out from
 /// `list_configs` so it can be tested against a temp directory.
 fn list_configs_in(dir: &Path) -> Vec<(String, PathBuf)> {
+    list_configs_and_problems_in(dir).0
+}
+
+/// Every bot in `dir`, plus a plain sentence about each JSON file that looked
+/// like a bot and was not usable.
+///
+/// The problems used to be logged as warnings, which meant they arrived
+/// coloured and mid-sentence in the middle of `list`, `status` and `doctor`
+/// output. They belong to the command that asked, so it prints them where it
+/// wants them.
+pub fn list_configs_and_problems() -> (Vec<(String, PathBuf)>, Vec<String>) {
+    list_configs_and_problems_in(&crate::paths::configs_dir())
+}
+
+fn list_configs_and_problems_in(dir: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
     // Non-bot JSON files that share the config directory. "settings" is the
     // app-global settings.json (update-check toggle), "lang_prefs" is the i18n
     // per-user language store; the rest are auth/session artifacts. None are
     // server configs, so they must never appear as bots.
     let skip = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
     if !dir.exists() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let mut configs = Vec::new();
+    let mut problems = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -223,15 +255,20 @@ fn list_configs_in(dir: &Path) -> Vec<(String, PathBuf)> {
             if skip.contains(&stem) {
                 continue;
             }
-            if load_valid_config(&path).is_none() {
-                tracing::warn!("Skipping invalid or incomplete config file: {}", path.display());
+            if let Err(reason) = read_config_file(&path) {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                problems.push(format!(
+                    "{} {reason}",
+                    name.unwrap_or_else(|| path.display().to_string())
+                ));
                 continue;
             }
             configs.push((stem.to_string(), path));
         }
     }
     configs.sort_by(|a, b| a.0.cmp(&b.0));
-    configs
+    problems.sort();
+    (configs, problems)
 }
 
 /// After an update, add any newly-added keys (with defaults) to every real config
@@ -301,9 +338,20 @@ pub fn sanitise_config_name(name: &str) -> Option<String> {
         // A name is a file name, not a path: anything that could climb out of
         // the configs folder is dropped rather than escaped.
         .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        // Tabs and newlines survived into file names and into the systemd
+        // instance string, where they are unreadable and unaddressable.
+        .filter(|c| !c.is_control())
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').to_string();
     if cleaned.is_empty() {
+        return None;
+    }
+    // systemd builds `ttspotify@<name>.service` out of this, and a unit name
+    // over 255 bytes cannot be started at all — the bot listed fine and then
+    // failed with a screenful of the name and a systemctl error about
+    // "unavailable resources". Escaping can triple a byte, so the cap is well
+    // under the limit rather than exactly at it.
+    if cleaned.chars().count() > 60 {
         return None;
     }
     // Names that already mean something else. "all" is what start, stop and
@@ -577,6 +625,15 @@ impl BotConfig {
         Ok(config)
     }
 
+    /// Same, without logging the corrections. For commands that only want to
+    /// read a config to describe it: their output is a report someone is
+    /// reading, and a log line lands in the middle of it.
+    pub fn inspect(path: &str) -> Result<Self, BotError> {
+        let mut config = Self::parse_file(Path::new(path))?;
+        let _ = config.validate();
+        Ok(config)
+    }
+
     /// Load config for startup. If the file is missing, offer the interactive
     /// setup wizard (blocks on stdin — startup only, never from a worker task).
     /// Non-interactive contexts (systemd: stdin is /dev/null) skip the prompt
@@ -586,8 +643,11 @@ impl BotConfig {
         use std::io::IsTerminal;
         let path_ref = Path::new(path);
         if !path_ref.exists() {
-            eprintln!("Config file not found: {}", path_ref.display());
+            // Only when there is going to be a question: without a terminal
+            // this printed the same complaint the returned error carries, so
+            // the missing file was reported twice, in two wordings.
             if std::io::stdin().is_terminal() {
+                eprintln!("Config file not found: {}", path_ref.display());
                 eprint!("Would you like to run the setup wizard? [y/N] ");
                 use std::io::Write;
                 std::io::stderr().flush().ok();
@@ -612,8 +672,8 @@ impl BotConfig {
                     }
                 }
             }
-            return Err(BotError::Config(format!(
-                "Config not found: {}\nTo make one, {}",
+            return Err(BotError::Usage(format!(
+                "There is no config file at {}.\nTo make one, {}",
                 path_ref.display(),
                 crate::hints::create_bot()
             )));
@@ -681,15 +741,11 @@ impl BotConfig {
         // gates on "Spotify is disabled here" assumes the active service can
         // never start on, or switch to, a disabled one. With exactly one
         // service enabled the default IS that service, no questions asked.
+        // Silent, deliberately: with one service enabled there is no other
+        // answer this could have, so warning about it told every YouTube-only
+        // bot off for a setting it never made.
         if let Some(only) = self.enabled_services.only() {
-            if self.default_service != only {
-                warnings.push(format!(
-                    "defaultService {} is not enabled on this bot, using {}",
-                    self.default_service.name(),
-                    only.name()
-                ));
-                self.default_service = only;
-            }
+            self.default_service = only;
         }
         if self.bot_name.trim().is_empty() {
             warnings.push("bot_name is empty, reset to Spotify".to_string());
@@ -977,6 +1033,66 @@ mod choice_tests {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)] // tweaking a couple of fields off Default reads fine in tests
 mod tests {
+
+    #[test]
+    fn a_service_reads_back_however_it_was_capitalised() {
+        // `"youtube"` used to fail the whole parse, and a config that fails to
+        // parse does not report a bad field — the bot simply vanishes from
+        // every command.
+        for spelling in ["YouTube", "youtube", "YOUTUBE", " yt "] {
+            let json = format!("{{\"host\":\"h\",\"defaultService\":\"{spelling}\"}}");
+            let cfg: BotConfig = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{spelling} should parse: {e}"));
+            assert_eq!(cfg.default_service, Service::YouTube);
+        }
+    }
+
+    #[test]
+    fn a_service_that_names_nothing_is_still_refused() {
+        let json = "{\"host\":\"h\",\"defaultService\":\"soundcloud\"}";
+        let err = serde_json::from_str::<BotConfig>(json).unwrap_err().to_string();
+        assert!(err.contains("soundcloud"), "the message should quote the value: {err}");
+    }
+
+    #[test]
+    fn a_broken_config_says_what_is_wrong_with_it() {
+        let dir = std::env::temp_dir()
+            .join(format!("ttspotify_problems_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("empty.json"), "").unwrap();
+        std::fs::write(dir.join("junk.json"), "not json").unwrap();
+        std::fs::write(dir.join("nohost.json"), "{\"tcpPort\":1}").unwrap();
+        std::fs::write(dir.join("fine.json"), "{\"host\":\"h\"}").unwrap();
+
+        let (configs, problems) = list_configs_and_problems_in(&dir);
+        assert_eq!(configs.len(), 1);
+        assert_eq!(problems.len(), 3);
+        // Every problem names its file and says something about the cause;
+        // "skipping invalid or incomplete config file" said neither.
+        assert!(problems.iter().any(|p| p.starts_with("empty.json") && p.contains("empty")));
+        assert!(problems.iter().any(|p| p.starts_with("junk.json") && p.contains("not valid")));
+        assert!(problems.iter().any(|p| p.starts_with("nohost.json") && p.contains("host")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_name_too_long_for_a_service_is_refused_up_front() {
+        // Saved fine, listed fine, and then could never start: systemd cannot
+        // address a unit name that long, and said so in a screenful of the
+        // name itself.
+        assert_eq!(sanitise_config_name(&"a".repeat(61)), None);
+        assert_eq!(sanitise_config_name(&"a".repeat(60)), Some("a".repeat(60)));
+    }
+
+    #[test]
+    fn control_characters_never_reach_a_file_name() {
+        assert_eq!(sanitise_config_name("one
+two"), Some("onetwo".to_string()));
+        assert_eq!(sanitise_config_name("tab	here"), Some("tabhere".to_string()));
+        assert_eq!(sanitise_config_name("
+	"), None);
+    }
     use super::*;
     use ::teamtalk::types::UserGender;
 
@@ -1173,7 +1289,9 @@ mod tests {
         cfg.default_service = Service::Spotify;
         let warnings = cfg.validate();
         assert_eq!(cfg.default_service, Service::YouTube);
-        assert!(!warnings.is_empty());
+        // Silently: with one service enabled there is no other answer, so
+        // there is nothing to tell anyone about.
+        assert!(warnings.is_empty());
 
         let mut cfg = BotConfig::default();
         cfg.enabled_services = EnabledServices { spotify: true, youtube: false };
