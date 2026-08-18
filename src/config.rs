@@ -183,9 +183,12 @@ pub fn resolve_config_path(given: &str) -> PathBuf {
     };
     let moved = crate::paths::configs_dir().join(name);
     if moved.exists() {
-        tracing::warn!(
-            "Config not at {}; using {} instead. Your service file still points at the \
-             old location - re-run the service install to update it.",
+        // Printed, not only logged: this runs before the bot's logging exists,
+        // so the tracing line went nowhere — and this is the one message that
+        // tells someone with an old service file that it needs updating.
+        eprintln!(
+            "Config not at {}; using {} instead.\nYour service file still points at the old \
+             location - re-run the service install to update it.",
             path.display(),
             moved.display()
         );

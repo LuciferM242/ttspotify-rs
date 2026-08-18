@@ -189,11 +189,14 @@ pub fn install_service() -> Result<(), BotError> {
     println!("TTSpotify service installed.");
     println!("Config files go in: {}", config_base.display());
     println!();
+    // Our own commands, not the systemd ones they replace: this is printed at
+    // the moment someone is most likely to copy a line out of it.
+    let prog = crate::paths::program_name();
     println!("Quick start:");
-    println!("  {} add myserver", crate::paths::program_name());
-    println!("  systemctl --user start ttspotify@myserver");
-    println!("  systemctl --user enable ttspotify@myserver");
-    println!("  journalctl --user -u ttspotify@myserver -f");
+    println!("  {prog} add myserver        create a bot");
+    println!("  {prog} start myserver      run it in the background");
+    println!("  {prog} status              see what is running");
+    println!("  {prog} watch myserver      follow its log");
 
     // Ensure the user's systemd instance survives logout before we start
     // anything: `--user` services stop when the last session ends unless

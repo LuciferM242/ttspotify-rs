@@ -175,7 +175,12 @@ pub fn logs(name: &str, following: bool) -> Result<(), BotError> {
         )));
     }
 
-    if service::systemd_booted() && service::service_installed() {
+    // The journal only has anything to show if this bot was run as a service.
+    // Started from a terminal with `run`, its unit has no entries at all —
+    // and journalctl reports that with "-- No entries --" and exit 0, so
+    // trusting the exit code showed the user an empty screen while the real
+    // log sat in a file.
+    if service::systemd_booted() && service::service_installed() && journal_has_entries(name) {
         let unit = unit_for(name);
         let mut cmd = Command::new("journalctl");
         cmd.args(["--user", "-u", &unit, "-n", "200"]);
@@ -313,6 +318,17 @@ pub fn resolve_run_target(name: Option<&str>) -> Result<Option<std::path::PathBu
         ))),
         None => Ok(pick_bot(&configs).map(|(_, path)| path)),
     }
+}
+
+/// Whether the journal actually holds anything for this bot's unit.
+fn journal_has_entries(name: &str) -> bool {
+    let unit = unit_for(name);
+    Command::new("journalctl")
+        .args(["--user", "-u", &unit, "-n", "1", "--no-pager", "--quiet"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
 }
 
 /// Newest log file for a bot, if any: `<root>/logs/<name>/<date>.log`.

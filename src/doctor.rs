@@ -129,7 +129,7 @@ pub fn report() {
     );
     println!("  on PATH: {}", yes_no(on_path));
     if !on_path {
-        fixes.push(format!("Put the binary on your PATH: {program} install"));
+        fixes.push(format!("Put the binary on your PATH - {}", crate::hints::install_binary()));
     }
 
     println!();
@@ -143,7 +143,7 @@ pub fn report() {
     println!("Bots");
     if configs.is_empty() {
         println!("  none configured");
-        fixes.push(format!("Create one: {program} add myserver"));
+        fixes.push(format!("Create one - {}", crate::hints::create_bot()));
     }
 
     let running = crate::service::running_bot_units();
@@ -166,7 +166,12 @@ pub fn report() {
             }
             Err(e) => {
                 println!("    config will not load: {e}");
-                fixes.push(format!("Fix or recreate {}: {program} edit {name}", path.display()));
+                // Not `edit`: it loads the config too, and fails the same way. The
+                // file has to be replaced, or repaired by hand.
+                fixes.push(format!(
+                    "Repair {} by hand, or replace it: {program} remove {name} then {program} add {name}",
+                    path.display()
+                ));
             }
         }
     }
@@ -176,7 +181,7 @@ pub fn report() {
     let spotify_cached = crate::spotify::auth::SpotifyAuth::new().has_cached_credentials();
     println!("  Spotify login: {}", if spotify_cached { "cached" } else { "not cached" });
     if wants_spotify && !spotify_cached {
-        fixes.push(format!("Sign in to Spotify once: {program} auth"));
+        fixes.push(format!("Sign in to Spotify once - {}", crate::hints::sign_in_spotify()));
     }
 
     let tools = crate::youtube::setup::installed_tool_versions();
@@ -187,7 +192,7 @@ pub fn report() {
         tools.js_runtime.as_deref().unwrap_or("none - some YouTube formats will be unavailable")
     );
     if wants_youtube && tools.yt_dlp.is_none() {
-        fixes.push(format!("Install the YouTube tools: {program} youtube install"));
+        fixes.push(format!("Install the YouTube tools - {}", crate::hints::install_youtube_tools()));
     }
 
     println!();
@@ -217,14 +222,14 @@ pub fn report() {
         match crate::service::installed_unit_version() {
             Some((installed, current)) if installed < current => {
                 println!("  service file: installed, older than this release");
-                fixes.push(format!("Refresh the service file: {program} service install"));
+                fixes.push(format!("Refresh the service file - {}", crate::hints::install_service()));
             }
             Some(_) => println!("  service file: installed and current"),
             None => {
                 println!("  service file: not installed");
                 if !configs.is_empty() {
                     fixes.push(format!(
-                        "Run bots in the background: {program} service install"
+                        "Run bots in the background - {}", crate::hints::install_service()
                     ));
                 }
             }
@@ -250,7 +255,7 @@ pub fn report() {
             let exists = Path::new(&exec).exists();
             println!("  service runs: {exec}{}", if exists { "" } else { "  (MISSING)" });
             if !exists {
-                fixes.push(format!("Point the service at this binary: {program} install"));
+                fixes.push(format!("Point the service at this binary - {}", crate::hints::install_binary()));
             }
         }
     }

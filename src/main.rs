@@ -297,7 +297,11 @@ async fn main() -> Result<(), BotError> {
                 // Which stop applies depends on how the other copy was
                 // started, and from here there is no way to tell.
                 eprintln!("To stop it: {prog} stop {name}, or Ctrl+C in the terminal running it");
-                std::process::exit(1);
+                // The same code a broken config exits with, and for the same
+                // reason: the unit lists it in RestartPreventExitStatus, so
+                // systemd stops rather than restarting every two seconds into
+                // a refusal that will not change.
+                std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
             }
             // A lock we cannot create is not a reason to refuse to run: that
             // would turn a read-only data directory into a bot that never
@@ -367,9 +371,12 @@ async fn main() -> Result<(), BotError> {
             // error worth a non-zero exit and a systemd restart.
             Err(e) if signalled.load(std::sync::atomic::Ordering::Relaxed) => {
                 tracing::info!("Stopped before the bot finished connecting ({e})");
-                std::process::exit(0);
+                return Ok(());
             }
-            Err(e) => return Err(e),
+            // Through `finish` like every other path: returning the error
+            // from main prints it as `TeamTalk("...")` rather than as the
+            // sentence the user needs.
+            Err(e) => finish(Err(e)),
         };
 
         match exit {
@@ -377,7 +384,11 @@ async fn main() -> Result<(), BotError> {
                 tracing::info!("Restarting bot...");
                 continue;
             }
-            _ => std::process::exit(0),
+            // `return`, not `process::exit`: exiting here would skip the log
+            // guard's Drop, and the appender's buffered tail -- the disconnect
+            // and the reason for stopping -- is exactly what someone reads the
+            // log for afterwards.
+            _ => return Ok(()),
         }
     }
 }
@@ -405,10 +416,21 @@ fn prints_and_exits(command: &Option<Commands>) -> bool {
 async fn run_command(command: Commands) -> Result<(), BotError> {
     use clap::CommandFactory;
 
+    // The bot sets up file logging later; these commands exit before that, so
+    // without a subscriber here every tracing::warn! they cause goes nowhere.
+    // `list` skipping an unreadable config, or `run` reporting a bot as
+    // missing when its file failed to parse, then look like the file is simply
+    // not there.
+    let _ = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .try_init();
+
     match command {
-        // Handled by the caller, which needs the config path rather than an
-        // exit code.
-        Commands::Run { .. } => Ok(()),
+        // Intercepted by the caller, which needs the config path rather than
+        // an exit code. Reaching here would mean `run` silently did nothing.
+        Commands::Run { .. } => unreachable!("run is resolved before dispatch"),
 
         Commands::Add { name } => {
             tt_spotify_bot::wizard::run_wizard(name.as_deref(), true).map(|_| ())
@@ -618,7 +640,7 @@ async fn run_cli_update() -> Result<(), BotError> {
 
     if !std::io::stdin().is_terminal() {
         eprintln!(
-            "Not a terminal; refusing to update non-interactively. Run `{} --update` from a shell.",
+            "Not a terminal; refusing to update non-interactively. Run `{} update` from a shell.",
             tt_spotify_bot::paths::program_name()
         );
         std::process::exit(1);
