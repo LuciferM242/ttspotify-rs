@@ -55,7 +55,7 @@ futures-util = { version = "0.3", default-features = false }
 sha2 = "0.10"
 
 # Async runtime
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
 
 # Audio
 crossbeam-channel = "0.5"

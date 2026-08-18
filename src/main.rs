@@ -186,6 +186,16 @@ async fn main() -> Result<(), BotError> {
     // Carries the current channel across restarts (in memory); the config
     // default is used on a fresh process start.
     let last_channel = std::sync::Arc::new(parking_lot::Mutex::new(None));
+
+    // `systemctl --user stop` sends SIGTERM and Ctrl+C sends SIGINT; without a
+    // handler either one kills the process outright, so the bot never leaves
+    // the TeamTalk channel and the server holds a ghost user until it times
+    // out. Both now set the same flag the tray's stop button sets, which the
+    // event loop polls and answers with a real disconnect.
+    let signalled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal_notify = Arc::new(tokio::sync::Notify::new());
+    spawn_signal_watcher(signalled.clone(), signal_notify.clone());
+
     loop {
         // A missing/broken config exits with EXIT_CONFIG_ERROR so the systemd
         // unit's RestartPreventExitStatus stops the service instead of
@@ -197,9 +207,43 @@ async fn main() -> Result<(), BotError> {
                 std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
             }
         };
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(
+            // A signal that arrived between two runs (during a restart, say)
+            // must not be dropped on the floor.
+            signalled.load(std::sync::atomic::Ordering::Relaxed),
+        ));
 
-        match tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None, last_channel.clone()).await? {
+        // Each run gets its own flag — a restart clears it — so a task per run
+        // carries the signal across to whichever flag is live at the time.
+        let bridge = {
+            let notify = signal_notify.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                notify.notified().await;
+                shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
+
+        let exit =
+            tt_spotify_bot::bot::runner::run_bot(config, config_path.clone(), shutdown, None, last_channel.clone())
+                .await;
+        bridge.abort();
+
+        let exit = match exit {
+            Ok(exit) => exit,
+            // Connecting and logging in happen inside blocking SDK calls that
+            // cannot be interrupted, so a signal during startup is only seen
+            // once they give up (bounded by the SDK's own 10s waits). Failing
+            // to reach a server we were told to stop talking to is not an
+            // error worth a non-zero exit and a systemd restart.
+            Err(e) if signalled.load(std::sync::atomic::Ordering::Relaxed) => {
+                tracing::info!("Stopped before the bot finished connecting ({e})");
+                std::process::exit(0);
+            }
+            Err(e) => return Err(e),
+        };
+
+        match exit {
             BotExit::Restart => {
                 tracing::info!("Restarting bot...");
                 continue;
@@ -207,6 +251,44 @@ async fn main() -> Result<(), BotError> {
             _ => std::process::exit(0),
         }
     }
+}
+
+/// Turn SIGTERM and SIGINT into the same clean stop the tray performs.
+///
+/// The first signal asks the bot to leave the server and exit; a second one
+/// gives up waiting and quits on the spot, so a stop that hangs is still
+/// answerable from the keyboard.
+#[cfg(not(windows))]
+fn spawn_signal_watcher(signalled: Arc<std::sync::atomic::AtomicBool>, notify: Arc<tokio::sync::Notify>) {
+    use std::sync::atomic::Ordering;
+    use tokio::signal::unix::{signal, SignalKind};
+
+    tokio::spawn(async move {
+        let (mut term, mut interrupt) =
+            match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
+                (Ok(term), Ok(interrupt)) => (term, interrupt),
+                _ => {
+                    // Without handlers the default disposition still applies:
+                    // the bot dies on signal exactly as it did before.
+                    tracing::warn!("Could not install signal handlers; stop will not be graceful");
+                    return;
+                }
+            };
+
+        loop {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+
+            if signalled.swap(true, Ordering::Relaxed) {
+                eprintln!("Second signal received - exiting now.");
+                std::process::exit(130);
+            }
+            tracing::info!("Stopping: leaving the server. Signal again to quit immediately.");
+            notify.notify_one();
+        }
+    });
 }
 
 /// Interactive `--update`: check GitHub, show the changelog, confirm, then

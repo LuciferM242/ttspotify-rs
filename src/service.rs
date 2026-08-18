@@ -23,7 +23,7 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 3;
+const UNIT_FILE_VERSION: u32 = 4;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -270,6 +270,9 @@ ExecStart={exec_start}
 Restart=on-failure
 RestartPreventExitStatus={config_exit}
 RestartSec=2
+# The bot answers SIGTERM by leaving the TeamTalk channel before it exits, so
+# systemd is asked to wait for that instead of killing it mid-logout.
+TimeoutStopSec=20
 
 # Sandbox: everything is read-only to the bot except the paths below.
 # Using a custom --config path in ExecStart? Add its folder as another
@@ -510,6 +513,9 @@ mod tests {
         // The old directive referenced an exit code nothing ever emits.
         assert!(!unit.contains("RestartForceExitStatus"));
         assert!(unit.contains("Restart=on-failure"));
+        // SIGTERM starts a clean logout; systemd must wait for it rather than
+        // SIGKILL the bot mid-disconnect and leave a ghost user behind.
+        assert!(unit.contains("TimeoutStopSec="));
         assert!(unit.contains("ExecStart=\"/opt/bot\""));
     }
 
