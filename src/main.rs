@@ -43,6 +43,41 @@ struct Args {
     #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     setup: Option<String>,
 
+    /// List the bots configured on this machine
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    list: bool,
+
+    /// Show which bots are running
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    status: bool,
+
+    /// Start a bot by config name, or "all"
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "NAME")]
+    start: Option<String>,
+
+    /// Stop a bot by config name, or "all"
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "NAME")]
+    stop: Option<String>,
+
+    /// Restart a bot by config name, or "all"
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "NAME")]
+    restart: Option<String>,
+
+    /// Show a bot's log
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "NAME")]
+    logs: Option<String>,
+
+    /// With --logs: keep printing new lines as they arrive
+    #[cfg(target_os = "linux")]
+    #[arg(long, requires = "logs")]
+    follow: bool,
+
     /// Show what is installed, what is running, and what to fix
     #[cfg(target_os = "linux")]
     #[arg(long)]
@@ -118,12 +153,36 @@ async fn main() -> Result<(), BotError> {
         return Ok(());
     }
     #[cfg(target_os = "linux")]
+    if args.list {
+        tt_spotify_bot::control::list();
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if args.status {
+        tt_spotify_bot::control::status();
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    for (verb, target) in [
+        ("start", &args.start),
+        ("stop", &args.stop),
+        ("restart", &args.restart),
+    ] {
+        if let Some(target) = target {
+            finish(tt_spotify_bot::control::control(verb, target));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(ref name) = args.logs {
+        finish(tt_spotify_bot::control::logs(name, args.follow));
+    }
+    #[cfg(target_os = "linux")]
     if args.install {
-        return tt_spotify_bot::install::install();
+        finish(tt_spotify_bot::install::install());
     }
     #[cfg(target_os = "linux")]
     if args.uninstall {
-        return tt_spotify_bot::install::uninstall(args.purge);
+        finish(tt_spotify_bot::install::uninstall(args.purge));
     }
     #[cfg(target_os = "linux")]
     if args.install_service {
@@ -282,6 +341,22 @@ async fn main() -> Result<(), BotError> {
                 continue;
             }
             _ => std::process::exit(0),
+        }
+    }
+}
+
+/// End a one-shot command: its message, then an exit code.
+///
+/// Returning the error from `main` instead would print it through `Debug`
+/// ("Usage(\"No config named ...\")"), which is not a sentence anyone wants to
+/// read at the end of a mistyped command.
+#[cfg(target_os = "linux")]
+fn finish(result: Result<(), BotError>) -> ! {
+    match result {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
     }
 }

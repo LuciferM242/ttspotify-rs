@@ -86,7 +86,7 @@ pub fn linger_user() -> String {
 /// `systemd-escape`: `/` becomes `-`, a leading `.` and every byte outside
 /// `[A-Za-z0-9:_.]` become `\xNN`. Without this, a config like
 /// `my server.json` yields an instance string systemctl can't address.
-fn systemd_escape_instance(name: &str) -> String {
+pub(crate) fn systemd_escape_instance(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for (i, b) in name.bytes().enumerate() {
         let allowed = b.is_ascii_alphanumeric()

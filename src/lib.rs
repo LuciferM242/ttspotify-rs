@@ -11,6 +11,8 @@ pub mod paths;
 pub mod player;
 pub mod proc;
 #[cfg(target_os = "linux")]
+pub mod control;
+#[cfg(target_os = "linux")]
 pub mod doctor;
 #[cfg(target_os = "linux")]
 pub mod install;

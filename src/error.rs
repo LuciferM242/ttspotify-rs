@@ -4,6 +4,11 @@ use thiserror::Error;
 pub enum BotError {
     #[error("Config: {0}")]
     Config(String),
+    /// A command was asked for something it cannot do — a bot name that does
+    /// not exist, systemd where there is none. The message is written for the
+    /// person who typed it, so it carries no prefix of its own.
+    #[error("{0}")]
+    Usage(String),
     #[error("Spotify auth: {0}")]
     SpotifyAuth(String),
     #[error("Spotify playback: {0}")]
