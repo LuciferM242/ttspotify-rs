@@ -88,6 +88,66 @@ pub fn list_configs() -> Vec<(String, PathBuf)> {
     list_configs_in(&crate::paths::configs_dir())
 }
 
+/// Read a menu answer: the number beside a bot, or its name typed out.
+///
+/// Returns `None` for anything else, including an out-of-range number, so the
+/// caller asks again rather than starting a bot nobody chose.
+pub fn parse_config_choice(input: &str, names: &[String]) -> Option<usize> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    if let Ok(number) = input.parse::<usize>() {
+        return number.checked_sub(1).filter(|i| *i < names.len());
+    }
+    names.iter().position(|n| n == input)
+}
+
+/// Which config a bare run (no `--config`) should use.
+///
+/// One config is not a choice. Several used to mean "the first one
+/// alphabetically", silently — so a machine with three bots started whichever
+/// one happened to sort first. With a terminal, ask; without one, carry on
+/// with the first but say which, so the log records the decision.
+pub fn choose_config(configs: &[(String, PathBuf)], interactive: bool) -> Option<PathBuf> {
+    match configs.len() {
+        0 => None,
+        1 => Some(configs[0].1.clone()),
+        _ if !interactive => {
+            let (name, path) = &configs[0];
+            println!(
+                "Several bots are configured; running \"{name}\". Pass --config to pick another."
+            );
+            Some(path.clone())
+        }
+        _ => prompt_for_config(configs),
+    }
+}
+
+fn prompt_for_config(configs: &[(String, PathBuf)]) -> Option<PathBuf> {
+    use std::io::Write;
+
+    let names: Vec<String> = configs.iter().map(|(name, _)| name.clone()).collect();
+    println!("Which bot do you want to run?");
+    for (i, name) in names.iter().enumerate() {
+        println!("  {}. {name}", i + 1);
+    }
+
+    for _ in 0..3 {
+        print!("Number or name: ");
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).unwrap_or(0) == 0 {
+            return None; // EOF: treat as "never mind".
+        }
+        if let Some(index) = parse_config_choice(&input, &names) {
+            return Some(configs[index].1.clone());
+        }
+        println!("  Not one of the choices.");
+    }
+    None
+}
+
 /// Resolve a `--config` path that may have been written before configs moved
 /// into `config/`.
 ///
@@ -633,6 +693,67 @@ impl ConfigStore {
         if let Err(e) = guard.save(&self.path) {
             tracing::error!("Failed to save config {}: {e}", self.path.display());
         }
+    }
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::*;
+
+    fn names() -> Vec<String> {
+        vec!["home".to_string(), "work".to_string()]
+    }
+
+    #[test]
+    fn a_number_picks_the_bot_beside_it() {
+        assert_eq!(parse_config_choice("1", &names()), Some(0));
+        assert_eq!(parse_config_choice(" 2 \n", &names()), Some(1));
+    }
+
+    #[test]
+    fn a_name_works_as_well_as_its_number() {
+        assert_eq!(parse_config_choice("work", &names()), Some(1));
+        assert_eq!(parse_config_choice("elsewhere", &names()), None);
+    }
+
+    #[test]
+    fn out_of_range_numbers_are_refused_rather_than_clamped() {
+        // Starting bot 1 because someone typed 3 would be worse than asking
+        // again, and 0 must not wrap round to the last entry.
+        assert_eq!(parse_config_choice("3", &names()), None);
+        assert_eq!(parse_config_choice("0", &names()), None);
+        assert_eq!(parse_config_choice("", &names()), None);
+        assert_eq!(parse_config_choice("-1", &names()), None);
+    }
+
+    #[test]
+    fn one_config_is_not_a_choice_and_none_is_not_an_answer() {
+        let one = vec![("home".to_string(), PathBuf::from("/x/home.json"))];
+        assert_eq!(
+            choose_config(&one, false).as_deref(),
+            Some(Path::new("/x/home.json"))
+        );
+        // Interactivity is irrelevant when there is nothing to choose between.
+        assert_eq!(
+            choose_config(&one, true).as_deref(),
+            Some(Path::new("/x/home.json"))
+        );
+        assert_eq!(choose_config(&[], true), None);
+    }
+
+    #[test]
+    fn without_a_terminal_several_configs_still_start_the_first() {
+        // Under systemd the unit always passes --config, so this path is a
+        // hand-run with no terminal: keep the old behaviour rather than
+        // refusing to start, but say which one it took.
+        let many = vec![
+            ("home".to_string(), PathBuf::from("/x/home.json")),
+            ("work".to_string(), PathBuf::from("/x/work.json")),
+        ];
+        assert_eq!(
+            choose_config(&many, false).as_deref(),
+            Some(Path::new("/x/home.json"))
+        );
     }
 }
 

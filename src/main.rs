@@ -257,15 +257,24 @@ async fn main() -> Result<(), BotError> {
     // below once it is.
     let layout_migration = tt_spotify_bot::paths::migrate_data_layout();
 
-    let config_path = args.config.unwrap_or_else(|| {
-        let configs = tt_spotify_bot::config::list_configs();
-        if let Some((_, path)) = configs.first() {
-            path.to_string_lossy().into_owned()
-        } else {
-            tt_spotify_bot::paths::configs_dir().join("config.json")
-                .to_string_lossy().into_owned()
+    let config_path = match args.config {
+        Some(path) => path,
+        None => {
+            use std::io::IsTerminal;
+            let configs = tt_spotify_bot::config::list_configs();
+            let interactive = std::io::stdin().is_terminal();
+            match tt_spotify_bot::config::choose_config(&configs, interactive) {
+                Some(path) => path.to_string_lossy().into_owned(),
+                // No configs: this path leads to the first-run wizard. Having
+                // configs but choosing none means the user backed out.
+                None if configs.is_empty() => tt_spotify_bot::paths::configs_dir()
+                    .join("config.json")
+                    .to_string_lossy()
+                    .into_owned(),
+                None => return Ok(()),
+            }
         }
-    });
+    };
 
     // An old systemd unit may still name the pre-move location.
     let config_path = tt_spotify_bot::config::resolve_config_path(&config_path)
