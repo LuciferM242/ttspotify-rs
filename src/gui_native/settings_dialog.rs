@@ -40,6 +40,7 @@ pub fn show(parent: &impl GuiParent) {
             let hwnd = dlg2.hwnd();
             let new = AppSettings {
                 check_updates_on_startup: updates.is_checked(),
+                ..settings::load()
             };
             if let Err(e) = new.save() {
                 // Stay open on failure so the user can retry or cancel, rather
@@ -91,6 +92,7 @@ mod tests {
 
         let flipped = AppSettings {
             check_updates_on_startup: !original.check_updates_on_startup,
+            ..original.clone()
         };
         flipped.save().expect("settings should save");
         assert_eq!(
