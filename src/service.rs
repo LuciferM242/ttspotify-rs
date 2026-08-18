@@ -23,7 +23,7 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 5;
+const UNIT_FILE_VERSION: u32 = 6;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -39,6 +39,31 @@ fn unit_version_from_contents(contents: &str) -> u32 {
 /// `sd_booted()` performs). Without it `systemctl` is absent.
 pub fn systemd_booted() -> bool {
     std::path::Path::new("/run/systemd/system").exists()
+}
+
+/// Whether this session can actually talk to the user's systemd instance.
+///
+/// Booted under systemd is not the same as being able to reach it: a shell
+/// that arrives without a login session (some `su`, some cron, some remote
+/// runners) has no session bus, and every systemctl call answers with a wall
+/// of text about $DBUS_SESSION_BUS_ADDRESS that leaked straight through to
+/// the user.
+pub fn systemd_reachable() -> bool {
+    Command::new("systemctl")
+        .args(["--user", "show", "-p", "Version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// What to tell someone whose session cannot reach systemd.
+pub fn no_session_hint() -> String {
+    format!(
+        "This shell has no systemd user session, so bots cannot be managed as \
+         services here.\nLog in properly (not with plain `su`), or run a bot in \
+         this terminal: {} run <name>",
+        crate::paths::program_name()
+    )
 }
 
 /// True if the ttspotify@ systemd user unit file is installed.
@@ -117,6 +142,14 @@ pub fn offer_enable_instance(name: &str) {
             .args(["--user", "start", &format!("ttspotify@{instance}")])
             .status();
         println!("  ttspotify@{instance} enabled and started.");
+    } else {
+        // The prompt above ended the output with a dangling question when the
+        // answer was no (or when there was nobody to answer), unlike every
+        // other prompt here, which says what it did instead.
+        println!(
+            "Skipped. Start it later with: {} start {name}",
+            crate::paths::program_name()
+        );
     }
 }
 
@@ -243,7 +276,7 @@ pub fn install_service() -> Result<(), BotError> {
 /// Returns the config base dir the unit points at.
 fn write_unit_file() -> Result<PathBuf, BotError> {
     let exe_path = std::env::current_exe()
-        .map_err(|e| BotError::Config(format!("Cannot determine executable path: {e}")))?;
+        .map_err(|e| BotError::Usage(format!("Cannot determine executable path: {e}")))?;
     write_unit_file_for(&exe_path)
 }
 
@@ -355,6 +388,12 @@ fn unit_file_contents(exec_start: &str, config_dir: &Path, tools_dir: Option<&Pa
 Description=TTSpotify Bot (%i)
 After=network-online.target
 Wants=network-online.target
+# A bot that cannot reach its server exits at once, so an unlimited retry is a
+# login attempt every few seconds forever — against someone else's server, and
+# invisible unless you go looking. Five tries in ten minutes, then the unit
+# stops and stays failed, which `status` and `doctor` both report.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -362,7 +401,7 @@ WorkingDirectory={config_dir}
 ExecStart={exec_start}
 Restart=on-failure
 RestartPreventExitStatus={config_exit}
-RestartSec=2
+RestartSec=30
 # The bot answers SIGTERM by leaving the TeamTalk channel before it exits, so
 # systemd is asked to wait for that instead of killing it mid-logout.
 TimeoutStopSec=20
@@ -416,6 +455,70 @@ pub fn running_bot_units() -> Vec<String> {
         Ok(o) if o.status.success() => parse_running_units(&String::from_utf8_lossy(&o.stdout)),
         _ => Vec::new(),
     }
+}
+
+/// What systemd thinks of one instance, beyond "is it in the running list".
+///
+/// "Running or not" was the whole answer before, and it made the commonest
+/// first-run failure invisible: a bot with the wrong server address exits
+/// immediately, systemd restarts it, and every `status` in between lands in a
+/// gap where the unit is not running — so the bot looked merely stopped while
+/// it was in fact failing over and over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitHealth {
+    Running,
+    /// Exited and waiting to be started again.
+    Restarting,
+    /// Given up on: it failed, and systemd will not try again by itself.
+    Failed,
+    /// Not running because nobody asked it to run.
+    Stopped,
+}
+
+/// Ask systemd about one instance. Anything unreadable reads as `Stopped`,
+/// which is what the caller assumed before this existed.
+pub fn unit_health(unit: &str) -> UnitHealth {
+    let out = Command::new("systemctl")
+        .args(["--user", "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Result"])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => parse_unit_health(&String::from_utf8_lossy(&o.stdout)),
+        _ => UnitHealth::Stopped,
+    }
+}
+
+/// Read `systemctl show` key=value output into a health verdict.
+fn parse_unit_health(output: &str) -> UnitHealth {
+    let mut active = "";
+    let mut sub = "";
+    let mut result = "";
+    for line in output.lines() {
+        match line.split_once('=') {
+            Some(("ActiveState", v)) => active = v.trim(),
+            Some(("SubState", v)) => sub = v.trim(),
+            Some(("Result", v)) => result = v.trim(),
+            _ => {}
+        }
+    }
+    match (active, sub) {
+        ("active", _) => UnitHealth::Running,
+        // Between crashes the unit is "activating (auto-restart)".
+        ("activating", "auto-restart") => UnitHealth::Restarting,
+        ("activating", _) => UnitHealth::Running,
+        ("failed", _) => UnitHealth::Failed,
+        // A stop that came from a crash leaves Result set even once the unit
+        // is inactive, which is how a hit start-limit reads.
+        _ if !result.is_empty() && result != "success" => UnitHealth::Failed,
+        _ => UnitHealth::Stopped,
+    }
+}
+
+/// Clear the failed state of one instance, so a later start is allowed again
+/// after the start limit was hit. Silent if there is nothing to clear.
+pub fn reset_failed(unit: &str) {
+    let _ = Command::new("systemctl")
+        .args(["--user", "reset-failed", unit])
+        .output();
 }
 
 /// After a successful self-update, offer to restart the running bot units so
@@ -597,7 +700,66 @@ pub(crate) fn remove_service(note_untouched: bool) -> Result<(), BotError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_running_units, unit_file_contents, unit_version_from_contents, UNIT_FILE_VERSION};
+    use super::{
+        parse_running_units, parse_unit_health, unit_file_contents, unit_version_from_contents,
+        UnitHealth, UNIT_FILE_VERSION,
+    };
+
+    #[test]
+    fn a_unit_between_crashes_reads_as_restarting_not_stopped() {
+        // The state a bot with a wrong server address sits in: exited,
+        // waiting to be started again. It is absent from the running list
+        // for most of every cycle, which is why it looked merely stopped.
+        let output = "ActiveState=activating
+SubState=auto-restart
+Result=exit-code
+";
+        assert_eq!(parse_unit_health(output), UnitHealth::Restarting);
+    }
+
+    #[test]
+    fn a_unit_that_gave_up_reads_as_failed() {
+        let failed = "ActiveState=failed
+SubState=failed
+Result=exit-code
+";
+        assert_eq!(parse_unit_health(failed), UnitHealth::Failed);
+        // Hitting the start limit leaves the unit inactive with the
+        // failure still recorded; that is not the same as never started.
+        let limit = "ActiveState=inactive
+SubState=dead
+Result=start-limit-hit
+";
+        assert_eq!(parse_unit_health(limit), UnitHealth::Failed);
+    }
+
+    #[test]
+    fn a_clean_stop_and_a_running_bot_are_told_apart() {
+        let stopped = "ActiveState=inactive
+SubState=dead
+Result=success
+";
+        assert_eq!(parse_unit_health(stopped), UnitHealth::Stopped);
+        let running = "ActiveState=active
+SubState=running
+Result=success
+";
+        assert_eq!(parse_unit_health(running), UnitHealth::Running);
+        // Nothing to read at all is not a claim that anything failed.
+        assert_eq!(parse_unit_health(""), UnitHealth::Stopped);
+    }
+
+    #[test]
+    fn the_unit_stops_retrying_a_bot_that_cannot_connect() {
+        // Unlimited two-second retries meant a bot with a wrong address
+        // logged into someone else's server about thirty times a minute,
+        // forever, with nothing on screen to say so.
+        let unit = unit_file_contents("\"/opt/bot\" --config \"/c/%i.json\"", std::path::Path::new("/c"), None);
+        assert!(unit.contains("StartLimitBurst="));
+        assert!(unit.contains("StartLimitIntervalSec="));
+        assert!(!unit.contains("RestartSec=2
+"));
+    }
 
     #[test]
     fn unit_file_does_not_restart_on_config_error() {

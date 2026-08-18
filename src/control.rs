@@ -57,54 +57,95 @@ fn require_service() -> Result<(), BotError> {
             crate::hints::install_service()
         )));
     }
+    if !service::systemd_reachable() {
+        return Err(BotError::Usage(service::no_session_hint()));
+    }
     Ok(())
 }
 
 /// `--list`: the configs on this machine, whether or not systemd is involved.
 pub fn list() {
-    let configs = crate::config::list_configs();
+    let (configs, problems) = crate::config::list_configs_and_problems();
     if configs.is_empty() {
         println!("No bots configured yet.");
         println!("To create one, {}", crate::hints::create_bot());
-        return;
     }
     for (name, path) in configs {
         println!("{name}");
         println!("  config: {}", path.display());
     }
+    print_problems(&problems);
+}
+
+/// Say which files in the config folder were passed over, and why.
+///
+/// Printed after the bots rather than logged: a bot missing from the list is
+/// exactly when someone needs this, and a warning line in the middle of the
+/// output was easy to miss and easy to mistake for a crash.
+fn print_problems(problems: &[String]) {
+    if problems.is_empty() {
+        return;
+    }
+    println!();
+    println!("These files in the config folder are not usable as bots:");
+    for problem in problems {
+        println!("  {problem}");
+    }
 }
 
 /// `--status`: what each bot is doing right now.
 pub fn status() {
-    let configs = config_names();
+    let (found, problems) = crate::config::list_configs_and_problems();
+    let configs: Vec<String> = found.into_iter().map(|(name, _)| name).collect();
     if configs.is_empty() {
         println!("No bots configured yet.");
         println!("To create one, {}", crate::hints::create_bot());
+        print_problems(&problems);
         return;
     }
 
     if !service::systemd_booted() {
         println!("systemd is not running here, so bots are not managed as services.");
         println!("Configured bots: {}", configs.join(", "));
+        print_problems(&problems);
         return;
     }
 
-    let running = service::running_bot_units();
     let enabled = service::enabled_instance_units();
     for name in configs {
         let unit = unit_for(&name);
-        let is_running = running.contains(&unit);
+        let health = service::unit_health(&unit);
+        let word = match health {
+            service::UnitHealth::Running => "running",
+            service::UnitHealth::Restarting => "failing and being restarted",
+            service::UnitHealth::Failed => "failed",
+            service::UnitHealth::Stopped => "stopped",
+        };
         println!(
-            "{name}: {}{}",
-            if is_running { "running" } else { "stopped" },
+            "{name}: {word}{}",
             if enabled.contains(&unit) { ", starts at login" } else { "" }
         );
-        if is_running {
-            if let Some(since) = active_since(&unit) {
-                println!("  since {since}");
+        match health {
+            service::UnitHealth::Running => {
+                if let Some(since) = active_since(&unit) {
+                    println!("  since {since}");
+                }
             }
+            // Saying "failed" and stopping there sends people to systemctl to
+            // find out why, which is the thing these commands exist to avoid.
+            service::UnitHealth::Restarting | service::UnitHealth::Failed => {
+                println!("  it starts and then stops, usually a wrong server address, password");
+                println!("  or channel. To see the reason: {}", log_hint(&name));
+            }
+            service::UnitHealth::Stopped => {}
         }
     }
+    print_problems(&problems);
+}
+
+/// How to read one bot's log, for the messages that send people there.
+fn log_hint(name: &str) -> String {
+    format!("{} logs {name}", crate::paths::program_name())
 }
 
 /// When systemd last started this unit, for the status line.
@@ -141,6 +182,19 @@ pub fn control(verb: &str, target: &str) -> Result<(), BotError> {
     let mut failures = 0;
     for name in &names {
         let unit = unit_for(name);
+        let before = service::unit_health(&unit);
+        // "start" on something already up used to answer "started.", which
+        // reads as "it was not running and now it is".
+        if verb == "start" && before == service::UnitHealth::Running {
+            println!("{name}: already running.");
+            continue;
+        }
+        // A unit that hit its start limit refuses to start again until the
+        // failure is cleared, and the refusal says nothing a user could act
+        // on. Asking to start it is asking for that clean slate.
+        if matches!(verb, "start" | "restart") && before == service::UnitHealth::Failed {
+            service::reset_failed(&unit);
+        }
         let ok = Command::new("systemctl")
             .args(["--user", verb, &unit])
             .status()
@@ -150,7 +204,7 @@ pub fn control(verb: &str, target: &str) -> Result<(), BotError> {
             println!("{name}: {}.", past_tense(verb));
         } else {
             failures += 1;
-            println!("{name}: {verb} failed. See: systemctl --user status {unit}");
+            println!("{name}: {verb} failed. To see why: {}", log_hint(name));
         }
     }
 
@@ -183,7 +237,10 @@ pub fn logs(name: &str, following: bool) -> Result<(), BotError> {
     if service::systemd_booted() && service::service_installed() && journal_has_entries(name) {
         let unit = unit_for(name);
         let mut cmd = Command::new("journalctl");
-        cmd.args(["--user", "-u", &unit, "-n", "200"]);
+        // 200 lines was almost entirely the TeamTalk SDK's ALSA complaints on
+        // startup, repeated per restart, which buried the one line that says
+        // why the bot stopped. 60 is roughly one start plus what followed.
+        cmd.args(["--user", "-u", &unit, "-n", "60"]);
         if following {
             cmd.arg("-f");
         }
@@ -249,7 +306,14 @@ pub fn remove(name: Option<&str>) -> Result<(), BotError> {
             .output();
     }
 
-    std::fs::remove_file(&path)?;
+    // Raw `?` here answered a read-only config folder with
+    // "IO: Permission denied (os error 13)" — true, and no help at all.
+    std::fs::remove_file(&path).map_err(|e| {
+        BotError::Usage(format!(
+            "Could not delete {}: {e}.\nThe bot is still there.",
+            path.display()
+        ))
+    })?;
     // The lock is named after the config; nothing will ever take it again.
     let _ = std::fs::remove_file(crate::runlock::lock_path(&path));
     println!("Removed \"{name}\".");

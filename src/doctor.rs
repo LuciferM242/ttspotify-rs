@@ -89,12 +89,26 @@ fn sdk_status(marker: Option<String>, library_present: bool) -> String {
 }
 
 /// How a config's bot is doing, as one word.
-fn instance_state(unit: &str, running: &[String], enabled: &[String]) -> &'static str {
-    match (running.iter().any(|u| u == unit), enabled.iter().any(|u| u == unit)) {
-        (true, true) => "running, starts at login",
-        (true, false) => "running, but not enabled (it will not come back after a reboot)",
-        (false, true) => "enabled but not running",
-        (false, false) => "not running",
+///
+/// `health` comes from systemd rather than from the running list: a bot that
+/// crashes and is restarted is absent from that list for most of every cycle,
+/// so "not running" was what a crash loop looked like here.
+fn instance_state(
+    unit: &str,
+    running: &[String],
+    enabled: &[String],
+    health: crate::service::UnitHealth,
+) -> &'static str {
+    use crate::service::UnitHealth;
+    match health {
+        UnitHealth::Failed => "failed - it starts and then stops",
+        UnitHealth::Restarting => "failing and being restarted",
+        _ => match (running.iter().any(|u| u == unit), enabled.iter().any(|u| u == unit)) {
+            (true, true) => "running, starts at login",
+            (true, false) => "running, but not enabled (it will not come back after a reboot)",
+            (false, true) => "enabled but not running",
+            (false, false) => "not running",
+        },
     }
 }
 
@@ -138,12 +152,21 @@ pub fn report() {
     println!("  configs:   {}", crate::paths::configs_dir().display());
     println!("  logs:      {}", crate::paths::root().join("logs").display());
 
-    let configs = crate::config::list_configs();
+    let (configs, problems) = crate::config::list_configs_and_problems();
     println!();
     println!("Bots");
     if configs.is_empty() {
         println!("  none configured");
         fixes.push(format!("Create one - {}", crate::hints::create_bot()));
+    }
+    for problem in &problems {
+        println!("  {problem}");
+    }
+    if !problems.is_empty() {
+        fixes.push(format!(
+            "Repair or delete the unusable file(s) in {}",
+            crate::paths::configs_dir().display()
+        ));
     }
 
     let running = crate::service::running_bot_units();
@@ -152,8 +175,17 @@ pub fn report() {
     let mut wants_youtube = false;
     for (name, path) in &configs {
         let unit = format!("ttspotify@{name}.service");
-        println!("  {name}: {}", instance_state(&unit, &running, &enabled));
-        match BotConfig::load_noninteractive(&path.to_string_lossy()) {
+        let health = crate::service::unit_health(&unit);
+        println!("  {name}: {}", instance_state(&unit, &running, &enabled, health));
+        if matches!(
+            health,
+            crate::service::UnitHealth::Failed | crate::service::UnitHealth::Restarting
+        ) {
+            fixes.push(format!(
+                "See why {name} will not stay up - run: {program} logs {name}"
+            ));
+        }
+        match BotConfig::inspect(&path.to_string_lossy()) {
             Ok(config) => {
                 wants_spotify |= config.enabled_services.spotify;
                 wants_youtube |= config.enabled_services.youtube;
@@ -217,7 +249,17 @@ pub fn report() {
     println!("  TeamTalk SDK: {} in {}", sdk_status(marker, lib_present), sdk_dir.display());
 
     let systemd = crate::service::systemd_booted();
-    println!("  systemd: {}", yes_no(systemd));
+    let reachable = systemd && crate::service::systemd_reachable();
+    if systemd && !reachable {
+        // "systemd: yes" here was a lie by omission: it is running, and this
+        // shell cannot reach it, which is why every start had just failed.
+        println!("  systemd: running, but this shell cannot reach it");
+        fixes.push(
+            "Log in properly (not with plain `su`) to manage bots as services".to_string(),
+        );
+    } else {
+        println!("  systemd: {}", yes_no(systemd));
+    }
     if systemd {
         match crate::service::installed_unit_version() {
             Some((installed, current)) if installed < current => {
@@ -319,15 +361,33 @@ mod tests {
         let unit = "ttspotify@home.service".to_string();
         let this = std::slice::from_ref(&unit);
         let none: Vec<String> = Vec::new();
-        assert_eq!(instance_state(&unit, this, this), "running, starts at login");
-        assert_eq!(instance_state(&unit, &none, this), "enabled but not running");
+        let up = crate::service::UnitHealth::Running;
+        let down = crate::service::UnitHealth::Stopped;
+        assert_eq!(instance_state(&unit, this, this, up), "running, starts at login");
+        assert_eq!(instance_state(&unit, &none, this, down), "enabled but not running");
         // Running without being enabled is the state that surprises people
         // after a reboot, so it says so rather than just "running".
         assert_eq!(
-            instance_state(&unit, this, &none),
+            instance_state(&unit, this, &none, up),
             "running, but not enabled (it will not come back after a reboot)"
         );
-        assert_eq!(instance_state(&unit, &none, &none), "not running");
+        assert_eq!(instance_state(&unit, &none, &none, down), "not running");
+    }
+
+    #[test]
+    fn a_bot_in_a_crash_loop_is_not_reported_as_merely_stopped() {
+        // The lists say "not running" for most of every restart cycle, which
+        // is exactly when someone runs doctor to find out what is wrong.
+        let unit = "ttspotify@home.service".to_string();
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            instance_state(&unit, &none, &none, crate::service::UnitHealth::Restarting),
+            "failing and being restarted"
+        );
+        assert_eq!(
+            instance_state(&unit, &none, &none, crate::service::UnitHealth::Failed),
+            "failed - it starts and then stops"
+        );
     }
 
     #[test]
@@ -335,6 +395,9 @@ mod tests {
         let home = "ttspotify@home.service".to_string();
         let work = "ttspotify@work.service".to_string();
         let other = std::slice::from_ref(&work);
-        assert_eq!(instance_state(&home, other, other), "not running");
+        assert_eq!(
+            instance_state(&home, other, other, crate::service::UnitHealth::Stopped),
+            "not running"
+        );
     }
 }

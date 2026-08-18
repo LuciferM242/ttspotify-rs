@@ -44,15 +44,33 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
     let client = Client::new().map_err(|e| BotError::TeamTalk(client_error_hint(&e.to_string())))?;
 
     tracing::info!("Connecting to TeamTalk server {}:{}...", config.host, config.tcp_port);
+    // The SDK's own error for a refused or unroutable server is the bare words
+    // "Connection failed", which printed as "Connection failed: Connection
+    // failed" and named neither the address tried nor anything to check.
+    let unreachable = || {
+        format!(
+            "Could not reach the TeamTalk server at {}:{}.\n\
+             Check the address and port, that the server is up, and that nothing \
+             is blocking the connection.",
+            config.host, config.tcp_port
+        )
+    };
     client.connect(&config.host, config.tcp_port, config.udp_port, config.encrypted)
-        .map_err(|e| BotError::TeamTalk(format!("Connection failed: {e}")))?;
+        .map_err(|_| BotError::TeamTalk(unreachable()))?;
     client.wait_for(teamtalk::Event::ConnectSuccess, 10_000)
-        .ok_or_else(|| BotError::TeamTalk("Connection timeout".into()))?;
+        .ok_or_else(|| BotError::TeamTalk(unreachable()))?;
     tracing::info!("Connected to TeamTalk server");
 
     tracing::info!("Logging in as '{}'...", config.bot_name);
     client.login_and_wait(&config.bot_name, &config.username, &config.password, "TTSpotifyBot", 10_000)
-        .map_err(|e| BotError::TeamTalk(format!("Login failed: {e}")))?;
+        .map_err(|e| {
+            BotError::TeamTalk(format!(
+                "The server refused the login for \"{}\" ({e}).\n\
+                 Check the username and password, and that the account is allowed \
+                 to log in from here.",
+                config.username
+            ))
+        })?;
     tracing::info!("Logged in successfully");
 
     // Init virtual sound devices for audio block injection
