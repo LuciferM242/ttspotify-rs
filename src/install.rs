@@ -200,7 +200,7 @@ pub fn offer_first_run_install() {
     println!("you can type from anywhere.");
     if !prompt_yes_no("Install it now?") {
         println!(
-            "Skipped. Install later with: {} --install",
+            "Skipped. To install later, run: {} install",
             src.display()
         );
         return;
@@ -270,7 +270,10 @@ pub fn install() -> Result<(), BotError> {
     reconcile_unit(&dst);
 
     println!();
-    println!("Run `{} --setup <name>` to create a bot.", dst.file_name().and_then(|n| n.to_str()).unwrap_or(DEFAULT_NAME));
+    println!(
+        "Run `{} add <name>` to create a bot.",
+        dst.file_name().and_then(|n| n.to_str()).unwrap_or(DEFAULT_NAME)
+    );
     Ok(())
 }
 
@@ -292,7 +295,7 @@ fn reconcile_unit(dst: &Path) {
     println!("Your systemd service still runs {current}.");
     println!("Until it is updated, the service and your shell run different copies.");
     if !prompt_yes_no("Point the service at the newly installed binary?") {
-        println!("Left as it is. Update later with: {} --install-service", crate::paths::program_name());
+        println!("Left as it is. To update it later, {}", crate::hints::install_service());
         return;
     }
     match crate::service::write_unit_file_for(dst) {

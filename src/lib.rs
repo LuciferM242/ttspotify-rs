@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 #[cfg(windows)]
 pub mod gui_native;
+pub mod hints;
 pub mod i18n;
 pub mod logging;
 pub mod net;

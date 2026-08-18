@@ -42,6 +42,31 @@ pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String>
     }
 }
 
+/// Read a numbered-menu answer, re-asking until it is one of the choices.
+///
+/// Anything outside the range used to fall through to the default silently, so
+/// a mistyped 9 saved choice 4 with nothing said about it — while the port
+/// prompts next to it validated properly. Empty keeps the default, as with
+/// every other prompt.
+pub(crate) fn menu_choice(input: &str, choices: u8, default: &str) -> Option<u8> {
+    let input = input.trim();
+    let text = if input.is_empty() { default } else { input };
+    match text.parse::<u8>() {
+        Ok(n) if n >= 1 && n <= choices => Some(n),
+        _ => None,
+    }
+}
+
+fn ask_menu(prompt: &str, choices: u8, default: &str) -> Option<u8> {
+    loop {
+        let raw = ask(prompt, default, false)?;
+        match menu_choice(&raw, choices, default) {
+            Some(choice) => return Some(choice),
+            None => println!("    Please answer with a number from 1 to {choices}."),
+        }
+    }
+}
+
 fn ask_int(prompt: &str, default: i32) -> Option<i32> {
     loop {
         let raw = ask(prompt, &default.to_string(), true)?;
@@ -87,9 +112,14 @@ pub fn run_wizard(
     let name = if let Some(n) = config_name {
         match crate::config::sanitise_config_name(n) {
             Some(n) => n,
+            // A name that cannot be used is a mistake in the command, not a
+            // change of mind, so it fails rather than exiting successfully
+            // having done nothing.
             None => {
-                println!("Invalid config name: {n}");
-                return Ok(None);
+                return Err(BotError::Usage(format!(
+                    "\"{n}\" cannot be used as a bot name. Use letters or numbers; \
+                     \"all\" is reserved for commands that act on every bot."
+                )))
             }
         }
     } else {
@@ -146,10 +176,10 @@ pub fn run_wizard(
     println!("  2. TeamTalk server admins - admins from the server's user accounts");
     println!("  3. Username list - only the usernames you enter next");
     println!("  4. Both - TeamTalk server admins or the username list");
-    let admin_mode = match or_cancel!(ask("Which admin mode should this bot use? (1-4)", "4", false)).trim() {
-        "1" => crate::config::AdminMode::Everyone,
-        "2" => crate::config::AdminMode::TtRights,
-        "3" => crate::config::AdminMode::List,
+    let admin_mode = match or_cancel!(ask_menu("Which admin mode should this bot use? (1-4)", 4, "4")) {
+        1 => crate::config::AdminMode::Everyone,
+        2 => crate::config::AdminMode::TtRights,
+        3 => crate::config::AdminMode::List,
         // Anything else lands on the restrictive choice, same as the GUI:
         // a misread must not hand out access.
         _ => crate::config::AdminMode::Both,
@@ -166,7 +196,7 @@ pub fn run_wizard(
     println!();
     println!("Language");
     let lang_codes = crate::i18n::installed_language_codes(&config_dir());
-    let default_language = {
+    let default_language = loop {
         let code = or_cancel!(ask(
             &format!("Default language [{}]", lang_codes.join("/")),
             "en",
@@ -174,7 +204,16 @@ pub fn run_wizard(
         ))
         .trim()
         .to_lowercase();
-        if code.is_empty() { "en".to_string() } else { code }
+        if code.is_empty() {
+            break "en".to_string();
+        }
+        // A language nobody has installed leaves the bot answering in English
+        // anyway, but silently — better to say so while the answer can still
+        // be corrected.
+        if lang_codes.iter().any(|c| c.eq_ignore_ascii_case(&code)) {
+            break code;
+        }
+        println!("    No translation installed for \"{code}\". Choose one of: {}", lang_codes.join(", "));
     };
 
     println!();
@@ -189,9 +228,9 @@ pub fn run_wizard(
     println!("  1. Both Spotify and YouTube");
     println!("  2. Spotify only");
     println!("  3. YouTube only");
-    let enabled_services = match or_cancel!(ask("Which services should this bot offer? (1-3)", "1", false)).trim() {
-        "2" => crate::config::EnabledServices { spotify: true, youtube: false },
-        "3" => crate::config::EnabledServices { spotify: false, youtube: true },
+    let enabled_services = match or_cancel!(ask_menu("Which services should this bot offer? (1-3)", 3, "1")) {
+        2 => crate::config::EnabledServices { spotify: true, youtube: false },
+        3 => crate::config::EnabledServices { spotify: false, youtube: true },
         _ => crate::config::EnabledServices::default(),
     };
     // With one service the default is that service — nothing to ask.
@@ -265,8 +304,8 @@ pub fn run_wizard(
             Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
                 println!("  Skipping Spotify authentication.");
                 println!(
-                    "  You can authenticate later with: {} --auth",
-                    crate::paths::program_name()
+                    "  To sign in later, {}",
+                    crate::hints::sign_in_spotify()
                 );
             }
             _ => {
@@ -292,15 +331,15 @@ pub fn run_wizard(
                     Some(Err(e)) => {
                         println!("  Spotify authentication failed: {e}");
                         println!(
-                            "  You can try again with: {} --auth",
-                            crate::paths::program_name()
+                            "  To try again, {}",
+                            crate::hints::sign_in_spotify()
                         );
                     }
                     None => {
                         println!("  Could not initialize authentication.");
                         println!(
-                    "  You can authenticate later with: {} --auth",
-                    crate::paths::program_name()
+                    "  To sign in later, {}",
+                    crate::hints::sign_in_spotify()
                 );
                     }
                 }
@@ -332,14 +371,14 @@ pub fn run_wizard(
             if let Err(e) = run_youtube_setup() {
                 println!("  YouTube setup failed: {e}");
                 println!(
-                    "  You can retry later with: {} --setup-yt",
-                    crate::paths::program_name()
+                    "  To retry later, {}",
+                    crate::hints::install_youtube_tools()
                 );
             }
         } else {
             println!(
-                "  Skipping YouTube setup. You can run it later with: {} --setup-yt",
-                crate::paths::program_name()
+                "  Skipping YouTube setup. To install it later, {}",
+                crate::hints::install_youtube_tools()
             );
         }
     }
@@ -369,8 +408,8 @@ pub fn run_wizard(
                 if let Err(e) = crate::service::install_service() {
                     println!("  Service install failed: {e}");
                     println!(
-                        "  You can retry later with: {} --install-service",
-                        crate::paths::program_name()
+                        "  To retry later, {}",
+                        crate::hints::install_service()
                     );
                 }
             }
@@ -421,7 +460,10 @@ pub fn run_update_tools() -> Result<(), BotError> {
     let paths = setup::resolve_paths()?;
 
     if !setup::is_installed(&paths) {
-        println!("  YouTube tools aren't installed yet. Run --setup-yt first.");
+        println!(
+            "  YouTube tools aren't installed yet. To install them, {}",
+            crate::hints::install_youtube_tools()
+        );
         return Ok(());
     }
 
@@ -494,4 +536,32 @@ where
     })
     .join()
     .map_err(|_| BotError::Config("async worker thread panicked".to_string()))?
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::menu_choice;
+
+    #[test]
+    fn a_number_in_range_is_taken_as_given() {
+        assert_eq!(menu_choice("1", 4, "4"), Some(1));
+        assert_eq!(menu_choice(" 3 \n", 4, "4"), Some(3));
+    }
+
+    #[test]
+    fn empty_means_the_default() {
+        assert_eq!(menu_choice("", 4, "4"), Some(4));
+        assert_eq!(menu_choice("  ", 3, "1"), Some(1));
+    }
+
+    #[test]
+    fn out_of_range_and_junk_are_refused_rather_than_silently_defaulted() {
+        // The bug this replaced: typing 9 at a 1-4 menu saved choice 4 with no
+        // message, while the port prompt beside it validated properly.
+        assert_eq!(menu_choice("9", 4, "4"), None);
+        assert_eq!(menu_choice("0", 4, "4"), None);
+        assert_eq!(menu_choice("-1", 4, "4"), None);
+        assert_eq!(menu_choice("two", 4, "4"), None);
+        assert_eq!(menu_choice("2x", 4, "4"), None);
+    }
 }

@@ -19,7 +19,7 @@ const ALL: &str = "all";
 /// Turn the name (or `all`) into config names, or explain what was expected.
 fn resolve_targets(arg: &str, configs: &[String]) -> Result<Vec<String>, String> {
     if configs.is_empty() {
-        return Err("No configs exist yet. Create one with --setup <name>.".to_string());
+        return Err(format!("No bots exist yet. To create one, {}", crate::hints::create_bot()));
     }
     if arg == ALL {
         return Ok(configs.to_vec());
@@ -53,8 +53,8 @@ fn require_service() -> Result<(), BotError> {
     }
     if !service::service_installed() {
         return Err(BotError::Usage(format!(
-            "The systemd service is not installed yet. Install it with:\n  {} --install-service",
-            crate::paths::program_name()
+            "The systemd service is not installed yet. To install it, {}",
+            crate::hints::install_service()
         )));
     }
     Ok(())
@@ -65,7 +65,7 @@ pub fn list() {
     let configs = crate::config::list_configs();
     if configs.is_empty() {
         println!("No bots configured yet.");
-        println!("Create one with: {} --setup myserver", crate::paths::program_name());
+        println!("To create one, {}", crate::hints::create_bot());
         return;
     }
     for (name, path) in configs {
@@ -79,7 +79,7 @@ pub fn status() {
     let configs = config_names();
     if configs.is_empty() {
         println!("No bots configured yet.");
-        println!("Create one with: {} --setup myserver", crate::paths::program_name());
+        println!("To create one, {}", crate::hints::create_bot());
         return;
     }
 
@@ -303,8 +303,8 @@ pub fn resolve_run_target(name: Option<&str>) -> Result<Option<std::path::PathBu
             }),
         None if configs.len() == 1 => Ok(Some(configs[0].1.clone())),
         None if configs.is_empty() => Err(BotError::Usage(format!(
-            "No bots yet. Create one with: {} add",
-            crate::paths::program_name()
+            "No bots yet. To create one, {}",
+            crate::hints::create_bot()
         ))),
         None => Ok(pick_bot(&configs).map(|(_, path)| path)),
     }
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn with_no_configs_the_answer_is_to_make_one() {
         let err = resolve_targets("all", &[]).unwrap_err();
-        assert!(err.contains("--setup"), "{err}");
+        assert!(err.contains("add"), "{err}");
     }
 
     #[test]

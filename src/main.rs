@@ -217,6 +217,19 @@ async fn main() -> Result<(), BotError> {
     // below once it is.
     let layout_migration = tt_spotify_bot::paths::migrate_data_layout();
 
+    // `--config` says which bot to run; a subcommand says to do something else
+    // entirely. Together they used to mean the subcommand won and the path was
+    // silently dropped, so `--config foo.json run` quietly ignored the file it
+    // was handed and asked which bot to run instead.
+    if args.config.is_some() && args.command.is_some() {
+        finish(Err(BotError::Usage(format!(
+            "--config runs the bot in that file, so it cannot be combined with a command.\n\
+             To run it: {prog} --config <path>\n\
+             To run a bot by name: {prog} run <name>",
+            prog = tt_spotify_bot::paths::program_name()
+        ))));
+    }
+
     // Everything except running a bot is done here and exits; `run` and a bare
     // `--config` fall through to the bot itself.
     let named = match args.command {
@@ -227,7 +240,10 @@ async fn main() -> Result<(), BotError> {
                 Err(e) => finish(Err(e)),
             }
         }
-        Some(command) => return run_command(command).await,
+        // Every command reports through `finish`, so a usage mistake prints a
+        // sentence and exits 1 rather than reaching main's Debug formatting as
+        // `Usage("...")`.
+        Some(command) => finish(run_command(command).await),
         None => None,
     };
 
@@ -246,6 +262,17 @@ async fn main() -> Result<(), BotError> {
     let config_path = tt_spotify_bot::config::resolve_config_path(&config_path)
         .to_string_lossy()
         .into_owned();
+
+    // Settle the config before logging starts. The log folder is named after
+    // the config file, so a path that is a directory, or missing, or not a bot
+    // config used to leave a folder named after it — `logs/config/` next to the
+    // real bots — and only then report the error. This also means the
+    // first-run wizard (which a missing --config triggers when someone is at
+    // the keyboard) has created the file before anything logs.
+    if let Err(e) = BotConfig::load(&config_path) {
+        eprintln!("{e}");
+        std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
+    }
 
     let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
     tt_spotify_bot::paths::log_migration(&layout_migration);

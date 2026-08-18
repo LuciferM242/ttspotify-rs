@@ -375,8 +375,8 @@ impl YouTubeMetadata {
             .spawn()
             .map_err(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => BotError::Playback(format!(
-                    "yt-dlp not found. Run: {} --setup-yt",
-                    crate::paths::program_name()
+                    "yt-dlp not found. To install it, {}",
+                    crate::hints::install_youtube_tools()
                 )),
                 _ => BotError::Playback(format!("yt-dlp spawn: {e}")),
             })

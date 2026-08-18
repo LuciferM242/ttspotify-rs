@@ -167,7 +167,7 @@ pub fn resolve_config_path(given: &str) -> PathBuf {
     if moved.exists() {
         tracing::warn!(
             "Config not at {}; using {} instead. Your service file still points at the \
-             old location - re-run --install-service to update it.",
+             old location - re-run the service install to update it.",
             path.display(),
             moved.display()
         );
@@ -283,10 +283,15 @@ pub fn sanitise_config_name(name: &str) -> Option<String> {
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').to_string();
     if cleaned.is_empty() {
-        None
-    } else {
-        Some(cleaned)
+        return None;
     }
+    // "all" is what start, stop and restart accept for "every bot", so a bot
+    // called that could never be started on its own — every command aimed at
+    // it would hit the whole fleet instead.
+    if cleaned.eq_ignore_ascii_case("all") {
+        return None;
+    }
+    Some(cleaned)
 }
 
 /// Which services a bot may use, stored in the config as a list:
@@ -518,6 +523,28 @@ impl BotConfig {
             .map_err(|e| BotError::Config(format!("Failed to read {}: {e}", path.display())))?;
         let config: Self = serde_json::from_str(&contents)
             .map_err(|e| BotError::Config(format!("Failed to parse {}: {e}", path.display())))?;
+        // Every field carries a serde default, so JSON that merely parses —
+        // `{}`, a truncated file, some other program's config — used to load as
+        // "connect to localhost" (the default host) and got as far as a live
+        // connection attempt before failing with a timeout that explained
+        // nothing about the real problem.
+        //
+        // The test is whether the file actually says where the server is, not
+        // whether the parsed value looks plausible: a defaulted host is
+        // indistinguishable from one someone typed. Only `host` is required —
+        // a blank username is a real configuration on servers that allow
+        // anonymous logins, so that stays the bot's business.
+        let host_given = serde_json::from_str::<serde_json::Value>(&contents)
+            .ok()
+            .and_then(|v| v.get("host").and_then(|h| h.as_str()).map(str::to_string))
+            .is_some_and(|host| !host.trim().is_empty());
+        if !host_given {
+            return Err(BotError::Config(format!(
+                "{} does not name a server, so it is not a bot config. \
+                 If you meant a different file, point --config at it.",
+                path.display()
+            )));
+        }
         Ok(config)
     }
 
@@ -567,9 +594,9 @@ impl BotConfig {
                 }
             }
             return Err(BotError::Config(format!(
-                "Config not found: {}\nRun: {} --setup",
+                "Config not found: {}\nTo make one, {}",
                 path_ref.display(),
-                crate::paths::program_name()
+                crate::hints::create_bot()
             )));
         }
         Self::load_noninteractive(path)
@@ -711,6 +738,68 @@ impl ConfigStore {
 }
 
 #[cfg(test)]
+mod essentials_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ttspotify_essentials_{}_{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn json_that_is_not_a_bot_config_is_refused() {
+        // Every field has a serde default, so this parses cleanly and used to
+        // become "connect to localhost with no username" — getting as far as a
+        // real connection attempt before failing with a timeout.
+        let dir = scratch("notaconfig");
+        let path = dir.join("notaconfig.json");
+        std::fs::write(&path, r#"{"foo": "bar", "num": 42}"#).unwrap();
+
+        let err = BotConfig::parse_file(&path).unwrap_err().to_string();
+        assert!(err.contains("does not name a server"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_config_naming_no_server_is_refused_even_though_host_has_a_default() {
+        // `{}` parses into a config whose host is "localhost" purely from the
+        // serde default, which is why checking the parsed value would let it
+        // through and start a connection attempt.
+        let dir = scratch("empty");
+        let path = dir.join("empty.json");
+        std::fs::write(&path, "{}").unwrap();
+        assert!(BotConfig::parse_file(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_blank_username_is_still_allowed() {
+        // Some servers take anonymous logins, so an empty username is a real
+        // configuration rather than a broken file.
+        let dir = scratch("anon");
+        let path = dir.join("anon.json");
+        std::fs::write(&path, r#"{"host": "tt.example.org", "username": ""}"#).unwrap();
+
+        assert!(BotConfig::parse_file(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_real_config_still_loads() {
+        let dir = scratch("good");
+        let path = dir.join("good.json");
+        std::fs::write(&path, r#"{"host": "tt.example.org", "username": "bot"}"#).unwrap();
+
+        let cfg = BotConfig::parse_file(&path).unwrap();
+        assert_eq!(cfg.host, "tt.example.org");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod store_tests {
     use super::*;
 
@@ -747,7 +836,10 @@ mod store_tests {
         // from the dead and start again at the next login.
         let dir = scratch("deleted");
         let path = dir.join("gone.json");
-        let cfg = BotConfig::default();
+        let cfg = BotConfig {
+            host: "tt.example.org".to_string(),
+            ..Default::default()
+        };
         cfg.save(&path).unwrap();
 
         let store = ConfigStore::new(path.clone(), cfg);
@@ -959,6 +1051,19 @@ mod tests {
     }
 
     #[test]
+    fn all_is_reserved_because_the_commands_use_it_for_every_bot() {
+        // A bot called "all" could never be started on its own: start, stop and
+        // restart read that word as "the whole fleet", so every command aimed
+        // at it would hit the others too.
+        assert_eq!(sanitise_config_name("all"), None);
+        assert_eq!(sanitise_config_name("ALL"), None);
+        assert_eq!(sanitise_config_name(" All "), None);
+        // Names that merely contain it are fine.
+        assert_eq!(sanitise_config_name("hall"), Some("hall".to_string()));
+        assert_eq!(sanitise_config_name("all-servers"), Some("all-servers".to_string()));
+    }
+
+    #[test]
     fn services_default_on_and_survive_old_configs() {
         // An old config file has no enabledServices key; both must come up
         // enabled or every existing install would lose a service on upgrade.
@@ -1058,6 +1163,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("store_test.json");
         let mut cfg = BotConfig::default();
+        cfg.host = "tt.example.org".to_string();
         cfg.volume = 30;
         cfg.save(&path).unwrap();
 
@@ -1077,7 +1183,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ttspotify_cfgext_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ext_test.json");
-        let cfg = BotConfig::default();
+        let cfg = BotConfig {
+            host: "tt.example.org".to_string(),
+            ..Default::default()
+        };
         cfg.save(&path).unwrap();
         let store = ConfigStore::new(path.clone(), cfg);
 

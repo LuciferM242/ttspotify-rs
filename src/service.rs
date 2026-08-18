@@ -190,7 +190,7 @@ pub fn install_service() -> Result<(), BotError> {
     println!("Config files go in: {}", config_base.display());
     println!();
     println!("Quick start:");
-    println!("  {} --setup myserver", crate::paths::program_name());
+    println!("  {} add myserver", crate::paths::program_name());
     println!("  systemctl --user start ttspotify@myserver");
     println!("  systemctl --user enable ttspotify@myserver");
     println!("  journalctl --user -u ttspotify@myserver -f");
@@ -293,8 +293,8 @@ pub fn offer_unit_refresh() {
         }
     } else {
         println!(
-            "Keeping the current file. Update later with: {} --install-service",
-            crate::paths::program_name()
+            "Keeping the current file. To update it later, {}",
+            crate::hints::install_service()
         );
     }
 }

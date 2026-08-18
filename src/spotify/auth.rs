@@ -269,8 +269,8 @@ impl SpotifyAuth {
         if !oauth_feasible {
             return Err(BotError::SpotifyAuth(format!(
                 "no cached Spotify credentials and no way to log in interactively here; \
-                 run `{} --auth` on this machine, then restart the bot",
-                crate::paths::program_name()
+                 on this machine, {}, then restart the bot",
+                crate::hints::sign_in_spotify()
             )));
         }
 
@@ -374,7 +374,7 @@ mod tests {
         });
         let err = err.expect_err("an infeasible sign-in must refuse, not proceed");
         assert!(
-            err.to_string().contains("--auth"),
+            err.to_string().contains(" auth"),
             "the refusal should say what to do instead: {err}"
         );
     }

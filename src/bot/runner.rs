@@ -393,8 +393,8 @@ pub async fn run_bot(
                 Err(e) => {
                     tracing::error!(
                         "Spotify is unavailable and interactive login is impossible here: {e}. \
-                         Continuing without Spotify; run `{} --auth`, then restart.",
-                        crate::paths::program_name()
+                         Continuing without Spotify; {}, then restart.",
+                        crate::hints::sign_in_spotify()
                     );
                     false
                 }

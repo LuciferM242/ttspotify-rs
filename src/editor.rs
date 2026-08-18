@@ -114,8 +114,8 @@ pub fn run(name: Option<&str>) -> Result<(), BotError> {
     let configs = crate::config::list_configs();
     if configs.is_empty() {
         return Err(BotError::Usage(format!(
-            "No configs to edit. Create one with: {} --setup myserver",
-            crate::paths::program_name()
+            "No configs to edit. To create one, {}",
+            crate::hints::create_bot()
         )));
     }
 
@@ -206,8 +206,8 @@ fn save(config: &mut BotConfig, name: &str, path: &std::path::Path) -> Result<()
             crate::control::control("restart", name)?;
         } else {
             println!(
-                "Restart later with: {} --restart {name}",
-                crate::paths::program_name()
+                "To restart it later, {}",
+                crate::hints::restart_bot(name)
             );
         }
     }
