@@ -163,9 +163,9 @@ pub fn control(verb: &str, target: &str) -> Result<(), BotError> {
     Ok(())
 }
 
-/// `--logs <name>`: the journal for one bot, or its log files when there is no
-/// journal to read.
-pub fn logs(name: &str, follow: bool) -> Result<(), BotError> {
+/// `logs <name>` and `watch <name>`: the journal for one bot, or its log files
+/// when there is no journal to read. `following` is what separates the two.
+pub fn logs(name: &str, following: bool) -> Result<(), BotError> {
     let configs = config_names();
     // "all" is meaningless for a single log stream, so it is not accepted here.
     if !configs.iter().any(|c| c == name) {
@@ -179,7 +179,7 @@ pub fn logs(name: &str, follow: bool) -> Result<(), BotError> {
         let unit = unit_for(name);
         let mut cmd = Command::new("journalctl");
         cmd.args(["--user", "-u", &unit, "-n", "200"]);
-        if follow {
+        if following {
             cmd.arg("-f");
         }
         // Inherits the terminal so `-f` streams and Ctrl+C ends it, exactly as
@@ -192,7 +192,7 @@ pub fn logs(name: &str, follow: bool) -> Result<(), BotError> {
         println!("Could not read the journal; falling back to the log files.");
     }
 
-    show_log_file(name, follow)
+    show_log_file(name, following)
 }
 
 /// `remove [name]`: delete a bot.
@@ -322,7 +322,7 @@ fn newest_log_file(dir: &PathBuf) -> Option<PathBuf> {
     files.pop()
 }
 
-fn show_log_file(name: &str, follow: bool) -> Result<(), BotError> {
+fn show_log_file(name: &str, following: bool) -> Result<(), BotError> {
     let dir = crate::paths::root().join("logs").join(name);
     let Some(file) = newest_log_file(&dir) else {
         return Err(BotError::Usage(format!(
@@ -337,9 +337,10 @@ fn show_log_file(name: &str, follow: bool) -> Result<(), BotError> {
     for line in contents.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev() {
         println!("{line}");
     }
-    if follow {
+    if following {
         println!();
-        println!("Following a file needs no help from us: tail -f {}", file.display());
+        println!("Watching needs systemd's journal, which is not available here.");
+        println!("Use: tail -f {}", file.display());
     }
     Ok(())
 }

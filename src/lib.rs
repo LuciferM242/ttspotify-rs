@@ -20,6 +20,8 @@ pub mod editor;
 #[cfg(target_os = "linux")]
 pub mod install;
 #[cfg(target_os = "linux")]
+pub mod runlock;
+#[cfg(target_os = "linux")]
 pub mod service;
 pub mod services;
 pub mod spotify;

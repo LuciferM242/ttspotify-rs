@@ -104,14 +104,18 @@ enum Commands {
         name: String,
     },
 
-    /// Show a bot's log
+    /// Show what a bot has been doing
     #[cfg(target_os = "linux")]
     Logs {
         /// Which bot's log to show
         name: String,
-        /// Keep printing new lines as they arrive
-        #[arg(short, long)]
-        follow: bool,
+    },
+
+    /// Watch a bot's log as it happens (Ctrl+C stops watching, not the bot)
+    #[cfg(target_os = "linux")]
+    Watch {
+        /// Which bot to watch
+        name: String,
     },
 
     /// Check this install and say what to fix
@@ -274,6 +278,37 @@ async fn main() -> Result<(), BotError> {
         std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
     }
 
+    // One bot per config: a manual run while the service has the same bot
+    // running would put two sessions on one TeamTalk account, each knocking the
+    // other offline. Held until the process ends, whichever way it ends.
+    #[cfg(target_os = "linux")]
+    let _run_lock = {
+        use tt_spotify_bot::runlock::LockError;
+        match tt_spotify_bot::runlock::acquire(std::path::Path::new(&config_path)) {
+            Ok(lock) => Some(lock),
+            Err(LockError::AlreadyRunning) => {
+                let name = std::path::Path::new(&config_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("that bot");
+                let prog = tt_spotify_bot::paths::program_name();
+                eprintln!("\"{name}\" is already running on this machine.");
+                eprintln!("To see what it is doing: {prog} watch {name}");
+                // Which stop applies depends on how the other copy was
+                // started, and from here there is no way to tell.
+                eprintln!("To stop it: {prog} stop {name}, or Ctrl+C in the terminal running it");
+                std::process::exit(1);
+            }
+            // A lock we cannot create is not a reason to refuse to run: that
+            // would turn a read-only data directory into a bot that never
+            // starts, which is worse than the clash being prevented.
+            Err(LockError::Unavailable(why)) => {
+                eprintln!("Could not take the single-instance lock ({why}); carrying on.");
+                None
+            }
+        }
+    };
+
     let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
     tt_spotify_bot::paths::log_migration(&layout_migration);
 
@@ -356,6 +391,9 @@ fn prints_and_exits(command: &Option<Commands>) -> bool {
         Some(Commands::Auth { action: Some(AuthAction::Status) }) => true,
         #[cfg(target_os = "linux")]
         Some(Commands::List) | Some(Commands::Status) | Some(Commands::Doctor) => true,
+        // `watch` is left alone: it is meant to be piped into something that
+        // reads until Ctrl+C, and dying on the first closed pipe would defeat
+        // it.
         #[cfg(target_os = "linux")]
         Some(Commands::Logs { .. }) => true,
         _ => false,
@@ -397,7 +435,9 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
         #[cfg(target_os = "linux")]
         Commands::Restart { name } => finish(tt_spotify_bot::control::control("restart", &name)),
         #[cfg(target_os = "linux")]
-        Commands::Logs { name, follow } => finish(tt_spotify_bot::control::logs(&name, follow)),
+        Commands::Logs { name } => finish(tt_spotify_bot::control::logs(&name, false)),
+        #[cfg(target_os = "linux")]
+        Commands::Watch { name } => finish(tt_spotify_bot::control::logs(&name, true)),
         #[cfg(target_os = "linux")]
         Commands::Doctor => {
             tt_spotify_bot::doctor::report();
