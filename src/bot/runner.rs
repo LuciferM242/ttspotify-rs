@@ -393,7 +393,8 @@ pub async fn run_bot(
                 Err(e) => {
                     tracing::error!(
                         "Spotify is unavailable and interactive login is impossible here: {e}. \
-                         Continuing without Spotify; run `tt-spotify-bot --auth`, then restart."
+                         Continuing without Spotify; run `{} --auth`, then restart.",
+                        crate::paths::program_name()
                     );
                     false
                 }
@@ -551,7 +552,11 @@ pub async fn run_bot(
     if crate::settings::load().check_updates_on_startup {
         tokio::spawn(async {
             if let Ok(Some(info)) = crate::update::check().await {
-                tracing::info!("Update {} available - run: ttspotify --update", info.tag);
+                tracing::info!(
+                    "Update {} available - run: {} --update",
+                    info.tag,
+                    crate::paths::program_name()
+                );
             }
         });
     }

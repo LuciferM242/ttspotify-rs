@@ -267,11 +267,11 @@ impl SpotifyAuth {
         // Refuse cleanly when neither a browser nor a terminal is available
         // (e.g. under systemd) instead of blocking on a stdin that is EOF.
         if !oauth_feasible {
-            return Err(BotError::SpotifyAuth(
+            return Err(BotError::SpotifyAuth(format!(
                 "no cached Spotify credentials and no way to log in interactively here; \
-                 run `tt-spotify-bot --auth` on this machine, then restart the bot"
-                    .to_string(),
-            ));
+                 run `{} --auth` on this machine, then restart the bot",
+                crate::paths::program_name()
+            )));
         }
 
         // In headless mode, use a port-less redirect URI so librespot-oauth

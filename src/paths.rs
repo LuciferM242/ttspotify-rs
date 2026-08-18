@@ -24,6 +24,25 @@ pub const LAYOUT_VERSION: u32 = 2;
 /// Records the layout a root was last migrated to.
 const VERSION_MARKER: &str = ".layout-version";
 
+/// The name this binary was invoked as, for the hints that tell the user what
+/// to run next.
+///
+/// The built file is `tt-spotify-bot`, the README installs it as `ttspotify`,
+/// and nothing stops anyone renaming it again — so a name baked in at build
+/// time is wrong for most installs. Following the file on disk means every
+/// hint can be pasted straight back into the shell.
+pub fn program_name() -> String {
+    program_name_from(std::env::current_exe().ok().as_deref())
+}
+
+fn program_name_from(exe: Option<&Path>) -> String {
+    exe.and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ttspotify")
+        .to_string()
+}
+
 pub fn root() -> PathBuf {
     crate::config::config_dir()
 }
@@ -352,6 +371,34 @@ fn write_layout_version(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_name_follows_the_file_on_disk() {
+        // Installed under the README's name, built under Cargo's, and the
+        // Windows build carries an extension none of the hints should show.
+        assert_eq!(
+            program_name_from(Some(Path::new("/usr/local/bin/ttspotify"))),
+            "ttspotify"
+        );
+        assert_eq!(
+            program_name_from(Some(Path::new("/home/u/src/target/release/tt-spotify-bot"))),
+            "tt-spotify-bot"
+        );
+        // No directory part: a backslash is a separator on Windows only, so a
+        // Windows-shaped literal would not split when these tests run on Linux.
+        assert_eq!(
+            program_name_from(Some(Path::new("tt-spotify-bot.exe"))),
+            "tt-spotify-bot"
+        );
+    }
+
+    #[test]
+    fn program_name_falls_back_when_the_exe_path_is_unusable() {
+        // `current_exe` can fail outright, and a path with no file name at all
+        // must not produce an empty hint like "Run:  --setup".
+        assert_eq!(program_name_from(None), "ttspotify");
+        assert_eq!(program_name_from(Some(Path::new("/"))), "ttspotify");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

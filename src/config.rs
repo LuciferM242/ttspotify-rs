@@ -507,8 +507,9 @@ impl BotConfig {
                 }
             }
             return Err(BotError::Config(format!(
-                "Config not found: {}\nRun: tt-spotify-bot --setup",
-                path_ref.display()
+                "Config not found: {}\nRun: {} --setup",
+                path_ref.display(),
+                crate::paths::program_name()
             )));
         }
         Self::load_noninteractive(path)

@@ -238,7 +238,8 @@ async fn run_cli_update() -> Result<(), BotError> {
 
     if !std::io::stdin().is_terminal() {
         eprintln!(
-            "Not a terminal; refusing to update non-interactively. Run `ttspotify --update` from a shell."
+            "Not a terminal; refusing to update non-interactively. Run `{} --update` from a shell.",
+            tt_spotify_bot::paths::program_name()
         );
         std::process::exit(1);
     }

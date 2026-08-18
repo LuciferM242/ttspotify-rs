@@ -262,7 +262,10 @@ pub fn run_wizard(
         match do_auth {
             Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
                 println!("  Skipping Spotify authentication.");
-                println!("  You can authenticate later with: tt-spotify-bot --auth");
+                println!(
+                    "  You can authenticate later with: {} --auth",
+                    crate::paths::program_name()
+                );
             }
             _ => {
                 println!("  Starting Spotify authentication...");
@@ -286,11 +289,17 @@ pub fn run_wizard(
                     }
                     Some(Err(e)) => {
                         println!("  Spotify authentication failed: {e}");
-                        println!("  You can try again with: tt-spotify-bot --auth");
+                        println!(
+                            "  You can try again with: {} --auth",
+                            crate::paths::program_name()
+                        );
                     }
                     None => {
                         println!("  Could not initialize authentication.");
-                        println!("  You can authenticate later with: tt-spotify-bot --auth");
+                        println!(
+                    "  You can authenticate later with: {} --auth",
+                    crate::paths::program_name()
+                );
                     }
                 }
             }
@@ -320,10 +329,16 @@ pub fn run_wizard(
         if want_yt {
             if let Err(e) = run_youtube_setup() {
                 println!("  YouTube setup failed: {e}");
-                println!("  You can retry later with: tt-spotify-bot --setup-yt");
+                println!(
+                    "  You can retry later with: {} --setup-yt",
+                    crate::paths::program_name()
+                );
             }
         } else {
-            println!("  Skipping YouTube setup. You can run it later with: tt-spotify-bot --setup-yt");
+            println!(
+                "  Skipping YouTube setup. You can run it later with: {} --setup-yt",
+                crate::paths::program_name()
+            );
         }
     }
 
@@ -351,14 +366,21 @@ pub fn run_wizard(
                 // enable/start every config, including the one just created.
                 if let Err(e) = crate::service::install_service() {
                     println!("  Service install failed: {e}");
-                    println!("  You can retry later with: tt-spotify-bot --install-service");
+                    println!(
+                        "  You can retry later with: {} --install-service",
+                        crate::paths::program_name()
+                    );
                 }
             }
         }
     }
 
     println!();
-    println!("  Run the bot with: tt-spotify-bot --config {}", config_path.display());
+    println!(
+        "  Run the bot with: {} --config {}",
+        crate::paths::program_name(),
+        config_path.display()
+    );
     println!();
 
     Ok(Some(config_path))
