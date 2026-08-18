@@ -122,6 +122,13 @@ enum Commands {
     #[cfg(target_os = "linux")]
     Doctor,
 
+    /// Show how much music is cached, or clear it
+    #[cfg(target_os = "linux")]
+    Cache {
+        #[command(subcommand)]
+        action: Option<CacheAction>,
+    },
+
     /// Copy this binary onto your PATH
     #[cfg(target_os = "linux")]
     Install,
@@ -188,6 +195,14 @@ enum YoutubeAction {
     Install,
     /// Update those tools in place
     Update,
+}
+
+#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[derive(clap::Subcommand)]
+enum CacheAction {
+    /// Delete the cached music (it downloads again when next asked for)
+    Clear,
 }
 
 #[cfg(not(windows))]
@@ -422,6 +437,8 @@ fn prints_and_exits(command: &Option<Commands>) -> bool {
         Some(Commands::Auth { action: Some(AuthAction::Status) }) => true,
         #[cfg(target_os = "linux")]
         Some(Commands::List) | Some(Commands::Status) | Some(Commands::Doctor) => true,
+        #[cfg(target_os = "linux")]
+        Some(Commands::Cache { action: None }) => true,
         // `watch` is left alone: it is meant to be piped into something that
         // reads until Ctrl+C, and dying on the first closed pipe would defeat
         // it.
@@ -485,6 +502,14 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
             tt_spotify_bot::doctor::report();
             Ok(())
         }
+        #[cfg(target_os = "linux")]
+        Commands::Cache { action } => match action {
+            None => {
+                report_cache();
+                Ok(())
+            }
+            Some(CacheAction::Clear) => finish(clear_cache()),
+        },
         #[cfg(target_os = "linux")]
         Commands::Install => finish(tt_spotify_bot::install::install()),
         #[cfg(target_os = "linux")]
@@ -575,6 +600,41 @@ fn first_run_or_help() -> Result<Option<String>, BotError> {
         Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
         None => Ok(None),
     }
+}
+
+/// Print what the caches hold, against the ceiling that bounds them.
+#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn report_cache() {
+    use tt_spotify_bot::audio_cache;
+    let used = audio_cache::size_bytes();
+    let settings = tt_spotify_bot::settings::load();
+    match settings.cache_limit_bytes() {
+        Some(limit) => println!(
+            "Cached music: {} of {}",
+            audio_cache::human_size(used),
+            audio_cache::human_size(limit)
+        ),
+        None => println!("Cached music: {} (caching is off)", audio_cache::human_size(used)),
+    }
+    println!();
+    println!("Shared by every bot on this install. Clear it with:");
+    println!("  {} cache clear", tt_spotify_bot::paths::program_name());
+}
+
+/// Empty the caches and say how much that freed.
+#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+fn clear_cache() -> Result<(), BotError> {
+    use tt_spotify_bot::audio_cache;
+    let used = audio_cache::size_bytes();
+    if used == 0 {
+        println!("Nothing cached to clear.");
+        return Ok(());
+    }
+    let freed = audio_cache::clear()?;
+    println!("Freed {}.", audio_cache::human_size(freed));
+    Ok(())
 }
 
 /// End a one-shot command: its message, then an exit code.

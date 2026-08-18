@@ -479,6 +479,49 @@ fn handle_action(
             tray.facts.borrow().mark_stale();
         }
         MenuAction::Settings => crate::gui_native::settings_dialog::show(wnd),
+        MenuAction::ClearCache => clear_cache(wnd),
+    }
+}
+
+/// Empty the downloaded-audio caches, after saying how much that is.
+fn clear_cache(wnd: &gui::WindowMain) {
+    let used = crate::audio_cache::size_bytes();
+    if used == 0 {
+        let _ = wnd.hwnd().MessageBox(
+            "There is nothing cached to clear.",
+            "Clear cache",
+            co::MB::OK | co::MB::ICONINFORMATION,
+        );
+        return;
+    }
+    let answer = wnd.hwnd().MessageBox(
+        &format!(
+            "Clear {} of cached music?
+
+             This cache is shared by every bot on this computer. The tracks              will be downloaded again the next time anyone asks for them.",
+            crate::audio_cache::human_size(used)
+        ),
+        "Clear cache",
+        co::MB::YESNO | co::MB::ICONQUESTION,
+    );
+    if !matches!(answer, Ok(co::DLGID::YES)) {
+        return;
+    }
+    match crate::audio_cache::clear() {
+        Ok(freed) => {
+            let _ = wnd.hwnd().MessageBox(
+                &format!("Freed {}.", crate::audio_cache::human_size(freed)),
+                "Clear cache",
+                co::MB::OK | co::MB::ICONINFORMATION,
+            );
+        }
+        Err(e) => {
+            let _ = wnd.hwnd().MessageBox(
+                &format!("{e}"),
+                "Clear cache",
+                co::MB::OK | co::MB::ICONERROR,
+            );
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod audio_cache;
 pub mod bot;
 pub mod config;
 pub mod error;

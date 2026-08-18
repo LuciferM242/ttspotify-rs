@@ -30,6 +30,7 @@ pub enum MenuAction {
     YoutubeUpdate,
     CheckUpdates,
     Settings,
+    ClearCache,
     Exit,
 }
 
@@ -91,6 +92,7 @@ const ID_YT_INSTALL: u16 = 3;
 const ID_YT_UPDATE: u16 = 4;
 const ID_CHECK_UPDATES: u16 = 5;
 const ID_SETTINGS: u16 = 6;
+const ID_CLEAR_CACHE: u16 = 8;
 const ID_EXIT: u16 = 7;
 
 /// First ID handed out to a bot. Above the fixed commands, with room to add
@@ -231,6 +233,7 @@ impl MenuBuilder {
                 MenuAction::CheckUpdates,
             ),
             (ID_SETTINGS, "Settings", MenuAction::Settings),
+            (ID_CLEAR_CACHE, "Clear cache", MenuAction::ClearCache),
         ] {
             model.entries.push(MenuEntry::Item {
                 id,
@@ -478,6 +481,7 @@ mod tests {
             MenuAction::SpotifyAuth,
             MenuAction::CheckUpdates,
             MenuAction::Settings,
+            MenuAction::ClearCache,
             MenuAction::Exit,
         ] {
             assert!(present.contains(&&wanted), "{wanted:?} missing from the menu");

@@ -230,6 +230,20 @@ pub fn report() {
         fixes.push(format!("Install the YouTube tools - {}", crate::hints::install_youtube_tools()));
     }
 
+    let settings = crate::settings::load();
+    let used = crate::audio_cache::size_bytes();
+    match settings.cache_limit_bytes() {
+        Some(limit) => println!(
+            "  Cached audio: {} of {}",
+            crate::audio_cache::human_size(used),
+            crate::audio_cache::human_size(limit)
+        ),
+        None => println!(
+            "  Cached audio: {} (caching is off)",
+            crate::audio_cache::human_size(used)
+        ),
+    }
+
     println!();
     println!("System");
     let pulse = libpulse_path();
