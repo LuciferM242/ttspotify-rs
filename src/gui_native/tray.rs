@@ -565,13 +565,29 @@ fn remove_server(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
         .borrow_mut()
         .forget(name, std::time::Duration::from_secs(5));
 
-    if let Err(e) = std::fs::remove_file(&path) {
-        let _ = wnd.hwnd().MessageBox(
-            &format!("Could not delete {}: {e}", path.display()),
-            "TT Spotify",
-            co::MB::OK | co::MB::ICONERROR,
-        );
-        return;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // Already gone — someone deleted it outside the app. That is the
+        // outcome this command wanted, so carry on and finish the job rather
+        // than stopping before the logs and the menu are dealt with.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            // The instance is already forgotten, so leaving now would hide the
+            // bot from the menu while its config stayed on disk — invisible,
+            // unstoppable, and started again the next time any server is
+            // added. Put it back and let the user try again.
+            tray.manager.borrow_mut().load_configs();
+            let _ = wnd.hwnd().MessageBox(
+                &format!(
+                    "Could not delete {}: {e}\n\nThe bot has been stopped and is still listed.",
+                    path.display()
+                ),
+                "TT Spotify",
+                co::MB::OK | co::MB::ICONERROR,
+            );
+            update_tooltip(wnd.hwnd(), tray);
+            return;
+        }
     }
 
     if choice.delete_logs && logs.is_dir() {

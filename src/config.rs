@@ -306,10 +306,12 @@ pub fn sanitise_config_name(name: &str) -> Option<String> {
     if cleaned.is_empty() {
         return None;
     }
-    // "all" is what start, stop and restart accept for "every bot", so a bot
-    // called that could never be started on its own — every command aimed at
-    // it would hit the whole fleet instead.
-    if cleaned.eq_ignore_ascii_case("all") {
+    // Names that already mean something else. "all" is what start, stop and
+    // restart accept for "every bot", so a bot called that could never be
+    // started on its own. "tray" owns logs/tray/ on Windows, so a bot of that
+    // name would share the tray's own log folder — and "delete this bot's
+    // logs" would delete the tray's.
+    if ["all", "tray"].iter().any(|r| cleaned.eq_ignore_ascii_case(r)) {
         return None;
     }
     Some(cleaned)
@@ -1118,6 +1120,9 @@ mod tests {
         assert_eq!(sanitise_config_name("all"), None);
         assert_eq!(sanitise_config_name("ALL"), None);
         assert_eq!(sanitise_config_name(" All "), None);
+        // The tray keeps its own log in logs/tray/, and "delete this bot's
+        // logs" would take the tray's with it.
+        assert_eq!(sanitise_config_name("tray"), None);
         // Names that merely contain it are fine.
         assert_eq!(sanitise_config_name("hall"), Some("hall".to_string()));
         assert_eq!(sanitise_config_name("all-servers"), Some("all-servers".to_string()));

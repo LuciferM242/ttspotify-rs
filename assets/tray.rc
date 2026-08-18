@@ -115,15 +115,18 @@ END
 #define IDC_REMOVE_TEXT   701
 #define IDC_REMOVE_LOGS   702
 
-IDD_REMOVE DIALOGEX 0, 0, 260, 96
+IDD_REMOVE DIALOGEX 0, 0, 260, 132
 STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
 CAPTION "Remove bot"
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
-    LTEXT           "", IDC_REMOVE_TEXT, 10, 10, 240, 42
-    AUTOCHECKBOX    "Also delete this bot's &logs", IDC_REMOVE_LOGS, 10, 56, 240, 12
-    PUSHBUTTON      "&Remove", IDOK,     146, 74, 50, 14
-    DEFPUSHBUTTON   "Cancel",  IDCANCEL, 200, 74, 50, 14
+    // Tall enough for the whole message: a long config path wraps to two
+    // lines, and the line it used to push out of view was "This cannot be
+    // undone."
+    LTEXT           "", IDC_REMOVE_TEXT, 10, 10, 240, 78
+    AUTOCHECKBOX    "Also delete this bot's &logs", IDC_REMOVE_LOGS, 10, 92, 240, 12
+    PUSHBUTTON      "&Remove", IDOK,     146, 110, 50, 14
+    DEFPUSHBUTTON   "Cancel",  IDCANCEL, 200, 110, 50, 14
 END
 
 // --- Config editor --------------------------------------------------------

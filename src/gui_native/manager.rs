@@ -344,16 +344,29 @@ impl BotManager {
         self.stop_nonblocking(name);
         let deadline = std::time::Instant::now() + timeout;
         if let Some(inst) = self.instances.get_mut(name) {
+            // Only a bot with a live session can answer: it sees the flag
+            // within one poll and disconnects. One still connecting is stuck
+            // inside the SDK's login wait and cannot respond until that times
+            // out — and this runs on the message-loop thread, so waiting for
+            // it would freeze the tray for the full timeout to no purpose.
+            let live = matches!(
+                *inst.status.lock(),
+                BotStatus::Connected | BotStatus::Playing(_)
+            );
             if let Some(handle) = inst.thread.take() {
-                while !handle.is_finished() {
-                    if std::time::Instant::now() >= deadline {
-                        tracing::warn!("[{name}] did not stop in time; removing it anyway");
-                        break;
+                if live {
+                    while !handle.is_finished() {
+                        if std::time::Instant::now() >= deadline {
+                            tracing::warn!("[{name}] did not stop in time; removing it anyway");
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                if handle.is_finished() {
-                    let _ = handle.join();
+                    if handle.is_finished() {
+                        let _ = handle.join();
+                    }
+                } else {
+                    tracing::info!("[{name}] no live session; not waiting while removing it");
                 }
             }
         }

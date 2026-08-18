@@ -53,8 +53,6 @@ pub enum LockError {
 /// out the same file, while the readable stem keeps the directory listing
 /// meaningful.
 pub fn lock_path(config_path: &Path) -> PathBuf {
-    use std::hash::{Hash, Hasher};
-
     let name = config_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -64,9 +62,27 @@ pub fn lock_path(config_path: &Path) -> PathBuf {
     let full = config_path
         .canonicalize()
         .unwrap_or_else(|_| config_path.to_path_buf());
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    full.hash(&mut hasher);
-    crate::paths::state_dir().join(format!("{name}-{:016x}.lock", hasher.finish()))
+    crate::paths::state_dir().join(format!("{name}-{:016x}.lock", path_digest(&full)))
+}
+
+/// A digest of the path that two builds will always agree on.
+///
+/// Not `DefaultHasher`: its output is explicitly allowed to change between Rust
+/// releases, and the whole point of the lock is that two processes compute the
+/// same file name. A bot started by a service built with one toolchain and a
+/// second copy started by hand from a newer build would each take their own
+/// lock and both log in — exactly the collision this module exists to stop.
+/// FNV-1a is a handful of lines and fixed forever.
+fn path_digest(path: &Path) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = OFFSET_BASIS;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 /// Take the lock for this config, or say who is already holding it.
@@ -121,6 +137,20 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .starts_with("apple-"));
+    }
+
+    #[test]
+    fn the_digest_is_fixed_so_two_builds_agree() {
+        // Pinned values: if this ever changes, a bot started by an older build
+        // and one started by a newer build would take different locks and both
+        // log in on the same account.
+        // Cross-checked against an independent FNV-1a implementation, not
+        // copied from this code's own output.
+        assert_eq!(
+            path_digest(Path::new("/home/u/.config/ttspotify/config/apple.json")),
+            0x625b_fed0_ab62_3d77
+        );
+        assert_eq!(path_digest(Path::new("")), 0xcbf2_9ce4_8422_2325);
     }
 
     #[test]
