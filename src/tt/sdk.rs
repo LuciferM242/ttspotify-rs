@@ -12,10 +12,9 @@ use std::path::{Path, PathBuf};
 /// is proof the directory is an SDK download of ours and safe to move.
 const SDK_MARKER: &str = "TEAMTALK_SDK_VERSION.txt";
 
-/// The pinned SDK location: `<config_dir>/cache/TEAMTALK_DLL`. It is a
-/// download, so it lives with the other things that can be fetched again.
+/// The pinned SDK location: `<config_dir>/sdk/TEAMTALK_DLL`.
 pub fn pinned_sdk_dir() -> PathBuf {
-    crate::paths::cache_dir().join("TEAMTALK_DLL")
+    crate::paths::sdk_dir().join("TEAMTALK_DLL")
 }
 
 /// Pin the SDK directory for the teamtalk crate (unless the user already set
@@ -37,6 +36,7 @@ pub fn pin_sdk_dir() {
 /// directory (the old systemd behavior, where the service started in $HOME).
 fn legacy_sdk_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
+    candidates.push(crate::paths::cache_dir().join("TEAMTALK_DLL"));
     // Where the SDK sat before the data folder grew a cache/ subfolder.
     candidates.push(crate::config::config_dir().join("TEAMTALK_DLL"));
     if let Ok(cwd) = std::env::current_dir() {
@@ -108,6 +108,39 @@ mod tests {
         assert!(target.join("libTeamTalk5.so").is_file());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn an_sdk_filed_under_cache_is_carried_over_rather_than_redownloaded() {
+        let base = tmp("from_cache");
+        let legacy = base.join("cache").join("TEAMTALK_DLL");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join(SDK_MARKER), "v5.22a").unwrap();
+        std::fs::write(legacy.join("libTeamTalk5.so"), "payload").unwrap();
+        let target = base.join("sdk").join("TEAMTALK_DLL");
+
+        assert!(migrate_sdk_dir(&legacy, &target), "should move out of cache/");
+        assert!(!legacy.exists(), "nothing should be left behind in cache/");
+        assert_eq!(
+            std::fs::read_to_string(target.join(SDK_MARKER)).unwrap(),
+            "v5.22a",
+            "the pinned version must survive the move"
+        );
+        assert!(target.join("libTeamTalk5.so").is_file());
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_pinned_location_is_not_inside_the_clearable_cache() {
+        let sdk = pinned_sdk_dir();
+        let cache = crate::paths::cache_dir();
+        assert!(
+            !sdk.starts_with(&cache),
+            "the SDK at {} must not sit under the cache at {}",
+            sdk.display(),
+            cache.display()
+        );
     }
 
     #[test]

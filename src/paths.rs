@@ -89,6 +89,11 @@ pub fn cache_dir() -> PathBuf {
     root().join("cache")
 }
 
+/// The TeamTalk SDK download.
+pub fn sdk_dir() -> PathBuf {
+    root().join("sdk")
+}
+
 pub fn logs_dir() -> PathBuf {
     root().join("logs")
 }
@@ -123,7 +128,15 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 /// Create the standard folders if they are missing, so a fresh install has the
 /// same shape as a migrated one and every writer can assume its folder exists.
 pub fn ensure_dirs() {
-    for dir in [configs_dir(), lang_dir(), state_dir(), auth_dir(), cache_dir(), logs_dir()] {
+    for dir in [
+        configs_dir(),
+        lang_dir(),
+        state_dir(),
+        auth_dir(),
+        cache_dir(),
+        sdk_dir(),
+        logs_dir(),
+    ] {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             tracing::warn!("Could not create {}: {e}", dir.display());
         }
@@ -244,7 +257,7 @@ pub fn migrate_layout(root: &Path, is_config: &dyn Fn(&Path) -> bool) -> Migrati
         ("credentials.json", root.join("auth")),
         ("rustypipe_cache.json", root.join("cache")),
         ("spotify_cache", root.join("cache")),
-        ("TEAMTALK_DLL", root.join("cache")),
+        ("TEAMTALK_DLL", root.join("sdk")),
     ];
     for (name, dest_dir) in fixed {
         let from = root.join(name);
@@ -486,7 +499,8 @@ mod tests {
         assert!(root.join("auth/credentials.json").exists());
         assert!(root.join("cache/rustypipe_cache.json").exists());
         assert!(root.join("cache/spotify_cache/audio/x").exists());
-        assert!(root.join("cache/TEAMTALK_DLL/TEAMTALK_SDK_VERSION.txt").exists());
+        assert!(root.join("sdk/TEAMTALK_DLL/TEAMTALK_SDK_VERSION.txt").exists());
+        assert!(!root.join("cache/TEAMTALK_DLL").exists());
         // Nothing left loose.
         assert!(!root.join("myserver.json").exists());
         assert!(!root.join("credentials.json").exists());

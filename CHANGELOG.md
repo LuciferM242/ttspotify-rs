@@ -45,6 +45,12 @@
   Spotify says so instead of switching. "info" shows what a bot offers.
 
 ### Changed
+- The TeamTalk files the bot downloads to run now sit in their own "sdk"
+  folder instead of under "cache". They were never safe to delete - they are
+  fetched from bearware.dk, which removes older versions, so an install that
+  lost them might not start again - and a folder called "cache" invites being
+  emptied. Your copy is moved across the first time you run this version; it
+  is not downloaded again.
 - Help is translated too now, not just the bot's replies. Command names stay in
   English, since those are what you type.
 - YouTube tracks start about twice as fast.
