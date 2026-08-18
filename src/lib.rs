@@ -11,6 +11,8 @@ pub mod paths;
 pub mod player;
 pub mod proc;
 #[cfg(target_os = "linux")]
+pub mod install;
+#[cfg(target_os = "linux")]
 pub mod service;
 pub mod services;
 pub mod spotify;

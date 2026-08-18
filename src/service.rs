@@ -46,6 +46,11 @@ pub fn service_installed() -> bool {
     systemd_dir().join(SERVICE_NAME).exists()
 }
 
+/// Contents of the installed unit file, when there is one.
+pub fn installed_unit() -> Option<String> {
+    std::fs::read_to_string(systemd_dir().join(SERVICE_NAME)).ok()
+}
+
 /// Escape a config name for use as a systemd template instance, matching
 /// `systemd-escape`: `/` becomes `-`, a leading `.` and every byte outside
 /// `[A-Za-z0-9:_.]` become `\xNN`. Without this, a config like
@@ -110,7 +115,24 @@ fn linger_enabled(user: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn prompt_yes_no(message: &str) -> bool {
+/// The binary an installed unit runs, as written in its `ExecStart`.
+///
+/// `write_unit_file` quotes the path so spaces survive, so the quoted form is
+/// the one that matters; the bare form is read too in case someone edited the
+/// unit by hand.
+pub fn exec_start_binary(unit: &str) -> Option<String> {
+    let line = unit
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("ExecStart="))?
+        .trim();
+    if let Some(rest) = line.strip_prefix('"') {
+        return rest.split('"').next().filter(|s| !s.is_empty()).map(str::to_string);
+    }
+    line.split_whitespace().next().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+pub(crate) fn prompt_yes_no(message: &str) -> bool {
     print!("{message} [y/N] ");
     io::stdout().flush().ok();
     let mut input = String::new();
@@ -181,6 +203,12 @@ pub fn install_service() -> Result<(), BotError> {
 fn write_unit_file() -> Result<PathBuf, BotError> {
     let exe_path = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("Cannot determine executable path: {e}")))?;
+    write_unit_file_for(&exe_path)
+}
+
+/// Same, for a binary other than the running one — `--install` points the unit
+/// at the copy it just placed on PATH, which is not the copy being executed.
+pub(crate) fn write_unit_file_for(exe_path: &Path) -> Result<PathBuf, BotError> {
     let config_base = crate::paths::configs_dir();
     let data_root = config_dir();
 
@@ -465,6 +493,13 @@ fn link_present(path: &Path) -> bool {
 }
 
 pub fn uninstall_service() -> Result<(), BotError> {
+    remove_service(true)
+}
+
+/// `note_untouched` is false when `--uninstall` calls this on its way to
+/// removing the binary too: saying "the binary is untouched" one line before
+/// offering to delete it reads as a contradiction.
+pub(crate) fn remove_service(note_untouched: bool) -> Result<(), BotError> {
     // Runs even when the template file is already gone: a unit removed by an
     // older version of this command left its enable symlinks behind, and this
     // is what clears them.
@@ -489,7 +524,9 @@ pub fn uninstall_service() -> Result<(), BotError> {
             .status();
     }
 
-    println!("Configs, logs and the binary itself are untouched.");
+    if note_untouched {
+        println!("Configs, logs and the binary itself are untouched.");
+    }
     Ok(())
 }
 
@@ -647,6 +684,32 @@ mod tests {
             super::known_instances("", &[], &["my server".to_string()]),
             vec![r"ttspotify@my\x20server.service"]
         );
+    }
+
+    #[test]
+    fn exec_start_binary_reads_the_quoted_path_we_write() {
+        let unit = unit_file_contents(
+            "\"/usr/local/bin/tt spotify\" --config \"/x/%i.json\"",
+            std::path::Path::new("/x"),
+            None,
+        );
+        // Quoting is what lets a path with a space survive, so the quotes are
+        // the boundary rather than the first blank.
+        assert_eq!(
+            super::exec_start_binary(&unit).as_deref(),
+            Some("/usr/local/bin/tt spotify")
+        );
+    }
+
+    #[test]
+    fn exec_start_binary_reads_a_hand_edited_unquoted_path() {
+        assert_eq!(
+            super::exec_start_binary("[Service]\nExecStart=/usr/bin/ttspotify --config /x.json\n")
+                .as_deref(),
+            Some("/usr/bin/ttspotify")
+        );
+        assert_eq!(super::exec_start_binary("[Service]\nType=simple\n"), None);
+        assert_eq!(super::exec_start_binary("ExecStart=\n"), None);
     }
 
     #[test]

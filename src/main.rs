@@ -33,7 +33,7 @@ fn pin_teamtalk_sdk_version() {
 
 #[cfg(not(windows))]
 #[derive(Parser)]
-#[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot")]
+#[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot", version)]
 struct Args {
     /// Path to config file
     #[arg(short, long)]
@@ -43,12 +43,27 @@ struct Args {
     #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     setup: Option<String>,
 
-    /// Install systemd user service (Linux only)
+    /// Copy this binary onto your PATH (does not touch systemd)
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    install: bool,
+
+    /// Remove the binary, and optionally the service, configs and tools
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    uninstall: bool,
+
+    /// With --uninstall: also ask about deleting configs, logins and logs
+    #[cfg(target_os = "linux")]
+    #[arg(long, requires = "uninstall")]
+    purge: bool,
+
+    /// Install the systemd user service (does not move the binary)
     #[cfg(target_os = "linux")]
     #[arg(long)]
     install_service: bool,
 
-    /// Remove systemd user service (Linux only)
+    /// Remove the systemd user service only
     #[cfg(target_os = "linux")]
     #[arg(long)]
     uninstall_service: bool,
@@ -92,6 +107,14 @@ async fn main() -> Result<(), BotError> {
         return tt_spotify_bot::wizard::run_wizard(name, true).map(|_| ());
     }
 
+    #[cfg(target_os = "linux")]
+    if args.install {
+        return tt_spotify_bot::install::install();
+    }
+    #[cfg(target_os = "linux")]
+    if args.uninstall {
+        return tt_spotify_bot::install::uninstall(args.purge);
+    }
     #[cfg(target_os = "linux")]
     if args.install_service {
         return tt_spotify_bot::service::install_service();
