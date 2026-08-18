@@ -135,6 +135,14 @@ struct Args {
     /// (with confirmation) download, verify, and replace this binary.
     #[arg(long)]
     update: bool,
+
+    /// Print a completion script for your shell (bash, zsh, fish, ...)
+    #[arg(long, value_name = "SHELL")]
+    completions: Option<clap_complete::Shell>,
+
+    /// Print this program's man page (roff) to standard output
+    #[arg(long)]
+    man: bool,
 }
 
 #[cfg(not(windows))]
@@ -146,6 +154,43 @@ async fn main() -> Result<(), BotError> {
     tt_spotify_bot::youtube::setup::migrate_legacy_tools();
     tt_spotify_bot::logging::install_panic_hook();
     let args = Args::parse();
+
+    // Rust ignores SIGPIPE, which turns `--doctor | head` into a panic about
+    // failing to print. The bot itself needs that default kept — a write to a
+    // TeamTalk socket the server has closed would otherwise kill the process
+    // instead of returning an error — so only the commands that print and
+    // exit hand SIGPIPE back to the kernel.
+    {
+        let prints_and_exits = args.completions.is_some() || args.man || args.auth_status;
+        #[cfg(target_os = "linux")]
+        let prints_and_exits = prints_and_exits
+            || args.doctor
+            || args.list
+            || args.status
+            || args.logs.is_some();
+        if prints_and_exits {
+            // SAFETY: setting a signal disposition before any thread is
+            // spawned, to the value every other Unix program uses.
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+        }
+    }
+
+    // Generated from the same clap definition as --help, so a flag added
+    // later cannot be missing from either.
+    if let Some(shell) = args.completions {
+        use clap::CommandFactory;
+        let mut command = Args::command();
+        let name = tt_spotify_bot::paths::program_name();
+        clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
+        return Ok(());
+    }
+    if args.man {
+        use clap::CommandFactory;
+        clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
+        return Ok(());
+    }
 
     if let Some(ref name) = args.setup {
         let name = if name.is_empty() { None } else { Some(name.as_str()) };

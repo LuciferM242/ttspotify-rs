@@ -77,6 +77,10 @@ regex = "1"
 rand = "0.8"
 percent-encoding = "2"
 clap = { version = "4", features = ["derive"] }
+# Shell completions and the man page are generated from the same clap
+# definition as --help, so they cannot drift from the real flags.
+clap_complete = "4"
+clap_mangen = "0.2"
 dirs = "6"
 parking_lot = "0.12"
 
@@ -126,3 +130,8 @@ embed-resource = "3.0.11"
 name = "tt-spotify-bot"
 path = "src/main.rs"
 
+
+[target.'cfg(unix)'.dependencies]
+# Only to hand SIGPIPE back to the kernel for commands that print and exit,
+# so `--doctor | head` ends quietly instead of panicking.
+libc = "0.2"
