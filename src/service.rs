@@ -23,7 +23,7 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 4;
+const UNIT_FILE_VERSION: u32 = 5;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -158,9 +158,16 @@ pub fn exec_start_binary(unit: &str) -> Option<String> {
         .find_map(|l| l.strip_prefix("ExecStart="))?
         .trim();
     if let Some(rest) = line.strip_prefix('"') {
-        return rest.split('"').next().filter(|s| !s.is_empty()).map(str::to_string);
+        return rest
+            .split('"')
+            .next()
+            .filter(|s| !s.is_empty())
+            .map(unescape_specifiers);
     }
-    line.split_whitespace().next().filter(|s| !s.is_empty()).map(str::to_string)
+    line.split_whitespace()
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(unescape_specifiers)
 }
 
 pub(crate) fn prompt_yes_no(message: &str) -> bool {
@@ -257,15 +264,17 @@ pub(crate) fn write_unit_file_for(exe_path: &Path) -> Result<PathBuf, BotError> 
     // uses the original name.
     let exec_start = format!(
         "\"{}\" --config \"{}/{}.json\"",
-        exe_path.display(),
-        config_base.display(),
+        escape_specifiers(&exe_path.display().to_string()),
+        escape_specifiers(&config_base.display().to_string()),
         "%I"
     );
 
     let tools_dir = crate::youtube::setup::resolve_paths().ok().map(|p| p.lib_dir);
     let unit = unit_file_contents(&exec_start, &data_root, tools_dir.as_deref());
 
-    std::fs::write(&service_path, unit)?;
+    // Atomic: a half-written unit where a working one used to be is a bot that
+    // stops starting, with nothing to say why.
+    crate::paths::write_atomic(&service_path, unit.as_bytes())?;
 
     let _ = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
@@ -302,6 +311,21 @@ pub fn offer_unit_refresh() {
     }
 }
 
+/// Escape `%` for systemd, which reads it as the start of a specifier.
+///
+/// A home directory with a `%` in it — `/home/50%user` — quietly becomes
+/// something else when systemd expands `%u` to the user name, and the unit then
+/// runs against a path that does not exist. `%%` is systemd's literal percent.
+fn escape_specifiers(path: &str) -> String {
+    path.replace('%', "%%")
+}
+
+/// Undo [`escape_specifiers`], so a path read back out of a unit compares equal
+/// to the one on disk.
+fn unescape_specifiers(path: &str) -> String {
+    path.replace("%%", "%")
+}
+
 /// Render the `ttspotify@.service` user unit.
 ///
 /// A missing/broken config exits with EXIT_CONFIG_ERROR;
@@ -315,8 +339,16 @@ pub fn offer_unit_refresh() {
 /// own cache). The `-` prefix keeps a not-yet-created path from failing the
 /// unit.
 fn unit_file_contents(exec_start: &str, config_dir: &Path, tools_dir: Option<&Path>) -> String {
+    // WorkingDirectory and ReadWritePaths are specifier-expanded as well, so a
+    // `%` in any of these paths has to survive as a literal.
+    let config_dir = escape_specifiers(&config_dir.display().to_string());
     let tools_rw = tools_dir
-        .map(|d| format!("ReadWritePaths=-{}\n", d.display()))
+        .map(|d| {
+            format!(
+                "ReadWritePaths=-{}\n",
+                escape_specifiers(&d.display().to_string())
+            )
+        })
         .unwrap_or_default();
     format!(
         r#"# ttspotify-unit-version: {unit_version}
@@ -351,7 +383,7 @@ ReadWritePaths=-%h/.cache
 WantedBy=default.target
 "#,
         unit_version = UNIT_FILE_VERSION,
-        config_dir = config_dir.display(),
+        config_dir = config_dir,
         config_exit = crate::config::EXIT_CONFIG_ERROR,
     )
 }
@@ -607,6 +639,38 @@ mod tests {
         // SDK downloads land relative to the CWD; pin it to the config dir so
         // they fall inside the writable set.
         assert!(unit.contains("WorkingDirectory=/home/u/.config/ttspotify"));
+    }
+
+    #[test]
+    fn a_path_with_a_percent_survives_the_round_trip() {
+        // Escaped on the way in, unescaped on the way out, so the reconcile
+        // check compares the real path against the real path.
+        let unit = unit_file_contents(
+            &format!(
+                "\"{}\" --config \"/x/%I.json\"",
+                super::escape_specifiers("/home/50%user/bot")
+            ),
+            std::path::Path::new("/x"),
+            None,
+        );
+        assert_eq!(
+            super::exec_start_binary(&unit).as_deref(),
+            Some("/home/50%user/bot")
+        );
+    }
+
+    #[test]
+    fn a_percent_in_a_path_is_kept_literal() {
+        // systemd expands %u, %h and friends everywhere these paths are used,
+        // so an unescaped percent silently rewrites the path.
+        let unit = unit_file_contents(
+            "\"/home/50%u ser/bot\" --config \"/x/%I.json\"",
+            std::path::Path::new("/home/50%user/.config/ttspotify"),
+            None,
+        );
+        assert!(unit.contains("WorkingDirectory=/home/50%%user/.config/ttspotify"), "{unit}");
+        // The instance specifier itself must stay a specifier.
+        assert!(unit.contains("%I.json"), "{unit}");
     }
 
     #[test]
