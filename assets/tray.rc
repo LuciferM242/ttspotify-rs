@@ -106,6 +106,26 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 160, 50, 50, 14
 END
 
+// --- Remove a bot ---------------------------------------------------------
+// One dialog rather than a MessageBox and then a second question: the logs are
+// part of the same decision, so they belong on the same screen as a checkbox.
+// Cancel is the default button — this is the one destructive item in the bot
+// menu, and it sits next to Start and Stop.
+#define IDD_REMOVE        700
+#define IDC_REMOVE_TEXT   701
+#define IDC_REMOVE_LOGS   702
+
+IDD_REMOVE DIALOGEX 0, 0, 260, 96
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Remove bot"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "", IDC_REMOVE_TEXT, 10, 10, 240, 42
+    AUTOCHECKBOX    "Also delete this bot's &logs", IDC_REMOVE_LOGS, 10, 56, 240, 12
+    PUSHBUTTON      "&Remove", IDOK,     146, 74, 50, 14
+    DEFPUSHBUTTON   "Cancel",  IDCANCEL, 200, 74, 50, 14
+END
+
 // --- Config editor --------------------------------------------------------
 // A host dialog holding a tab control, plus one child dialog per tab. Child
 // dialogs (WS_CHILD, DS_CONTROL) are how Windows builds tabbed property pages,

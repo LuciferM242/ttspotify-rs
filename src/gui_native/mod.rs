@@ -18,6 +18,7 @@ pub mod facts;
 pub mod manager;
 pub mod menu;
 pub mod progress_dialog;
+pub mod remove_dialog;
 pub mod settings_dialog;
 pub mod tooltip;
 pub mod tray;

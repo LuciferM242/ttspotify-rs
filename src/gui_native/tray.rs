@@ -552,19 +552,12 @@ fn remove_server(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
         return;
     };
 
-    let answer = wnd.hwnd().MessageBox(
-        &format!(
-            "Remove the bot \"{name}\"?\n\nThis stops it and deletes\n{}\n\nThis cannot be undone.",
-            path.display()
-        ),
-        "TT Spotify",
-        // Defaulting to No: the item sits in the same menu as Start and Stop,
-        // and a mis-click here is not recoverable.
-        co::MB::YESNO | co::MB::ICONWARNING | co::MB::DEFBUTTON2,
-    );
-    if !matches!(answer, Ok(co::DLGID::YES)) {
+    let logs = crate::paths::root().join("logs").join(name);
+    let Some(choice) =
+        crate::gui_native::remove_dialog::show(wnd, name, &path, logs.is_dir())
+    else {
         return;
-    }
+    };
 
     // Stop before deleting: a running bot writes its volume and modes back to
     // the config, so a bot still alive when the file goes could recreate it.
@@ -581,23 +574,13 @@ fn remove_server(wnd: &gui::WindowMain, tray: &Rc<Tray>, name: &str) {
         return;
     }
 
-    // Logs are both the reason a bot is often removed and the record of why,
-    // so they are a separate question.
-    let logs = crate::paths::root().join("logs").join(name);
-    if logs.is_dir() {
-        let answer = wnd.hwnd().MessageBox(
-            &format!("Also delete this bot's logs?\n\n{}", logs.display()),
-            "TT Spotify",
-            co::MB::YESNO | co::MB::ICONQUESTION | co::MB::DEFBUTTON2,
-        );
-        if matches!(answer, Ok(co::DLGID::YES)) {
-            if let Err(e) = std::fs::remove_dir_all(&logs) {
-                let _ = wnd.hwnd().MessageBox(
-                    &format!("Could not delete the logs: {e}"),
-                    "TT Spotify",
-                    co::MB::OK | co::MB::ICONERROR,
-                );
-            }
+    if choice.delete_logs && logs.is_dir() {
+        if let Err(e) = std::fs::remove_dir_all(&logs) {
+            let _ = wnd.hwnd().MessageBox(
+                &format!("Could not delete the logs: {e}"),
+                "TT Spotify",
+                co::MB::OK | co::MB::ICONERROR,
+            );
         }
     }
 
