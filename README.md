@@ -54,7 +54,8 @@ Download the latest build from the [**Releases page**](https://github.com/Lucife
 ### Linux (x86_64, Ubuntu 22.04+ / glibc)
 
 Install the one runtime dependency — `libpulse0`, a shared library the TeamTalk
-SDK links against (without it the bot fails with `Init failed`):
+SDK links against (the bot tells you if it is missing, and `--doctor` checks
+for it):
 
 ```bash
 sudo apt install -y libpulse0
@@ -66,10 +67,11 @@ Extract the archive:
 tar -xzf tt-spotify-bot-linux-x86_64.tar.gz
 ```
 
-Put the binary on your `PATH`:
+Put the binary on your `PATH` — it installs itself, into `~/.local/bin` when
+that is writable, and tells you if that directory is not on your `PATH` yet:
 
 ```bash
-sudo install -m755 tt-spotify-bot /usr/local/bin/ttspotify
+./tt-spotify-bot --install
 ```
 
 Run it — on first launch (no config yet) it walks you through the **setup wizard**, then connects:
@@ -97,11 +99,14 @@ Optional systemd service — install it once:
 ttspotify --install-service
 ```
 
-then enable an instance per config:
+then start a bot by its config name:
 
 ```bash
-systemctl --user enable --now ttspotify@myserver
+ttspotify --start myserver
 ```
+
+If something does not work, `ttspotify --doctor` prints what is installed, what
+is running, and the command that fixes whatever looks wrong.
 
 ### Linux (aarch64 / Raspberry Pi)
 
@@ -118,7 +123,7 @@ tar -xzf tt-spotify-bot-linux-aarch64.tar.gz
 ```
 
 ```bash
-sudo install -m755 tt-spotify-bot /usr/local/bin/ttspotify
+./tt-spotify-bot --install
 ```
 
 > **Platform support:** Windows x64, Linux x86_64, and Linux aarch64 (glibc,
@@ -153,17 +158,35 @@ ttspotify --setup server1
 
 On systemd systems the wizard ends by offering to enable and start
 `ttspotify@server1` for you — say yes and the bot is up (if the service isn't
-installed yet, it offers to install it first). You can also manage instances
-yourself at any time, one per config:
+installed yet, it offers to install it first).
 
-```bash
-systemctl --user enable --now ttspotify@server1
-```
+After that, manage bots by the name you gave them — no systemd unit names
+needed:
+
+- `ttspotify --list` — the bots configured here
+- `ttspotify --status` — which are running, and since when
+- `ttspotify --start server1` — also `--stop` and `--restart`; each takes a bot
+  name or `all`
+- `ttspotify --logs server1` — add `--follow` to keep watching
+- `ttspotify --edit server1` — change any setting, with the current value
+  offered as the default for every question
+- `ttspotify --doctor` — what is installed, what is running, what to fix
 
 Each instance reads `~/.config/ttspotify/config/<name>.json`. Running
-`ttspotify` without `--config` picks the first config alphabetically; pass
-`--config ~/.config/ttspotify/config/<name>.json` to run a specific one by hand.
-See `ttspotify --help` for all command-line options.
+`ttspotify` with no `--config` asks which bot you mean when there is more than
+one; pass `--config ~/.config/ttspotify/config/<name>.json` to skip the
+question. See `ttspotify --help` for everything else.
+
+Shell completion, if you want it — this is bash, and `zsh`, `fish` and others
+work the same way:
+
+```bash
+ttspotify --completions bash > ~/.local/share/bash-completion/completions/ttspotify
+```
+
+To remove the bot, `ttspotify --uninstall` stops the bots, removes the service
+and the binary, and leaves your configs and logs alone unless you add
+`--purge`.
 
 ## Configuration
 
