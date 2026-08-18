@@ -43,6 +43,11 @@ struct Args {
     #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
     setup: Option<String>,
 
+    /// Change an existing config (name optional; asks when omitted)
+    #[cfg(target_os = "linux")]
+    #[arg(long, value_name = "NAME", num_args = 0..=1, default_missing_value = "")]
+    edit: Option<String>,
+
     /// List the bots configured on this machine
     #[cfg(target_os = "linux")]
     #[arg(long)]
@@ -151,6 +156,11 @@ async fn main() -> Result<(), BotError> {
     if args.doctor {
         tt_spotify_bot::doctor::report();
         return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(ref name) = args.edit {
+        let name = if name.is_empty() { None } else { Some(name.as_str()) };
+        finish(tt_spotify_bot::editor::run(name));
     }
     #[cfg(target_os = "linux")]
     if args.list {

@@ -10,7 +10,7 @@ use crate::error::BotError;
 use crate::services::Service;
 use crate::youtube::setup;
 
-fn ask(prompt: &str, default: &str, required: bool) -> Option<String> {
+pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String> {
     loop {
         if default.is_empty() {
             print!("  {prompt}: ");
@@ -22,7 +22,9 @@ fn ask(prompt: &str, default: &str, required: bool) -> Option<String> {
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
             Ok(0) | Err(_) => {
-                println!("\nSetup cancelled.");
+                // Shared by the setup wizard and the config editor, so the
+                // wording cannot claim which one the user was in.
+                println!("\nCancelled.");
                 return None;
             }
             _ => {}

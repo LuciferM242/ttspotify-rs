@@ -15,6 +15,8 @@ pub mod control;
 #[cfg(target_os = "linux")]
 pub mod doctor;
 #[cfg(target_os = "linux")]
+pub mod editor;
+#[cfg(target_os = "linux")]
 pub mod install;
 #[cfg(target_os = "linux")]
 pub mod service;
