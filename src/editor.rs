@@ -140,16 +140,23 @@ pub fn run(name: Option<&str>) -> Result<(), BotError> {
     println!();
     println!("Editing \"{name}\" ({})", path.display());
 
+    // Reprinting the eight items after every mistyped answer turned one stray
+    // Enter into eight lines to listen through again. The menu is shown when
+    // it changes what you can do; a bad answer only re-asks.
+    let mut show_menu = true;
     loop {
-        println!();
-        println!("  1. Server and login");
-        println!("  2. Bot name, channel and language");
-        println!("  3. Who may run admin commands");
-        println!("  4. Services and cookies");
-        println!("  5. Audio");
-        println!("  6. Radio and search");
-        println!("  7. Save and quit");
-        println!("  8. Quit without saving");
+        if show_menu {
+            println!();
+            println!("  1. Server and login");
+            println!("  2. Bot name, channel and language");
+            println!("  3. Who may run admin commands");
+            println!("  4. Services and cookies");
+            println!("  5. Audio");
+            println!("  6. Radio and search");
+            println!("  7. Save and quit");
+            println!("  8. Quit without saving");
+        }
+        show_menu = true;
 
         let Some(choice) = ask("Choose", "", false) else {
             println!("Nothing saved.");
@@ -168,7 +175,14 @@ pub fn run(name: Option<&str>) -> Result<(), BotError> {
                 println!("Nothing saved.");
                 return Ok(());
             }
-            other => println!("  \"{other}\" is not one of the choices."),
+            "" => {
+                println!("  Type a number from 1 to 8, or 8 to leave without saving.");
+                show_menu = false;
+            }
+            other => {
+                println!("  \"{other}\" is not one of the choices. Type a number from 1 to 8.");
+                show_menu = false;
+            }
         }
     }
 }

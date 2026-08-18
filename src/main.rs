@@ -173,6 +173,11 @@ enum ServiceAction {
     /// Install the systemd user service (does not move the binary)
     Install,
     /// Remove the systemd user service only
+    ///
+    /// `uninstall` is accepted too: the top-level pair is install/uninstall,
+    /// and typing the same word here was refused with a tip that pointed at
+    /// `install`.
+    #[command(alias = "uninstall")]
     Remove,
 }
 

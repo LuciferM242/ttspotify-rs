@@ -11,6 +11,7 @@ use crate::services::Service;
 use crate::youtube::setup;
 
 pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String> {
+    let mut refused = 0;
     loop {
         if default.is_empty() {
             print!("  {prompt}: ");
@@ -36,6 +37,12 @@ pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String>
         }
         if input.is_empty() && required {
             println!("    This field is required.");
+            // Repeating one line forever gave no way out to anyone who did not
+            // already know Ctrl+C ends it without writing anything.
+            refused += 1;
+            if refused == 2 {
+                println!("    (press Ctrl+C to leave the setup without saving)");
+            }
             continue;
         }
         return Some(input);
@@ -117,8 +124,8 @@ pub fn run_wizard(
             // having done nothing.
             None => {
                 return Err(BotError::Usage(format!(
-                    "\"{n}\" cannot be used as a bot name. Use letters or numbers; \
-                     \"all\" is reserved for commands that act on every bot."
+                    "\"{n}\" cannot be used as a bot name. Use letters or numbers, up to \
+                     60 characters; \"all\" is reserved for commands that act on every bot."
                 )))
             }
         }
@@ -127,7 +134,7 @@ pub fn run_wizard(
             let typed = or_cancel!(ask("Config name (used for file name and service name)", "config", true));
             match crate::config::sanitise_config_name(&typed) {
                 Some(n) => break n,
-                None => println!("    Please use letters or numbers in the name."),
+                None => println!("    Please use letters or numbers, up to 60 characters."),
             }
         }
     };

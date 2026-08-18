@@ -147,14 +147,14 @@ fn place_binary(src: &Path, dst: &Path) -> Result<(), BotError> {
             // be read, so name the directory only when it is really the one at
             // fault.
             if std::fs::metadata(src).is_err() {
-                return Err(BotError::Config(format!(
+                return Err(BotError::Usage(format!(
                     "Cannot read {}: {e}",
                     src.display()
                 )));
             }
             println!("{} is not writable by you.", dir.display());
             if !prompt_yes_no("Install there with sudo?") {
-                return Err(BotError::Config(format!(
+                return Err(BotError::Usage(format!(
                     "Not installed. Pick a writable directory, or run: sudo install -m755 {} {}",
                     src.display(),
                     dst.display()
@@ -170,7 +170,7 @@ fn place_binary(src: &Path, dst: &Path) -> Result<(), BotError> {
             if ok {
                 Ok(())
             } else {
-                Err(BotError::Config("sudo install failed".to_string()))
+                Err(BotError::Usage("sudo install failed".to_string()))
             }
         }
         Err(e) => {
@@ -244,7 +244,7 @@ pub fn offer_first_run_install() {
 /// `--install`: put this binary on PATH.
 pub fn install() -> Result<(), BotError> {
     let src = std::env::current_exe()
-        .map_err(|e| BotError::Config(format!("Cannot determine executable path: {e}")))?;
+        .map_err(|e| BotError::Usage(format!("Cannot determine executable path: {e}")))?;
     let home = home_dir();
     let path_env = path_env();
 
@@ -261,12 +261,15 @@ pub fn install() -> Result<(), BotError> {
         existing.insert(0, src.clone());
     }
 
-    if !existing.is_empty() {
-        println!("Already installed:");
+    // Only worth explaining when there is a choice being made. With one copy
+    // installed, "replacing the first of those rather than adding a second"
+    // was a paragraph about a decision nobody faced.
+    if existing.len() > 1 {
+        println!("Already installed in more than one place:");
         for path in &existing {
             println!("  {}", path.display());
         }
-        println!("Replacing the first of those rather than adding a second copy;");
+        println!("Replacing the first of those rather than adding another copy;");
         println!("two copies at different versions is a confusing thing to debug.");
         println!();
     }
