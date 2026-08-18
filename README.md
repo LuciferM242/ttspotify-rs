@@ -165,7 +165,8 @@ After that, manage bots by the name you gave them — no systemd unit names
 needed:
 
 - `ttspotify list` — the bots configured here
-- `ttspotify status` — which are running, and since when
+- `ttspotify status` — which are running, and since when; a bot that keeps
+  stopping is reported as failing rather than as merely stopped
 - `ttspotify start server1` — also `stop` and `restart`; each takes a bot name
   or `all`
 - `ttspotify logs server1` — what the bot has been doing
@@ -219,7 +220,7 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 | `ChannelPassword` | password if the channel is protected |
 | `spotifyQuality` | `NORMAL`, `HIGH`, or `VERY_HIGH` |
 | `spotifyMaxVolume` | volume cap, 0–100 |
-| `defaultService` | `Spotify` or `YouTube` on startup |
+| `defaultService` | `Spotify` or `YouTube` on startup (capitalisation does not matter) |
 | `enabledServices` | which services this bot may use at all, e.g. `["youtube"]`. Missing means both |
 | `youtubeCookiesFile` | path to your YouTube `cookies.txt` (optional) |
 | `adminMode` | who may use admin commands: `Everyone`, `TtRights`, `List`, or `Both` (default) |
