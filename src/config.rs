@@ -71,10 +71,28 @@ pub fn is_bot_config(path: &Path) -> bool {
 fn load_valid_config(path: &Path) -> Option<BotConfig> {
     let text = std::fs::read_to_string(path).ok()?;
     let cfg: BotConfig = serde_json::from_str(&text).ok()?;
-    if cfg.host.trim().is_empty() || cfg.username.trim().is_empty() {
+    // Exactly the rule the loader uses, so the set of files listed as bots and
+    // the set that will actually run are the same set. They used to differ in
+    // both directions: a file relying on the default host was listed and then
+    // refused at startup, and a config for an anonymous login (no username)
+    // ran fine but was invisible to every command and skipped by the layout
+    // migration.
+    if !names_a_server(&text) {
         return None;
     }
     Some(cfg)
+}
+
+/// Whether the file itself says where the server is.
+///
+/// Checking the parsed value cannot answer this: every field carries a serde
+/// default, so a file with no `host` key at all still arrives with
+/// `host = "localhost"` and looks configured.
+fn names_a_server(contents: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(contents)
+        .ok()
+        .and_then(|v| v.get("host").and_then(|h| h.as_str()).map(str::to_string))
+        .is_some_and(|host| !host.trim().is_empty())
 }
 
 /// Process exit code for "config missing or unreadable" (sysexits EX_CONFIG).
@@ -534,11 +552,7 @@ impl BotConfig {
         // indistinguishable from one someone typed. Only `host` is required —
         // a blank username is a real configuration on servers that allow
         // anonymous logins, so that stays the bot's business.
-        let host_given = serde_json::from_str::<serde_json::Value>(&contents)
-            .ok()
-            .and_then(|v| v.get("host").and_then(|h| h.as_str()).map(str::to_string))
-            .is_some_and(|host| !host.trim().is_empty());
-        if !host_given {
+        if !names_a_server(&contents) {
             return Err(BotError::Config(format!(
                 "{} does not name a server, so it is not a bot config. \
                  If you meant a different file, point --config at it.",
@@ -606,6 +620,9 @@ impl BotConfig {
     /// corrections made (for logging). Keeps a hand-edited config from putting
     /// the bot into an unusable state (e.g. volume above the cap, port 0).
     pub fn validate(&mut self) -> Vec<String> {
+        // Only corrections belong here — every caller prints these as things it
+        // changed. Advice about a config that is merely unusual goes where it
+        // can be acted on, not into a list of clamps.
         let mut warnings = Vec::new();
         if self.max_volume > 100 {
             warnings.push(format!("max_volume {} > 100, clamped to 100", self.max_volume));
@@ -713,8 +730,23 @@ impl ConfigStore {
     /// back to the cached copy if the file is momentarily unreadable.
     pub fn update(&self, f: impl FnOnce(&mut BotConfig)) {
         let mut guard = self.cfg.lock();
-        if let Ok(on_disk) = BotConfig::parse_file(&self.path) {
-            *guard = on_disk;
+        match BotConfig::parse_file(&self.path) {
+            Ok(on_disk) => *guard = on_disk,
+            // Rewriting the file from memory here would do the opposite of
+            // what this method promises. The file is unreadable at this
+            // instant for a reason — most likely someone is part-way through
+            // saving an edit in a text editor, which truncates and rewrites —
+            // and stamping the cached copy over it would silently discard
+            // whatever they were writing.
+            Err(e) => {
+                tracing::warn!(
+                    "Not saving {}: it could not be read back ({e}). \
+                     Runtime changes will be saved once it parses again.",
+                    self.path.display()
+                );
+                f(&mut guard);
+                return;
+            }
         }
         f(&mut guard);
         // A config file that is no longer there belongs to a bot someone is
@@ -825,6 +857,31 @@ mod store_tests {
 
         let reloaded = BotConfig::parse_file(&path).unwrap();
         assert_eq!(reloaded.volume, 42);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_does_not_overwrite_a_config_it_could_not_read() {
+        // Saving from a text editor truncates and rewrites, so a runtime save
+        // landing in that window reads a broken file. Writing the cached copy
+        // over it would throw away the edit being typed.
+        let dir = scratch("unreadable");
+        let path = dir.join("mid-edit.json");
+        let cfg = BotConfig {
+            host: "tt.example.org".to_string(),
+            ..Default::default()
+        };
+        cfg.save(&path).unwrap();
+
+        let store = ConfigStore::new(path.clone(), cfg);
+        std::fs::write(&path, "{ \"host\": \"tt.exa").unwrap(); // half-written
+        store.update(|c| c.volume = 99);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{ \"host\": \"tt.exa",
+            "a file that could not be parsed must be left as it is"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1266,12 +1323,16 @@ mod tests {
         // Junk / empty / placeholder files that must NOT be listed.
         std::fs::write(p.join("empty.json"), "").unwrap();
         std::fs::write(p.join("junk.json"), "not json at all").unwrap();
-        std::fs::write(p.join("blank.json"), "{}").unwrap(); // parses to defaults, empty host/username
-        std::fs::write(p.join("nouser.json"), r#"{"host":"h"}"#).unwrap(); // host but no username
+        std::fs::write(p.join("blank.json"), "{}").unwrap(); // parses to defaults, names no server
         std::fs::write(p.join("settings.json"), r#"{"host":"h","username":"u"}"#).unwrap(); // name skip-list
+        // Names a server but has no username. This is listed: it is either an
+        // anonymous login or a half-finished bot, and either way hiding it
+        // means it cannot be started, edited or removed by name while still
+        // running perfectly well via --config.
+        std::fs::write(p.join("nouser.json"), r#"{"host":"h"}"#).unwrap();
 
         let listed: Vec<String> = list_configs_in(p).into_iter().map(|(name, _)| name).collect();
-        assert_eq!(listed, vec!["good".to_string()]);
+        assert_eq!(listed, vec!["good".to_string(), "nouser".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
