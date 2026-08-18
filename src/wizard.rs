@@ -417,11 +417,9 @@ pub fn run_wizard(
     }
 
     println!();
-    println!(
-        "  Run the bot with: {} --config {}",
-        crate::paths::program_name(),
-        config_path.display()
-    );
+    // By name, not by path: `--config <full path>` is what the systemd unit
+    // uses, not what a person should be told to type.
+    println!("  To run it in this terminal, {}", crate::hints::run_bot(&name));
     println!();
 
     Ok(Some(config_path))

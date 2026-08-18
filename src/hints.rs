@@ -81,6 +81,19 @@ pub fn install_binary() -> String {
     }
 }
 
+/// How to run one bot in this terminal.
+pub fn run_bot(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        let _ = name;
+        "use Start in that bot's tray menu".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("run: {} run {name}", crate::paths::program_name())
+    }
+}
+
 /// How to restart one bot.
 pub fn restart_bot(name: &str) -> String {
     #[cfg(windows)]
@@ -123,6 +136,7 @@ mod tests {
             ("install_binary", install_binary()),
             ("restart_bot", restart_bot("home")),
             ("edit_bot", edit_bot("home")),
+            ("run_bot", run_bot("home")),
         ]
     }
 
@@ -166,6 +180,7 @@ mod tests {
             ("install_binary", " install"),
             ("restart_bot", " restart home"),
             ("edit_bot", " edit home"),
+            ("run_bot", " run home"),
         ];
         for (name, needle) in expected {
             let hint = all().into_iter().find(|(n, _)| *n == name).unwrap().1;
