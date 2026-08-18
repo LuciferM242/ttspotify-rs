@@ -2,136 +2,166 @@
 
 ## [Unreleased]
 ### Added
-- YouTube support now installs Deno, the JavaScript runtime yt-dlp needs to
-  work out YouTube's playback links. Since yt-dlp 2025.11.12 some tracks and
-  qualities are simply unavailable without one, which looks like a YouTube
-  fault rather than a missing tool. If you already have Deno installed that one
-  is used and nothing is downloaded. "Update tools" keeps it current, and the
-  startup log now says which runtime is in use.
+- Linux now has commands for the jobs the Windows tray does with menus. "list"
+  and "status" show your bots and which are running; "start", "stop" and
+  "restart" take a bot's name or "all"; "logs" shows what a bot has been doing
+  and "watch" follows it live. You never have to type a systemd unit name.
+- Commands are words rather than switches: "ttspotify start apple", not
+  "ttspotify --start apple". Running "ttspotify" on its own lists them, and
+  "ttspotify run apple" starts a bot in your terminal.
+- "add" creates a bot and "remove" deletes one, on Linux and in the tray
+  ("Remove Server"). Removing asks first, shows exactly which file it will
+  delete, and asks about that bot's logs separately. Your other bots, their
+  logins and their settings are never touched.
+- "edit" changes an existing config without retyping it. Every question is
+  filled in with the current value and Enter keeps it, and it covers the
+  settings only the Windows editor could reach before, such as audio quality,
+  normalisation, the jitter buffer and radio batching.
+- "doctor" prints one screen covering the version, where your files are, which
+  bots are configured and running, whether the Spotify login and YouTube tools
+  are in place, and anything that looks wrong - each with the command that
+  fixes it. It is the thing to paste when asking for help.
+- "install" puts the binary on your PATH, replacing an earlier copy rather than
+  leaving two at different versions, and offers to point an existing service at
+  the new location. "uninstall" reverses it, asking before each step; add
+  "purge" to be asked about configs, logins and logs as well.
+- Tab completion for bash, zsh, fish and friends ("completions"), and a man
+  page ("man") for anyone packaging the bot.
+- "shuffle" is its own command now: "shuffle" toggles it, "shuffle on" and
+  "shuffle off" force it. It works alongside repeat.
+- Tracks you ask for by name play before the rest of a playlist or radio,
+  instead of going to the back of the queue.
+- YouTube support installs Deno, which YouTube playback now needs. If you
+  already have it, that copy is used and nothing is downloaded.
+- A bot can now be limited to YouTube only or Spotify only. A YouTube-only bot
+  never touches the Spotify login saved on your machine - handy for a bot that
+  sits on someone else's server. Setup asks which services each bot should
+  offer, the tray config has checkboxes for it, and "sp" on a bot without
+  Spotify says so instead of switching. "info" shows what a bot offers.
 
 ### Changed
-- YouTube tracks start about twice as fast. yt-dlp was asking YouTube for the
-  same track through several of its clients and merging the results, which was
-  most of the wait; it now asks the one that carries the audio format the bot
-  needs. Measured over seven tracks, the wait before sound dropped from about
-  4.0 seconds to about 1.9, and fewer tracks failed outright.
-- The Windows tray and its windows are now plain Windows ones, built with the
-  system's own dialogs instead of a bundled toolkit. They should feel and read
-  the same, with better keyboard and screen-reader behaviour: every window has
-  proper tab order, Alt shortcuts on the labels, and Enter and Escape work
-  throughout. The download is smaller and starts faster.
-- The tray icon can now be reached from the keyboard as well as the mouse, and
-  its menu opens with Enter or the Applications key.
-- The tray icon reappears by itself if Windows Explorer restarts. Previously it
-  vanished until the app was restarted.
-- Installing or updating the YouTube tools, and downloading an update, no longer
-  make the tray stop responding while they run.
-- The data folder is now organised into subfolders instead of one flat pile:
-  config/ for your configs and cookies.txt, lang/ for translations, state/ for
-  things the bot remembers, auth/ for saved logins, cache/ for anything it can
-  fetch again, and logs/. Your existing files are moved there automatically the
-  first time you start this version; nothing is deleted or overwritten. A short
-  README.txt in the folder explains what each one is - the short version is
-  that deleting cache/ is always safe, and auth/ should never be shared.
-- Each bot now logs into its own folder (logs/<name>/), one file per day.
-  Existing logs are moved there automatically. Keeping them apart means a busy
-  bot can no longer age out a quiet one's history when old logs are pruned.
-- Linux: because configs moved into config/, an already-installed service file
-  still points at the old location. The bot follows the move on its own so
-  nothing stops working, and logs a reminder; re-run --install-service (or say
-  yes when an update offers to refresh the service file) to update it properly.
-
-### Added
-- "shuffle" is now its own command: "shuffle" turns it on or off, "shuffle on"
-  and "shuffle off" force it either way. It can be combined with repeat, the
-  way it works in a normal music player.
-- Tracks you ask for by name now play before the rest of a playlist or radio,
-  instead of going to the back of the queue - Spotify's "next in queue" ahead
-  of "next from".
-
-### Changed
-- Shuffle now plays every queued track exactly once, in a random order.
-  Previously it jumped to a random track and the ones it jumped over never
-  played at all.
-- "mode s" is gone; use "shuffle". "mode" now sets repeat only
-  (mode r, mode rq, mode off) and no longer switches shuffle off.
-- "o" (previous) restarts the current track if you are more than three seconds
-  into it, and only steps back a track if you press it early - the way the
-  Previous button behaves in Spotify. "replay" still always restarts.
-- Searching for something that was searched in the last few minutes now
-  answers instantly instead of going back out to Spotify or YouTube.
-- The queue now shows the current track and what is coming, instead of every
-  track played this session - the way Spotify and YouTube Music show a queue.
-  Upcoming tracks are numbered from 1, so the number shown is the number
-  "queue rm" takes; before, the numbers you read and the numbers you typed
-  were different.
+- Help is translated too now, not just the bot's replies. Command names stay in
+  English, since those are what you type.
+- YouTube tracks start about twice as fast.
+- The tray shows which Spotify account you are signed in as.
+- Volume now changes evenly as you turn it up and down. Before, most of the
+  difference happened in the low numbers and the top half of the range barely
+  changed anything. Volume numbers mean the new scale everywhere, so after
+  updating, set each bot's volume once to taste - roughly, add 20 to what you
+  had.
+- The queue has been rebuilt to work the way a normal music player does. A
+  track you ask for by name plays next, with playlists and radio filling in
+  behind it; shuffle covers everything once; and what has already played is
+  kept so you can step back through it.
+- Shuffle plays every queued track exactly once, in random order. It used to
+  skip past tracks entirely.
+- "mode s" is gone; use "shuffle". "mode" now sets repeat only.
+- "o" restarts the current track if you are more than three seconds in, and
+  only steps back a track if you press it early. "replay" always restarts.
+- Repeating a search within a few minutes answers instantly.
+- The queue shows the current track and what is coming, not what has already
+  played. Upcoming tracks are numbered from 1, so the number you read is the
+  number "queue rm" takes.
+- The data folder is now organised into config/, lang/, state/, auth/, cache/
+  and logs/. Your files are moved there on first start and nothing is deleted.
+  cache/ is always safe to delete; auth/ should never be shared.
+- Each bot logs into its own folder, one file per day. Existing logs are moved.
+- Linux: configs moved into config/, so an installed service file still points
+  at the old path. The bot copes on its own, but re-run "ttspotify service
+  install" to update it properly.
+- Setup questions with a few possible answers are numbered menus now: type 1,
+  2 or 3 instead of spelling the answer out.
 
 ### Fixed
-- YouTube playback works again. Starting a track while it was still downloading
-  left the decoder unable to read the file's index, so every YouTube track
-  failed with a seek error. This was introduced by the change that started
-  tracks during the download and affected all of them.
-- A YouTube track that YouTube refuses now gets a second attempt through a
-  different route, instead of being reported as unavailable. The fast route is
-  the one YouTube turns away first when it distrusts an address, which is more
-  likely on a hosted server than at home.
-- YouTube tracks that failed with no explanation should now play. The helper
-  that fetches YouTube's proof-of-origin tokens was installed but never
-  actually used, because it was being pointed at under the wrong name, and
-  YouTube answers requests without a token by refusing them. Across eight test
-  tracks, five played before and seven after.
-- The startup log now reports the proof-of-origin helper's real version by
-  running it, rather than repeating what was written down at install time. A
-  helper that is present but cannot run now says so, instead of looking
-  healthy while YouTube quietly refuses every track.
+- Music on YouTube plays again. Songs uploaded by record labels and the
+  automatic "- Topic" channels, which is most of what people ask for, had
+  started coming back refused while ordinary videos still played, so the bot
+  looked half-broken. It now asks YouTube through a third player as well, and
+  that one still answers for them. Tracks take a few seconds longer to start.
+- The same bot can no longer be run twice at once. Starting one in a terminal
+  while it is already running in the background used to put two copies on the
+  same TeamTalk account, which knocked each other offline and looked like the
+  bot disconnecting at random.
+- Stopping a bot on Linux, whether with systemctl or Ctrl+C, now leaves the
+  TeamTalk server properly. The bot used to be killed where it stood, so the
+  server kept a ghost user until it timed out. Press Ctrl+C twice if a stop
+  ever takes too long.
+- Removing the systemd service now stops and un-enables the bots first.
+  Previously they stayed enabled with the service gone, so systemd complained
+  at every login and a running bot could not be stopped or restarted. Running
+  the command again also repairs an install left in that state.
+- A missing audio library now says which package to install. It used to fail
+  with a message about initialisation that read like a bug in the bot.
+- Running "ttspotify" on its own used to start whichever bot sorted first,
+  silently. It lists the commands now; "ttspotify run <name>" starts the one
+  you mean, and asks which if you leave the name out.
+- The bot's own suggestions ("run this to log in", "run this to install the
+  YouTube tools") now name the command you actually launched it as, rather
+  than sometimes naming one you do not have.
+- YouTube tracks that failed for no clear reason should now play, and one that
+  still will not play is retried another way before the bot gives up.
+- The bot no longer crashes when a YouTube request is turned down.
 - A brief network problem no longer opens a browser asking you to sign in to
-  Spotify. Starting the bot before the network was ready did that once per
-  retry attempt, even though the saved login was fine. Only an actual refusal
-  from Spotify asks you to sign in again now.
-- Signing in to Spotify from the tray now tells you when it fails. It used to
-  say nothing at all, so a failed sign-in looked the same as a successful one.
-- With several bots running, one bot's Spotify problem no longer shows up in
-  another bot's log as the reason its track was skipped.
-- When Spotify refuses a track's audio key, the bot now says so instead of
-  reporting "Track unavailable". The track was never the problem: the account
-  could not decrypt it, usually because it is not premium or is streaming on
-  another device. The log also records the account type when the session
-  connects, so this is answerable at a glance.
-- Failed Spotify tracks no longer flood the log. A track that cannot be
-  decrypted reaches the decoder as noise, which reported every byte of it -
-  10,000 warnings and 781 KB of log for three tracks, burying the one line
-  that explained anything.
-- Tray: "Logs" now opens the log it meant to. It was building a filename that
-  never existed, so the menu item did nothing.
-- Tray: clicking a bot's Stop or Restart could act on a different bot if the
-  list changed while the menu was open.
-- The startup line that records which TeamTalk SDK is in use said "unknown" on
-  Windows since 0.7.0; it was looking in the wrong folder.
-- "n" no longer says the queue has ended while tracks are sitting in it. When
-  radio refilled a queue that had run out, the bot started playing the new
-  batch but still considered nothing to be playing, so skipping found nothing
-  to skip from - and every track that finished added another batch that was
-  never played, which is what grew the queue.
-- The queue no longer grows without end. With radio on, the bot added new
-  recommendations every time it reached the last track and never dropped
-  anything, so an evening of listening left dozens of played tracks in the
-  queue. It now keeps the last 20 played tracks, whatever filled the queue.
-  You can still step back that far with "p".
-- Radio no longer keeps adding the same song. Recommendations were only
-  checked against tracks already queued by their Spotify id, so a remaster,
-  single or re-release of a song you already heard counted as a new track.
-- Repeat no longer fights with radio. With repeat on, radio kept extending the
-  queue past the end - which also meant "repeat queue" never actually looped.
-  Radio now stays out of the way while either repeat mode is on.
-- Skipping with `n` while "repeat track" is on now moves to the next track
-  instead of restarting the same one. At the end of the queue it loops back to
-  the first track.
-- A track that reports finishing more than once (for example a YouTube error
-  arriving alongside its end-of-track) no longer restarts or skips twice.
-- The bot no longer crashes when YouTube declines to hand out a session token.
-  This could take the whole bot down with no visible error (only a panics.log
-  entry). YouTube requests that fail once are now retried automatically, and the
-  session token is fetched at startup so the first search is less likely to fail.
+  Spotify.
+- Signing in to Spotify from the tray now tells you when it fails.
+- When Spotify will not hand over the key for a track, the bot says so instead
+  of reporting "Track unavailable". The track was never the problem.
+- Tray: "Logs" opens the log it meant to.
+- Tray: Stop or Restart could act on the wrong bot if the list changed while
+  the menu was open.
+- "n" no longer says the queue has ended while tracks are still sitting in it.
+- The queue no longer grows without end when radio is on.
+- Radio no longer keeps adding the same song as a remaster or re-release.
+- Repeat no longer fights with radio, so "repeat queue" actually loops.
+- "n" with "repeat track" on moves to the next track instead of restarting it.
+- A track that reports finishing twice no longer skips twice.
+- A Spotify outage in the middle of a song no longer freezes the bot. It
+  reconnects on its own and resumes a few seconds before where it stopped, so
+  nothing is missed.
+- A string of unavailable tracks now stops with a message instead of skipping
+  through the whole queue at speed.
+- "queue rm" removes the track it says it removed, even if the queue moved at
+  that same moment. It could delete the wrong track before.
+- Seeking near the end of a track no longer cuts off its last seconds.
+- Repeat mode survives a restart. It used to be forgotten unless the bot was
+  shut down with "q".
+- YouTube /live/ and /embed/ links now play instead of being searched as text,
+  and watch links with a "#" in them work.
+- Some YouTube tracks (ones with mono audio) no longer crash the bot.
+- If your YouTube cookies file was moved by the data-folder reorganisation,
+  the bot now finds it instead of every YouTube track failing without saying
+  why.
+- Windows shutdown or logoff now disconnects bots properly, so the server no
+  longer keeps a ghost copy of each bot online afterwards.
+- If TeamTalk's files fail to download, the bot keeps the version it already
+  has instead of quietly switching to a different one.
+- Radio no longer throws away a remix, extended mix or club mix as a duplicate
+  of the original. It also stops mistaking unrelated titles for re-releases -
+  anything with a word like "Credits" or "Meditation" in it was being dropped.
+- A search that finds nothing now says "No results" instead of "Search failed:
+  No results found", which read as though the bot had broken.
+- Tightened the guard that stops a track reporting itself finished twice from
+  skipping two tracks; a rare overlap of end-of-track signals could slip past
+  the old one.
+- Long replies no longer vanish. Anything over the server's message limit was
+  rejected outright rather than split, so "queue" on a big queue and the full
+  help text sometimes arrived as nothing at all.
+- Stopping the bot silences it at once instead of playing out the few seconds
+  it had already buffered.
+- A very large seek ("sf3000000") no longer jumps backwards to the start of
+  the track.
+- Linux: a bot that cannot reach its server no longer restarts every two
+  seconds for as long as the machine is on, logging into the server over and
+  over with nothing on screen to say so. It waits half a minute between tries,
+  gives up after five, and "status" and "doctor" then say the bot is failing
+  and point at its log. Re-run "ttspotify service install" once to get this.
+- A bot that cannot reach its server now says which address and port it tried
+  and what to check. It used to say only "Connection failed: Connection
+  failed". A refused login names the username instead of the error code.
+- "defaultService" written as "youtube" rather than "YouTube" no longer makes
+  the bot disappear from every command. Capitalisation never mattered for
+  "enabledServices" beside it, and now it does not matter here either. A value
+  that names no service at all says so, and says which file it is in.
 
 ## [0.7.0] - 2026-07-21
 ### Added

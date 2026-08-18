@@ -338,20 +338,15 @@ async fn play_track(
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
-    // Try the fast client, then the reliable one. YouTube refuses the fast
-    // client's URLs when it distrusts an address - a datacenter IP more often
-    // than a home one - and the refusal arrives before any audio, so a second
-    // attempt through a PO-token client costs nothing on the tracks that were
-    // going to work anyway. Measured on one address: 2/6 through the fast
-    // client, 6/6 through the fallback.
+    // Work down the client list until one produces audio. Which client YouTube
+    // answers is decided per video, so the ones that fail do so before any
+    // audio arrives and cost only their own start-up; see PLAYER_CLIENTS for
+    // the order and the measurements behind it.
     let mut started = None;
     let mut last_error = String::new();
-    for (attempt, client) in [
-        crate::youtube::metadata::PRIMARY_CLIENT,
-        crate::youtube::metadata::FALLBACK_CLIENT,
-    ]
-    .into_iter()
-    .enumerate()
+    for (attempt, client) in crate::youtube::metadata::PLAYER_CLIENTS
+        .into_iter()
+        .enumerate()
     {
         if ctrl.stopped.load(Ordering::Relaxed) {
             return Ok(());
@@ -360,7 +355,7 @@ async fn play_track(
             Ok(begun) => {
                 if attempt > 0 {
                     tracing::info!(
-                        "YouTube: {video_id} needed the {client} player after the faster one was refused"
+                        "YouTube: {video_id} needed the {client} player after {attempt} earlier one(s) were refused"
                     );
                 }
                 started = Some(begun);
