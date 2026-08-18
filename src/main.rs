@@ -314,6 +314,21 @@ async fn main() -> Result<(), BotError> {
     };
 
     let _log_guard = tt_spotify_bot::logging::init_logging(&config_path);
+
+    // Say it where it will be seen rather than asking: this runs under systemd
+    // as often as not, where there is nobody to answer a prompt. An upgrade
+    // done by any means other than the built-in updater — a new tarball over
+    // the old binary, a package, a copy from a build — leaves the unit as it
+    // was, and nothing else mentions it outside `doctor`.
+    #[cfg(target_os = "linux")]
+    if let Some((installed, current)) = tt_spotify_bot::service::installed_unit_version() {
+        if installed < current {
+            tracing::warn!(
+                "Your systemd service file is from an older release. To refresh it, {}",
+                tt_spotify_bot::hints::install_service()
+            );
+        }
+    }
     tt_spotify_bot::paths::log_migration(&layout_migration);
 
     // Carries the current channel across restarts (in memory); the config

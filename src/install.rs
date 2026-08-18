@@ -327,6 +327,11 @@ fn reconcile_unit(dst: &Path) {
         return;
     };
     if Path::new(&current) == dst {
+        // Same binary, but the unit itself can still be from an older release.
+        // Only the built-in updater used to offer this, so anyone who replaced
+        // the binary by hand — a new tarball over the old one, a package, a
+        // copy from a build — kept an outdated unit with nothing to say so.
+        crate::service::offer_unit_refresh();
         return;
     }
 
