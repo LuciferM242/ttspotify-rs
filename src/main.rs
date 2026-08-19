@@ -31,6 +31,157 @@ fn pin_teamtalk_sdk_version() {
     tt_spotify_bot::tt::sdk::pin_sdk_dir();
 }
 
+/// The clap command, named for the file the user actually launched. The
+/// derive hard-codes "tt-spotify-bot", which is the name inside the release
+/// archive, but `install` puts it on PATH as `ttspotify` - so help, usage,
+/// errors, completions and the man page all used to name a command the reader
+/// may not have. `paths::program_name()` is the same source the hint strings
+/// have always used.
+#[cfg(not(windows))]
+fn cli_command() -> clap::Command {
+    use clap::CommandFactory;
+    let name = tt_spotify_bot::paths::program_name();
+    Args::command()
+        .name(name.clone())
+        .bin_name(name.clone())
+        .display_name(name)
+}
+
+/// Text that is safe to drop into a roff document: a backslash starts an
+/// escape, a hyphen renders as a soft dash unless escaped, and a line opening
+/// with `.` or `'` is read as a request rather than words.
+#[cfg(not(windows))]
+fn roff_escape(text: &str) -> String {
+    let escaped = text.replace('\\', "\\e").replace('-', "\\-");
+    escaped
+        .lines()
+        .map(|line| {
+            if line.starts_with('.') || line.starts_with('\'') {
+                format!("\\&{line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// How one argument is written in the man page: `-c, --config <PATH>` for an
+/// option, `<NAME>` for a positional.
+#[cfg(not(windows))]
+fn man_arg_label(arg: &clap::Arg) -> String {
+    // A switch like `--purge` still reports a value name, so asking for one
+    // unconditionally documented it as `--purge <PURGE>` - something to type a
+    // value after, which it is not.
+    let values = arg
+        .get_action()
+        .takes_values()
+        .then(|| arg.get_value_names())
+        .flatten()
+        .map(|names| names.iter().map(|n| format!("<{n}>")).collect::<Vec<_>>().join(" "));
+
+    let mut flags = Vec::new();
+    if let Some(short) = arg.get_short() {
+        flags.push(format!("-{short}"));
+    }
+    if let Some(long) = arg.get_long() {
+        flags.push(format!("--{long}"));
+    }
+
+    if flags.is_empty() {
+        // Positional: the value name is the whole label.
+        return values.unwrap_or_else(|| format!("<{}>", arg.get_id()));
+    }
+    match values {
+        Some(v) => format!("{} {}", flags.join(", "), v),
+        None => flags.join(", "),
+    }
+}
+
+/// The man page, with every command spelled out on it.
+///
+/// clap_mangen's own subcommand section lists cross-references like
+/// `ttspotify-run(1)`, but `man` prints this one page and nothing generates
+/// those, so each reference is a dead end. The sections are rendered
+/// individually here so that list can be replaced by the commands themselves.
+#[cfg(not(windows))]
+fn render_man_page(w: &mut dyn std::io::Write) -> std::io::Result<()> {
+    // Every clap_mangen section renderer writes this two-line preamble of its
+    // own accord, because each is built to produce a whole document. Composing
+    // a page out of them therefore repeats it once per section, so it is kept
+    // from the first section only.
+    const PREAMBLE: &str = ".ie \\n(.g .ds Aq \\(aq\n.el .ds Aq '\n";
+
+    use std::io::Write;
+
+    let cmd = cli_command();
+    let man = clap_mangen::Man::new(cmd.clone());
+
+    let mut page = String::new();
+    let mut add = |section: Vec<u8>| {
+        let text = String::from_utf8_lossy(&section).into_owned();
+        if page.is_empty() {
+            page.push_str(&text);
+        } else {
+            page.push_str(text.strip_prefix(PREAMBLE).unwrap_or(&text));
+        }
+    };
+
+    for render in [
+        clap_mangen::Man::render_title as fn(&clap_mangen::Man, &mut dyn std::io::Write) -> std::io::Result<()>,
+        clap_mangen::Man::render_name_section,
+        clap_mangen::Man::render_synopsis_section,
+        clap_mangen::Man::render_description_section,
+        clap_mangen::Man::render_options_section,
+    ] {
+        let mut buf = Vec::new();
+        render(&man, &mut buf)?;
+        add(buf);
+    }
+
+    // Each command spelled out, rather than clap_mangen's cross-references to
+    // pages like `ttspotify-run(1)` that nothing generates.
+    let subs: Vec<_> = cmd.get_subcommands().filter(|c| !c.is_hide_set()).collect();
+    if !subs.is_empty() {
+        let mut buf = Vec::new();
+        writeln!(buf, ".SH COMMANDS")?;
+        for sub in subs {
+            writeln!(buf, ".SS {}", roff_escape(sub.get_name()))?;
+            if let Some(about) = sub.get_about() {
+                writeln!(buf, "{}", roff_escape(&about.to_string()))?;
+            }
+            for arg in sub.get_arguments().filter(|a| !a.is_hide_set()) {
+                writeln!(buf, ".TP")?;
+                writeln!(buf, "\\fB{}\\fR", roff_escape(&man_arg_label(arg)))?;
+                if let Some(help) = arg.get_help() {
+                    writeln!(buf, "{}", roff_escape(&help.to_string()))?;
+                }
+            }
+            // `service install`, `cache clear` and the like: without these the
+            // page lists a command whose only real use is a word further on.
+            for child in sub.get_subcommands().filter(|c| !c.is_hide_set()) {
+                writeln!(buf, ".TP")?;
+                writeln!(
+                    buf,
+                    "\\fB{} {}\\fR",
+                    roff_escape(sub.get_name()),
+                    roff_escape(child.get_name())
+                )?;
+                if let Some(about) = child.get_about() {
+                    writeln!(buf, "{}", roff_escape(&about.to_string()))?;
+                }
+            }
+        }
+        add(buf);
+    }
+
+    let mut buf = Vec::new();
+    man.render_version_section(&mut buf)?;
+    add(buf);
+
+    w.write_all(page.as_bytes())
+}
+
 #[cfg(not(windows))]
 #[derive(Parser)]
 #[command(name = "tt-spotify-bot", about = "TeamTalk Spotify Bot", version)]
@@ -220,7 +371,9 @@ async fn main() -> Result<(), BotError> {
     // before anything resolves tool paths.
     tt_spotify_bot::youtube::setup::migrate_legacy_tools();
     tt_spotify_bot::logging::install_panic_hook();
-    let args = Args::parse();
+    use clap::FromArgMatches;
+    let args = Args::from_arg_matches(&cli_command().get_matches())
+        .unwrap_or_else(|e| e.exit());
 
     // Rust ignores SIGPIPE, which turns `--doctor | head` into a panic about
     // failing to print. The bot itself needs that default kept — a write to a
@@ -563,13 +716,13 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
         Commands::Update => run_cli_update().await,
 
         Commands::Completions { shell } => {
-            let mut command = Args::command();
+            let mut command = cli_command();
             let name = tt_spotify_bot::paths::program_name();
             clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
             Ok(())
         }
         Commands::Man => {
-            clap_mangen::Man::new(Args::command()).render(&mut std::io::stdout())?;
+            render_man_page(&mut std::io::stdout())?;
             Ok(())
         }
     }
@@ -585,10 +738,8 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
 /// Returns the config to run, or `None` when the help was printed instead.
 #[cfg(not(windows))]
 fn first_run_or_help() -> Result<Option<String>, BotError> {
-    use clap::CommandFactory;
-
     if !tt_spotify_bot::config::list_configs().is_empty() {
-        let _ = Args::command().print_help();
+        let _ = cli_command().print_help();
         println!();
         return Ok(None);
     }

@@ -76,7 +76,9 @@ thiserror = "2"
 regex = "1"
 rand = "0.8"
 percent-encoding = "2"
-clap = { version = "4", features = ["derive"] }
+# "string" lets the command be renamed to the file it was launched as at
+# runtime (clap only accepts an owned String for that with this feature).
+clap = { version = "4", features = ["derive", "string"] }
 dirs = "6"
 parking_lot = "0.12"
 
