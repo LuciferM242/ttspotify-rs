@@ -2,12 +2,7 @@
 
 ## [1.0.0] - 2026-08-19
 
-**Upgrading on Linux: run `ttspotify service install` once after updating.** The
-updater replaces the binary but cannot rewrite your systemd service file, since
-the old version is the one doing the updating. Until you run that command the
-service still points at the pre-1.0 config location and retries a failed start
-every two seconds instead of backing off. `ttspotify doctor` reports it and
-names the same command.
+**Upgrading on Linux: run `ttspotify service install` once after updating.**
 
 ### Added
 - The bot saves the music it plays, so a song somebody asks for again starts
