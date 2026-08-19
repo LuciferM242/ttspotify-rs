@@ -82,6 +82,25 @@ fn clear_contents(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Record that a cached file was just used, so eviction sees it as recent.
+///
+/// The timestamp goes on the file rather than into memory, so it survives a
+/// restart and is visible to every bot sharing the cache.
+pub fn touch(path: &Path) -> std::io::Result<()> {
+    let now = std::time::SystemTime::now();
+    let times = std::fs::FileTimes::new().set_accessed(now).set_modified(now);
+    std::fs::OpenOptions::new().write(true).open(path)?.set_times(times)
+}
+
+/// When a cached file was last used, for eviction order.
+pub fn last_used(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = std::fs::metadata(path).ok()?;
+    // Modified time is what `touch` writes. Access time is preferred where the
+    // filesystem keeps it, but Windows disables it by default and Linux
+    // usually mounts relatime, so it cannot be relied on alone.
+    meta.modified().or_else(|_| meta.accessed()).ok()
+}
+
 /// Render a byte count the way a person reads it.
 pub fn human_size(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
@@ -189,6 +208,39 @@ mod tests {
         write(&cache.join(PROTECTED).join("big.dll"), 9000);
         let total: u64 = clearable_dirs_under(&cache).iter().map(|d| dir_size(d)).sum();
         assert_eq!(total, 0, "the SDK is not part of the reported cache size");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn touching_a_file_moves_its_timestamp_forward() {
+        let cache = scratch("touch");
+        let f = cache.join("track.m4a");
+        write(&f, 16);
+        // Backdate it, then touch and check it caught up. Comparing against
+        // "now" alone would pass even if touch did nothing.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24 * 30);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let before = last_used(&f).expect("timestamp");
+
+        touch(&f).expect("touch should work");
+        let after = last_used(&f).expect("timestamp");
+        assert!(after > before, "touch must move the timestamp forward");
+        assert!(
+            after.elapsed().unwrap() < std::time::Duration::from_secs(60),
+            "touched file should read as used just now"
+        );
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn touching_a_file_that_is_not_there_is_an_error_not_a_panic() {
+        let cache = scratch("touch_missing");
+        assert!(touch(&cache.join("gone.m4a")).is_err());
         let _ = std::fs::remove_dir_all(&cache);
     }
 

@@ -338,6 +338,26 @@ async fn play_track(
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
+    // A track played before is already on disk; skip yt-dlp entirely.
+    if let Some(path) = crate::youtube::cache::cached(&video_id) {
+        crate::youtube::cache::mark_played(&path);
+        match std::fs::File::open(&path) {
+            Ok(file) => {
+                let ctrl = ctrl.clone();
+                return tokio::task::spawn_blocking(move || {
+                    decode_and_stream(file, audio_tx, ctrl, state, pipeline_pos_ms)
+                })
+                .await
+                .map_err(|e| format!("decode worker join: {e}"))?;
+            }
+            Err(e) => {
+                // Unreadable: fall through and fetch it again.
+                tracing::warn!("YouTube: cached {video_id} could not be opened ({e}); refetching");
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
     // Work down the client list until one produces audio.
     let mut started = None;
     let mut last_error = String::new();
@@ -370,107 +390,117 @@ async fn play_track(
     };
     let _ = &stderr_handle;
     let _ = &watcher_handle;
-    // Pump yt-dlp's output into a buffer the decoder reads at the same time,
-    // so playback starts on the first bytes instead of after the whole track
-    // has downloaded. Everything downloaded is kept, so seeking back is still
-    // instant; seeking forward waits for the bytes.
-    let (writer, reader) = crate::youtube::stream::channel();
-    // The bytes read to prove this attempt works come first, or the decoder
-    // starts mid-file.
-    writer.append(&first_chunk);
+    // Write the download to a file rather than holding it in memory. Decoding
+    // cannot begin until the whole track has arrived anyway - symphonia needs
+    // to seek for the MP4 index - so nothing is lost by landing it on disk,
+    // and the finished file is the cache entry.
+    let Some(partial) = crate::youtube::cache::partial_path(&video_id) else {
+        return Err(format!("unusable video id {video_id}"));
+    };
+    if let Some(parent) = partial.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
     let ctrl_for_read = ctrl.clone();
-    let download_writer = writer.clone();
-    let download = tokio::task::spawn_blocking(move || {
+    let partial_for_write = partial.clone();
+    let download = tokio::task::spawn_blocking(move || -> Result<u64, String> {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&partial_for_write)
+            .map_err(|e| format!("create {}: {e}", partial_for_write.display()))?;
+        // The bytes already read to prove this client works come first, or the
+        // file starts mid-track.
+        file.write_all(&first_chunk).map_err(|e| format!("write: {e}"))?;
+        let mut total = first_chunk.len() as u64;
         let mut chunk = [0u8; 64 * 1024];
-        let mut total = 0usize;
         loop {
             if ctrl_for_read.stopped.load(Ordering::Relaxed) {
-                download_writer.finish();
-                return;
+                return Err("stopped".to_string());
             }
             match stdout.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
-                    total += n;
-                    if total > MAX_TRACK_BYTES {
-                        download_writer.fail("track exceeds maximum buffer size");
-                        return;
+                    total += n as u64;
+                    if total > MAX_TRACK_BYTES as u64 {
+                        return Err("track exceeds maximum size".to_string());
                     }
-                    download_writer.append(&chunk[..n]);
+                    file.write_all(&chunk[..n]).map_err(|e| format!("write: {e}"))?;
                 }
-                Err(e) => {
-                    download_writer.fail(format!("read yt-dlp output: {e}"));
-                    return;
-                }
+                Err(e) => return Err(format!("read yt-dlp output: {e}")),
             }
         }
-        download_writer.finish();
+        file.flush().map_err(|e| format!("flush: {e}"))?;
+        Ok(total)
     });
 
-    // Decoding runs alongside the download, not after it.
-    let ctrl_for_cleanup = ctrl.clone();
-    let decode = tokio::task::spawn_blocking(move || {
-        decode_and_stream(reader, audio_tx, ctrl, state, pipeline_pos_ms)
-    });
-
-    let decode_result = decode.await.map_err(|e| format!("decode worker join: {e}"))?;
-    // Decoding is over either way, so nothing is waiting on the rest of the
-    // download: tell it to stop so a failure is reported now rather than after
-    // the remaining minutes of audio have been fetched. Snapshot whether a
-    // user stop had already happened — after this point a non-zero yt-dlp exit
-    // is expected (our own kill), before it it means a truncated download.
-    let was_stopped = ctrl_for_cleanup.stopped.swap(true, Ordering::Relaxed);
-    let _ = download.await;
-
+    let download_result = download.await.map_err(|e| format!("download worker join: {e}"))?;
+    let was_stopped = ctrl.stopped.swap(true, Ordering::Relaxed);
     let exit_status = watcher_handle.join().ok().flatten();
     let stderr_text = stderr_handle.join().unwrap_or_default();
 
-    if let Err(e) = decode_result {
-        // A decode error is usually yt-dlp's error wearing a disguise: it
-        // failed, we got a truncated stream, and symphonia complained about
-        // that instead. Report what yt-dlp said.
+    // Anything other than a complete download leaves no cache entry.
+    let describe = |what: &str| {
         let yt_err = ytdlp_complaint(&stderr_text);
         let exit_code = exit_status.and_then(|s| s.code()).unwrap_or(-1);
         if yt_err.is_empty() {
-            return Err(e);
+            what.to_string()
+        } else {
+            format!("{what} (yt-dlp exit={exit_code}, stderr: {yt_err})")
         }
-        return Err(format!("{e} (yt-dlp exit={exit_code}, stderr: {yt_err})"));
+    };
+
+    if let Err(e) = download_result {
+        let _ = std::fs::remove_file(&partial);
+        if was_stopped || e == "stopped" {
+            return Ok(());
+        }
+        return Err(describe(&e));
     }
-    // Decode reached a clean end-of-stream, but if yt-dlp itself failed and
-    // the user never stopped the track, that "end" is a truncation that
-    // happened to land on an mp4 atom boundary: the song cut short, silently,
-    // and it counted as a success (resetting the failure brake). Surface it.
+    // yt-dlp exiting badly means the file is short: a truncated track that
+    // happens to end on an mp4 boundary would otherwise decode as a success
+    // and be cached in that state.
+    if let Some(status) = exit_status {
+        if !status.success() && !was_stopped {
+            let _ = std::fs::remove_file(&partial);
+            return Err(describe("yt-dlp exited mid-download; track truncated"));
+        }
+    }
+
+    let path = match crate::youtube::cache::publish(&partial, &video_id) {
+        Ok(p) => p,
+        Err(e) => {
+            // Keeping it is only an optimisation; play what we fetched.
+            tracing::warn!("YouTube: could not cache {video_id}: {e}");
+            partial.clone()
+        }
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("open {}: {e}", path.display()));
+        }
+    };
+    crate::youtube::cache::mark_played(&path);
+
+    // The stop set above was bookkeeping for the download, not a user stop.
     if !was_stopped {
-        if let Some(status) = exit_status {
-            if !status.success() {
-                let yt_err = ytdlp_complaint(&stderr_text);
-                let yt_err = if yt_err.is_empty() { "no output".to_string() } else { yt_err };
-                return Err(format!(
-                    "yt-dlp exited with {status} mid-download; track truncated (stderr: {yt_err})"
-                ));
-            }
-        }
+        ctrl.stopped.store(false, Ordering::Relaxed);
     }
-    Ok(())
+    let decode = tokio::task::spawn_blocking(move || {
+        decode_and_stream(file, audio_tx, ctrl, state, pipeline_pos_ms)
+    });
+    decode.await.map_err(|e| format!("decode worker join: {e}"))?
 }
 
-/// Decode + resample the compressed audio as it arrives. Runs on a blocking
-/// worker. The source keeps everything it has read, so `ctrl.seek_requested` is
-/// served by a native symphonia seek: instantly backwards, and forwards as soon
-/// as the download reaches that point.
+/// Decode + resample the track. Runs on a blocking worker. The whole file is
+/// on disk, so `ctrl.seek_requested` is served by a native symphonia seek.
 fn decode_and_stream(
-    reader: crate::youtube::stream::StreamReader,
+    reader: std::fs::File,
     audio_tx: Sender<Vec<i16>>,
     ctrl: Arc<TrackControl>,
     state: SharedState,
     pipeline_pos_ms: Arc<AtomicU32>,
 ) -> Result<(), String> {
-    // Wait for the download before probing. symphonia will not seek a source
-    // of unknown length, and finding the MP4 moov atom needs a seek, so a probe
-    // started mid-download fails with "stream is not seekable" - which is every
-    // track. The bytes are kept, so decoding still streams from memory once it
-    // starts; only the probe waits.
-    reader.wait_until_complete();
     let source: Box<dyn MediaSource> = Box::new(reader);
     let mss = MediaSourceStream::new(source, Default::default());
 
@@ -892,5 +922,85 @@ mod tests {
         }
         assert_eq!(l.len(), 2);
         assert_eq!(r.len(), 2);
+    }
+
+    /// Fetch a real track the way playback does and decode it from the file.
+    ///
+    /// Covers the part unit tests cannot: that yt-dlp's bytes land on disk
+    /// intact and symphonia can probe and decode the result. Run by hand -
+    /// `cargo test --lib -- --ignored fetches_and_decodes_a_real_track --nocapture`.
+    #[test]
+    #[ignore = "hits the network and needs the bundled YouTube tools"]
+    fn fetches_and_decodes_a_real_track() {
+        use std::io::{Read, Write};
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::probe::Hint;
+
+        let video = "dQw4w9WgXcQ";
+        let Some(meta) = crate::youtube::metadata::for_tests() else {
+            println!("skipped: no bundled yt-dlp found; run `--setup-yt` first");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("ttspotify_ytdec_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("track.m4a");
+
+        let mut child = meta
+            .spawn_ytdlp_with_client(video, crate::youtube::metadata::PRIMARY_CLIENT)
+            .expect("spawn yt-dlp");
+        let mut stdout = child.stdout.take().expect("stdout");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => file.write_all(&buf[..n]).unwrap(),
+                    Err(e) => panic!("read yt-dlp: {e}"),
+                }
+            }
+            file.flush().unwrap();
+        }
+        let _ = child.wait();
+
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size > 100_000, "expected a real download, got {size} bytes");
+
+        // Exactly what decode_and_stream does with the file.
+        let file = std::fs::File::open(&path).unwrap();
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        hint.with_extension("m4a");
+        let probed = symphonia::default::get_probe()
+            .format(&hint, mss, &Default::default(), &Default::default())
+            .expect("symphonia should probe the downloaded file");
+        let mut format = probed.format;
+        let track = format.default_track().expect("a default track");
+        let track_id = track.id;
+        let mut decoder = symphonia::default::get_codecs()
+            .make(&track.codec_params.clone(), &Default::default())
+            .expect("a decoder for the downloaded codec");
+
+        let mut decoded_frames = 0u64;
+        while decoded_frames < 44_100 {
+            let packet = match format.next_packet() {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            if packet.track_id() != track_id {
+                continue;
+            }
+            let audio = decoder.decode(&packet).expect("packet should decode");
+            decoded_frames += audio.frames() as u64;
+        }
+        println!("{video}: {size} bytes, decoded {decoded_frames} frames");
+        assert!(
+            decoded_frames >= 44_100,
+            "expected at least a second of audio, got {decoded_frames} frames"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

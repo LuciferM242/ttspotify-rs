@@ -53,6 +53,44 @@ pub const PLAYER_CLIENTS: [&str; 3] = ["web_embedded", "tv_simply", "android_vr"
 /// The client tried first. See [`PLAYER_CLIENTS`].
 pub const PRIMARY_CLIENT: &str = PLAYER_CLIENTS[0];
 
+/// `resolve_paths` looks beside the running executable; a test binary runs
+/// from `target/<profile>/deps`, one level below the real `lib/`.
+#[cfg(test)]
+pub fn find_bundled_tools() -> Option<crate::youtube::setup::YoutubeSetupPaths> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?;
+    let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
+        ("yt-dlp.exe", "bgutil-pot.exe")
+    } else {
+        ("yt-dlp", "bgutil-pot")
+    };
+    for _ in 0..3 {
+        let lib_dir = dir.join("lib");
+        if lib_dir.join(yt_dlp_name).is_file() {
+            return Some(crate::youtube::setup::YoutubeSetupPaths {
+                yt_dlp: lib_dir.join(yt_dlp_name),
+                bgutil_pot: lib_dir.join(bgutil_name),
+                plugin_dir: lib_dir.join("yt-dlp-plugins"),
+                deno: lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
+                lib_dir,
+            });
+        }
+        dir = dir.parent()?;
+    }
+    None
+}
+
+/// A metadata client pointed at the bundled tools, for tests that really fetch.
+/// `None` when the tools are not installed.
+#[cfg(test)]
+pub fn for_tests() -> Option<YouTubeMetadata> {
+    let bundle = find_bundled_tools()?;
+    let mut meta = YouTubeMetadata::new(&crate::config::BotConfig::default()).ok()?;
+    meta.yt_dlp_exe = bundle.yt_dlp.clone();
+    meta.bundle = Some(bundle);
+    Some(meta)
+}
+
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
         // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
@@ -410,32 +448,6 @@ mod tests {
     use super::{retry_once, PLAYER_CLIENTS, PRIMARY_CLIENT};
     use std::cell::Cell;
 
-    /// `resolve_paths` looks beside the running executable; a test binary runs
-    /// from `target/<profile>/deps`, one level below the real `lib/`.
-    fn find_bundled_tools() -> Option<crate::youtube::setup::YoutubeSetupPaths> {
-        let exe = std::env::current_exe().ok()?;
-        let mut dir = exe.parent()?;
-        let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
-            ("yt-dlp.exe", "bgutil-pot.exe")
-        } else {
-            ("yt-dlp", "bgutil-pot")
-        };
-        for _ in 0..3 {
-            let lib_dir = dir.join("lib");
-            if lib_dir.join(yt_dlp_name).is_file() {
-                return Some(crate::youtube::setup::YoutubeSetupPaths {
-                    yt_dlp: lib_dir.join(yt_dlp_name),
-                    bgutil_pot: lib_dir.join(bgutil_name),
-                    plugin_dir: lib_dir.join("yt-dlp-plugins"),
-                    deno: lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
-                    lib_dir,
-                });
-            }
-            dir = dir.parent()?;
-        }
-        None
-    }
-
     /// Which clients still play a gated "- Topic" track. Run by hand when
     /// playback breaks, before changing the order in [`PLAYER_CLIENTS`].
     #[test]
@@ -443,14 +455,10 @@ mod tests {
     fn chain_plays_a_topic_track() {
         use std::io::Read;
 
-        let Some(bundle) = find_bundled_tools() else {
+        let Some(meta) = super::for_tests() else {
             println!("skipped: no bundled yt-dlp found; run `--setup-yt` first");
             return;
         };
-        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default())
-            .expect("metadata client");
-        meta.yt_dlp_exe = bundle.yt_dlp.clone();
-        meta.bundle = Some(bundle);
 
         let mut worked = Vec::new();
         for client in PLAYER_CLIENTS {
