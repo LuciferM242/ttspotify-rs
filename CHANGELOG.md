@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.0] - 2026-08-19
 ### Added
 - The bot saves the music it plays, so a song somebody asks for again starts
   straight away instead of being fetched a second time. Spotify and YouTube
