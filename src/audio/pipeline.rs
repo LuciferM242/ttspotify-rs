@@ -134,9 +134,10 @@ pub struct AudioPipeline {
     reset_flag: Arc<AtomicBool>,
     timing_reset_flag: Arc<AtomicBool>,
     pause_flag: Arc<AtomicBool>,
-    /// Restart the injected stream in place (channel move): flush TeamTalk,
-    /// drop buffered PCM, re-arm the jitter gate — but keep `stream_id`,
-    /// `sample_index` and `pos_ms` so the playback position doesn't jump.
+    /// Restart the injected stream in place (channel move): start a NEW
+    /// stream id from sample zero and re-arm the jitter gate, keeping the
+    /// buffered PCM. The reported position stays continuous via
+    /// `pos_offset_ms` rather than by continuing `sample_index`.
     stream_flush_flag: Arc<AtomicBool>,
     /// True while the pipeline has nothing buffered to play (channel empty,
     /// less than one frame accumulated). Read by the runner's end-of-track
@@ -157,12 +158,26 @@ pub struct AudioPipeline {
     frame_buf: Vec<i16>,
     stream_id: i32,
     sample_index: u32,
+    /// Milliseconds already injected under previous stream ids since the last
+    /// track reset. A channel move restarts the SDK stream from sample zero,
+    /// so without this the position reported to callers would jump back to the
+    /// start of the song every time the bot is moved.
+    pos_offset_ms: u32,
     /// Milliseconds of audio actually injected since the last reset. Paced at
     /// realtime by frame injection, so it reflects true playback position (the
     /// YouTube player reads this to report position, rather than counting
     /// frames buffered ahead in the channel).
     pos_ms: Arc<AtomicU32>,
     next_block_time: Option<Instant>,
+}
+
+/// Playback position in ms from the samples injected under the current stream
+/// id plus everything injected under earlier ones since the last new-track
+/// reset. A channel move restarts the stream at sample zero, so the offset is
+/// what keeps a moved bot from reporting that the song jumped back to 0:00.
+fn position_ms(pos_offset_ms: u32, sample_index: u32) -> u32 {
+    let current = (sample_index as u64 * 1000 / SAMPLE_RATE as u64) as u32;
+    pos_offset_ms.saturating_add(current)
 }
 
 impl AudioPipeline {
@@ -206,6 +221,7 @@ impl AudioPipeline {
             frame_buf: vec![0i16; FRAME_SIZE],
             stream_id: new_stream_id(),
             sample_index: 0,
+            pos_offset_ms: 0,
             next_block_time: None,
         }
     }
@@ -241,6 +257,7 @@ impl AudioPipeline {
                 self.prebuffer.rearm();
                 self.next_block_time = None;
                 self.sample_index = 0;
+                self.pos_offset_ms = 0;
                 self.pos_ms.store(0, Ordering::Relaxed);
                 tracing::info!("Audio pipeline reset for new track (stream_id={})", self.stream_id);
             }
@@ -281,12 +298,27 @@ impl AudioPipeline {
             // runs when playback resumes — flushing mid-pause would be
             // consumed with nothing to restart.
             if self.stream_flush_flag.swap(false, Ordering::Relaxed) {
-                crate::tt::audio_inject::flush_audio(&self.client);
+                // Start a NEW input session rather than ending the old one in
+                // place. Carrying the previous stream id and sample index
+                // across a move wedged the SDK's audio thread on Windows: the
+                // move restarts the voice stream for the destination channel,
+                // and the old session's numbering no longer belongs to it.
+                // The zero-sample block this used to send is not the culprit
+                // by itself - the new-track reset above sends one on every
+                // track change and that path has always worked.
+                //
+                // The buffered PCM is deliberately kept, unlike the new-track
+                // reset: it holds the decoder's read-ahead, and dropping it
+                // skipped several seconds of audio on every move.
+                self.pos_offset_ms = self.position_ms();
+                self.stream_id = new_stream_id();
+                self.sample_index = 0;
                 self.prebuffer.rearm();
                 self.next_block_time = None;
                 tracing::info!(
-                    "Audio stream flushed after channel move (stream_id={} continues, buffer kept)",
-                    self.stream_id
+                    "Audio stream restarted after channel move (new stream_id={}, buffer kept, position {}ms)",
+                    self.stream_id,
+                    self.pos_offset_ms
                 );
             }
 
@@ -379,13 +411,18 @@ impl AudioPipeline {
                 }
 
                 self.sample_index = self.sample_index.wrapping_add(FRAME_SAMPLES as u32);
-                // Publish realtime playback position (ms injected since reset).
-                self.pos_ms.store(
-                    (self.sample_index as u64 * 1000 / SAMPLE_RATE as u64) as u32,
-                    Ordering::Relaxed,
-                );
+                // Publish realtime playback position: ms injected since the
+                // last new-track reset, across however many stream ids a
+                // channel move has restarted in between.
+                self.pos_ms.store(self.position_ms(), Ordering::Relaxed);
             }
         }
+    }
+
+    /// Playback position in ms: whatever earlier stream ids injected since the
+    /// last new-track reset, plus what the current one has injected.
+    fn position_ms(&self) -> u32 {
+        position_ms(self.pos_offset_ms, self.sample_index)
     }
 
     /// Sleep until it's time to inject the next audio block.
@@ -415,6 +452,31 @@ impl AudioPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_counts_samples_of_the_current_stream() {
+        // One second of 44.1k audio, no earlier stream.
+        assert_eq!(position_ms(0, 44_100), 1000);
+        assert_eq!(position_ms(0, 0), 0);
+    }
+
+    #[test]
+    fn position_carries_across_a_channel_move() {
+        // A move restarts the stream at sample zero, banking what was already
+        // played. Position must continue, not restart: this is the regression
+        // that would report a moved bot as being back at 0:00.
+        let before_move = position_ms(0, 44_100 * 30);
+        assert_eq!(before_move, 30_000);
+        assert_eq!(position_ms(before_move, 0), 30_000);
+        assert_eq!(position_ms(before_move, 44_100 * 5), 35_000);
+    }
+
+    #[test]
+    fn position_saturates_instead_of_wrapping() {
+        // sample_index wraps by design; the reported position must not panic
+        // in debug or silently wrap to a tiny value in release.
+        assert_eq!(position_ms(u32::MAX, 44_100), u32::MAX);
+    }
 
     #[test]
     fn framer_yields_full_frames_in_order() {
