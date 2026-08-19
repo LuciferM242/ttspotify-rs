@@ -49,8 +49,8 @@
   Spotify says so instead of switching. "info" shows what a bot offers.
 
 ### Changed
-- Spotify and YouTube now share one pool of saved music rather than having a
-  share each, so whichever gets used fills it. Anything nothing has played for
+- The music saved from Spotify and from YouTube shares one pool, so whichever
+  gets used fills it rather than each holding a share of its own. Anything nothing has played for
   a week is dropped, and if the pool is full the track nobody has played for
   longest goes first - so what people keep asking for keeps starting
   instantly. Set "cacheKeepDays" in settings.json to change the week, or 0 to
@@ -141,7 +141,8 @@
   the menu was open.
 - "n" no longer says the queue has ended while tracks are still sitting in it.
 - The queue no longer grows without end when radio is on.
-- Radio no longer keeps adding the same song as a remaster or re-release.
+- Radio no longer keeps adding the same song as a remaster or re-release, while
+  still treating a remix or extended mix as the different track it is.
 - Repeat no longer fights with radio, so "repeat queue" actually loops.
 - "n" with "repeat track" on moves to the next track instead of restarting it.
 - A track that reports finishing twice no longer skips twice.
@@ -158,21 +159,12 @@
 - YouTube /live/ and /embed/ links now play instead of being searched as text,
   and watch links with a "#" in them work.
 - Some YouTube tracks (ones with mono audio) no longer crash the bot.
-- If your YouTube cookies file was moved by the data-folder reorganisation,
-  the bot now finds it instead of every YouTube track failing without saying
-  why.
 - Windows shutdown or logoff now disconnects bots properly, so the server no
   longer keeps a ghost copy of each bot online afterwards.
 - If TeamTalk's files fail to download, the bot keeps the version it already
   has instead of quietly switching to a different one.
-- Radio no longer throws away a remix, extended mix or club mix as a duplicate
-  of the original. It also stops mistaking unrelated titles for re-releases -
-  anything with a word like "Credits" or "Meditation" in it was being dropped.
 - A search that finds nothing now says "No results" instead of "Search failed:
   No results found", which read as though the bot had broken.
-- Tightened the guard that stops a track reporting itself finished twice from
-  skipping two tracks; a rare overlap of end-of-track signals could slip past
-  the old one.
 - Long replies no longer vanish. Anything over the server's message limit was
   rejected outright rather than split, so "queue" on a big queue and the full
   help text sometimes arrived as nothing at all.
