@@ -208,6 +208,16 @@ share it), `cache/` (safe to delete at any time) and `logs/`. A `README.txt`
 in the folder says the same. Upgrading from an older version moves your files
 there automatically; nothing is deleted.
 
+Songs are saved after the first play, so asking for the same one again starts
+it straight away. That saved music is shared by every bot on the computer and
+is capped at 1 GB, with the tracks nobody has played for longest dropped first,
+and anything unplayed for a week dropped whatever the size. Both figures live
+in `settings.json` (`cacheLimitMb`, `cacheKeepDays`); 0 for the limit keeps
+nothing, 0 for the days never drops a track for its age alone. On Windows the
+tray's Settings window has both, and its menu has "Clear cache"; on Linux,
+`ttspotify cache` shows what is saved and `ttspotify cache clear` empties it.
+Deleting it costs nothing but downloading those songs again.
+
 Common fields you might edit (the wizard sets sensible defaults for the rest):
 
 | Field | What it does |

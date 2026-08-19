@@ -94,32 +94,15 @@
   2 or 3 instead of spelling the answer out.
 
 ### Fixed
-- A saved-music limit of 0 now really keeps nothing. It was being read as "no
-  limit at all", so setting it to 0 switched the size rule off and let the
-  folder grow without end - the opposite of what the setting says. Everywhere
-  the bot reports the cache now says plainly that 0 keeps nothing.
-- Downloads cut short by a skip, a stop or a shutdown no longer leave pieces of
-  a song behind. Half-finished downloads are deliberately left out of the
-  tidy-up, since deleting one would cut off the song playing, but nothing ever
-  removed them afterwards either: they piled up and still counted against the
-  limit, so the cache could sit over its limit with no way to get back under
-  it. A download now clears up after itself, and anything left by a crash is
-  removed once it has sat untouched for an hour.
-- Two bots asked for the same YouTube song at the same moment no longer spoil
-  each other's download. On Windows every bot runs inside one program, and both
-  were writing to the same temporary file, so the song that got saved was a
-  mixture of the two and played back broken until the cache was cleared.
-- The tray's "Clear cache" question reads properly again. Its wording was
-  written across several lines in the source and carried the indentation into
-  the box, which showed as a blank gap and a run of spaces in the middle of a
-  sentence.
 - Saved music no longer fills your disk. Every track played was kept forever
   and nothing ever removed it, so the bot's folder grew for as long as it ran -
   on a Raspberry Pi, until the card was full. There is now a limit, 1 GB by
   default, and the least recently played tracks are dropped to stay under it.
   Tracks people still ask for are kept, so they still start instantly. If your
   install is already over the limit it is tidied up the next time it starts.
-  You can change the figure with "cacheLimitMb" in settings.json.
+  You can change the figure with "cacheLimitMb" in settings.json, or set it to
+  0 to keep nothing at all. Songs cut short part-way through a download are
+  cleared away rather than left sitting in the folder.
 - Music on YouTube plays again. Songs uploaded by record labels and the
   automatic "- Topic" channels, which is most of what people ask for, had
   started coming back refused while ordinary videos still played, so the bot
