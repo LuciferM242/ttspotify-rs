@@ -77,10 +77,6 @@ regex = "1"
 rand = "0.8"
 percent-encoding = "2"
 clap = { version = "4", features = ["derive"] }
-# Shell completions and the man page are generated from the same clap
-# definition as --help, so they cannot drift from the real flags.
-clap_complete = "4"
-clap_mangen = "0.2"
 dirs = "6"
 parking_lot = "0.12"
 
@@ -104,6 +100,28 @@ log = "0.4.33"
 tracing-log = "0.2.0"
 
 [profile.release]
+# Optimise for size, not speed. Measured on the Windows tray build with fat
+# LTO and strip already on: opt-level 3 gave 12.70 MiB, "s" 9.40 MiB and "z"
+# 8.43 MiB. Nothing here is on a hot path except the audio decode, which the
+# per-package overrides below keep at full speed. "s" is the setting rather
+# than "z" because "z" additionally disables loop vectorisation for every
+# crate that is not pinned below; "s" keeps it, for a little under 1 MiB.
+# The setting is global rather than per-target: Cargo profiles cannot vary by
+# target, and doing it through per-target rustflags would override the
+# per-package pins below (RUSTFLAGS wins over a profile setting), silently
+# building the decoders for size after all.
+#
+# Verified live on Linux against a real server at "z", which is the stricter
+# of the two: Vorbis playback, channel move, radio and replay, all clean.
+#
+# Trimming the dependency graph was tried first and is not worth repeating:
+# dropping clap's `color` and tracing-subscriber's `ansi` saved 7 KB, because
+# fat LTO already discards code nothing reaches - only reachable code costs
+# bytes. Switching the teamtalk fork from native-tls to rustls was worse than
+# useless, at +1.22 MiB: native-tls on Windows is schannel, which the OS
+# provides for free, so the swap adds a second rustls stack instead of
+# removing one.
+opt-level = "s"
 strip = true
 lto = true
 panic = "abort"
@@ -111,6 +129,50 @@ panic = "abort"
 # whole crate graph as one unit for slightly smaller/faster output. Costs some
 # link time (release builds only; debug/check unaffected).
 codegen-units = 1
+
+# The audio path is the one place where size-optimised codegen would be felt:
+# `opt-level = "z"` turns off loop vectorisation, and decode plus resample are
+# exactly the tight loops that depend on it. A decoder that misses realtime
+# starves the 20ms pipeline and the listener hears it, so these crates keep
+# full speed optimisation while the rest of the binary is built for size.
+[profile.release.package.symphonia]
+opt-level = 3
+
+[profile.release.package."symphonia-bundle-flac"]
+opt-level = 3
+
+[profile.release.package."symphonia-bundle-mp3"]
+opt-level = 3
+
+[profile.release.package."symphonia-codec-aac"]
+opt-level = 3
+
+[profile.release.package."symphonia-codec-vorbis"]
+opt-level = 3
+
+[profile.release.package."symphonia-core"]
+opt-level = 3
+
+[profile.release.package."symphonia-format-isomp4"]
+opt-level = 3
+
+[profile.release.package."symphonia-format-ogg"]
+opt-level = 3
+
+[profile.release.package."symphonia-metadata"]
+opt-level = 3
+
+[profile.release.package."symphonia-utils-xiph"]
+opt-level = 3
+
+[profile.release.package.rubato]
+opt-level = 3
+
+[profile.release.package."librespot-audio"]
+opt-level = 3
+
+[profile.release.package."librespot-playback"]
+opt-level = 3
 
 # GUI (Windows tray + config editor)
 [target.'cfg(windows)'.dependencies]
@@ -130,6 +192,13 @@ embed-resource = "3.0.11"
 name = "tt-spotify-bot"
 path = "src/main.rs"
 
+
+# Shell completions and the man page are generated from the same clap
+# definition as --help, so they cannot drift from the real flags. Both call
+# sites in main.rs are #[cfg(not(windows))], so the tray build never needs them.
+[target.'cfg(not(windows))'.dependencies]
+clap_complete = "4"
+clap_mangen = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 # Only to hand SIGPIPE back to the kernel for commands that print and exit,
