@@ -105,11 +105,15 @@ impl SpotifyAuth {
         let cache_dir = crate::paths::cache_dir().join("spotify_cache");
         let audio_cache_dir = cache_dir.join("audio");
 
+        // No ceiling here on purpose. librespot's limiter only knows its own
+        // directory, so it cannot share a budget with the YouTube cache;
+        // audio_cache::sweep owns both. Its eviction is also in-memory, which a
+        // restart loses and other bots sharing the cache cannot see.
         let cache = Cache::new(
             Some(credentials_dir),
             Some(cache_dir),
             Some(audio_cache_dir),
-            crate::settings::load().cache_limit_bytes(),
+            None,
         ).ok();
 
         let config = SessionConfig::default();
@@ -470,54 +474,4 @@ mod tests {
         assert!(!super::has_display(Some(""), Some("")));
     }
 
-    #[test]
-    fn an_oversized_cache_is_pruned_when_a_limit_is_given() {
-        use librespot_core::cache::Cache;
-
-        let dir = std::env::temp_dir()
-            .join(format!("ttspotify_cache_limit_{}", std::process::id()));
-        let audio = dir.join("audio");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&audio).unwrap();
-
-        for i in 0..6u8 {
-            let shard = audio.join(format!("{i:02x}"));
-            std::fs::create_dir_all(&shard).unwrap();
-            std::fs::write(shard.join(format!("file{i}")), vec![0u8; 1024 * 1024]).unwrap();
-        }
-        let total = |p: &std::path::Path| -> u64 {
-            walkdir(p).iter().map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)).sum()
-        };
-        assert_eq!(total(&audio), 6 * 1024 * 1024, "six megabytes to start");
-
-        let cache = Cache::new(
-            None::<&std::path::Path>,
-            None,
-            Some(audio.as_path()),
-            Some(3 * 1024 * 1024),
-        );
-        assert!(cache.is_ok(), "cache should open");
-        let after = total(&audio);
-        assert!(
-            after <= 3 * 1024 * 1024,
-            "startup prune should bring {} bytes down to the 3 MB ceiling, left {after}",
-            6 * 1024 * 1024
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    fn walkdir(p: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let mut out = Vec::new();
-        let Ok(entries) = std::fs::read_dir(p) else { return out };
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.is_dir() {
-                out.extend(walkdir(&path));
-            } else {
-                out.push(path);
-            }
-        }
-        out
-    }
 }

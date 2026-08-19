@@ -43,6 +43,38 @@ impl SpotifyMetadata {
         self.session.lock().clone()
     }
 
+    /// Record that a track was played, so the cache keeps it.
+    ///
+    /// librespot bumps its own in-memory list when it reads a cached file, but
+    /// that list is gone on restart and invisible to the other bots sharing the
+    /// cache. Writing the time onto the file fixes both.
+    ///
+    /// Every file id the track lists is touched rather than working out which
+    /// format librespot chose: only the cached one exists on disk, so the rest
+    /// are misses, and guessing wrong would silently bump nothing.
+    pub async fn mark_played(&self, uri: &SpotifyUri) {
+        let session = self.session();
+        let Some(cache) = session.cache().cloned() else {
+            return;
+        };
+        let track = match librespot_metadata::Track::get(&session, uri).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!("cache: could not look up {uri} to mark it played: {e}");
+                return;
+            }
+        };
+        let mut touched = 0;
+        for file_id in track.files.values() {
+            if let Some(path) = cache.file_path(*file_id) {
+                if crate::audio_cache::touch(&path).is_ok() {
+                    touched += 1;
+                }
+            }
+        }
+        tracing::trace!("cache: marked {touched} file(s) played for {uri}");
+    }
+
     // ---- helpers ----
 
     /// Convert a librespot Track + URI into our SpotifyTrack.

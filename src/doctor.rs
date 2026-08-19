@@ -243,6 +243,9 @@ pub fn report() {
             crate::audio_cache::human_size(used)
         ),
     }
+    if settings.cache_keep_days > 0 {
+        println!("  Cached audio is dropped after {} days unplayed", settings.cache_keep_days);
+    }
 
     println!();
     println!("System");

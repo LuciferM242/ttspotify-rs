@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 ### Added
+- YouTube tracks are saved after the first play, so asking for the same song
+  again starts it straight away instead of fetching it once more.
 - The bot now says how much music it has saved, and lets you delete it. On
   Windows it is "Clear cache" in the tray menu; on Linux, "cache" shows the
   size and "cache clear" empties it. "doctor" shows it too. The saved music is
@@ -45,6 +47,12 @@
   Spotify says so instead of switching. "info" shows what a bot offers.
 
 ### Changed
+- Spotify and YouTube now share one pool of saved music rather than having a
+  share each, so whichever gets used fills it. Anything nothing has played for
+  a week is dropped, and if the pool is full the track nobody has played for
+  longest goes first - so what people keep asking for keeps starting
+  instantly. Set "cacheKeepDays" in settings.json to change the week, or 0 to
+  keep tracks until the space runs out.
 - The TeamTalk files the bot downloads to run now sit in their own "sdk"
   folder instead of under "cache". They were never safe to delete - they are
   fetched from bearware.dk, which removes older versions, so an install that

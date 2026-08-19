@@ -101,6 +101,128 @@ pub fn last_used(path: &Path) -> Option<std::time::SystemTime> {
     meta.modified().or_else(|_| meta.accessed()).ok()
 }
 
+/// One cached file, as eviction sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub path: PathBuf,
+    pub size: u64,
+    pub last_used: std::time::SystemTime,
+}
+
+/// What a sweep did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    pub removed: usize,
+    pub freed: u64,
+}
+
+/// Choose what to delete: anything unused for `keep`, then least recently used
+/// until the total fits `limit`.
+///
+/// Pure so the policy can be tested without touching a disk. `now` is passed in
+/// for the same reason.
+fn plan_eviction(
+    mut entries: Vec<Entry>,
+    limit: Option<u64>,
+    keep: std::time::Duration,
+    now: std::time::SystemTime,
+) -> Vec<Entry> {
+    // Least recently used first, so both rules read from the same end.
+    entries.sort_by(|a, b| a.last_used.cmp(&b.last_used).then_with(|| a.path.cmp(&b.path)));
+
+    let mut doomed = Vec::new();
+    let mut kept = Vec::new();
+    for e in entries {
+        let stale = now
+            .duration_since(e.last_used)
+            .map(|age| age > keep)
+            .unwrap_or(false);
+        if stale {
+            doomed.push(e);
+        } else {
+            kept.push(e);
+        }
+    }
+
+    let Some(limit) = limit else {
+        // No ceiling still means nothing is kept when the limit is "none at
+        // all"; that case is handled by the caller passing Some(0).
+        return doomed;
+    };
+    let mut total: u64 = kept.iter().map(|e| e.size).sum();
+    let mut i = 0;
+    while total > limit && i < kept.len() {
+        total -= kept[i].size;
+        doomed.push(kept[i].clone());
+        i += 1;
+    }
+    doomed
+}
+
+/// True for the temporary file a download writes before it is complete.
+fn is_partial(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "part")
+}
+
+/// Every cached file, with its size and when it was last played.
+fn entries() -> Vec<Entry> {
+    let mut out = Vec::new();
+    for dir in clearable_dirs() {
+        collect(&dir, &mut out);
+    }
+    out
+}
+
+fn collect(dir: &Path, out: &mut Vec<Entry>) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => collect(&path, out),
+            Ok(t) if t.is_file() => {
+                // A download in progress is not a cache entry: evicting one
+                // would truncate the track being played right now.
+                if is_partial(&path) {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else { continue };
+                let last_used = last_used(&path).unwrap_or(std::time::UNIX_EPOCH);
+                out.push(Entry { path, size: meta.len(), last_used });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Apply the cache policy: drop what is stale, then what is least recently
+/// played, until the total fits.
+pub fn sweep(limit: Option<u64>, keep: std::time::Duration) -> Swept {
+    let doomed = plan_eviction(entries(), limit, keep, std::time::SystemTime::now());
+    let mut swept = Swept::default();
+    for e in doomed {
+        if std::fs::remove_file(&e.path).is_ok() {
+            swept.removed += 1;
+            swept.freed += e.size;
+        }
+    }
+    if swept.removed > 0 {
+        tracing::info!(
+            "Cache: removed {} file(s), freed {}",
+            swept.removed,
+            human_size(swept.freed)
+        );
+    }
+    swept
+}
+
+/// Apply the policy from the user's settings.
+pub fn sweep_to_settings() -> Swept {
+    let settings = crate::settings::load();
+    sweep(settings.cache_limit_bytes(), settings.cache_keep_duration())
+}
+
 /// Render a byte count the way a person reads it.
 pub fn human_size(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
@@ -242,6 +364,266 @@ mod tests {
         let cache = scratch("touch_missing");
         assert!(touch(&cache.join("gone.m4a")).is_err());
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    use std::time::{Duration, SystemTime};
+
+    const DAY: Duration = Duration::from_secs(86_400);
+
+    fn entry(name: &str, size: u64, days_ago: u64) -> Entry {
+        Entry {
+            path: PathBuf::from(name),
+            size,
+            last_used: SystemTime::UNIX_EPOCH + Duration::from_secs(365 * 86_400)
+                - Duration::from_secs(days_ago * 86_400),
+        }
+    }
+
+    fn now() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(365 * 86_400)
+    }
+
+    fn names(v: &[Entry]) -> Vec<String> {
+        let mut n: Vec<String> = v.iter().map(|e| e.path.display().to_string()).collect();
+        n.sort();
+        n
+    }
+
+    #[test]
+    fn a_track_nobody_played_for_longer_than_the_age_goes() {
+        let doomed = plan_eviction(
+            vec![entry("old", 10, 8), entry("fresh", 10, 1)],
+            Some(1_000_000),
+            7 * DAY,
+            now(),
+        );
+        assert_eq!(names(&doomed), vec!["old"]);
+    }
+
+    #[test]
+    fn a_track_played_yesterday_survives_being_ancient() {
+        // The whole point of the bump: age counts from the last play, not from
+        // when it was downloaded.
+        let doomed = plan_eviction(vec![entry("classic", 10, 0)], Some(1_000_000), 7 * DAY, now());
+        assert!(doomed.is_empty(), "a track played today must not be evicted");
+    }
+
+    #[test]
+    fn over_the_limit_the_least_recently_played_goes_first() {
+        let doomed = plan_eviction(
+            vec![entry("a", 100, 1), entry("b", 100, 3), entry("c", 100, 2)],
+            Some(250),
+            30 * DAY,
+            now(),
+        );
+        assert_eq!(names(&doomed), vec!["b"], "oldest play should go, and only it");
+    }
+
+    #[test]
+    fn it_stops_deleting_as_soon_as_it_fits() {
+        let doomed = plan_eviction(
+            vec![entry("a", 100, 1), entry("b", 100, 4), entry("c", 100, 3)],
+            Some(150),
+            30 * DAY,
+            now(),
+        );
+        assert_eq!(names(&doomed), vec!["b", "c"], "should free just enough");
+    }
+
+    #[test]
+    fn a_cache_that_fits_and_is_fresh_loses_nothing() {
+        let doomed = plan_eviction(
+            vec![entry("a", 10, 1), entry("b", 10, 2)],
+            Some(1_000),
+            7 * DAY,
+            now(),
+        );
+        assert!(doomed.is_empty());
+    }
+
+    #[test]
+    fn the_two_rules_do_not_evict_the_same_file_twice() {
+        // A stale file also over the limit must be counted once, or the freed
+        // total is reported as more than was really there.
+        let doomed = plan_eviction(
+            vec![entry("stale", 100, 40), entry("fresh", 100, 0)],
+            Some(50),
+            7 * DAY,
+            now(),
+        );
+        assert_eq!(names(&doomed), vec!["fresh", "stale"]);
+        assert_eq!(doomed.len(), 2, "no duplicates");
+    }
+
+    #[test]
+    fn spotify_and_youtube_are_one_pool_not_two() {
+        // The design decision, pinned: a YouTube track can be evicted to make
+        // room for Spotify and the other way round. Nothing splits the budget.
+        let doomed = plan_eviction(
+            vec![
+                Entry { path: PathBuf::from("spotify_cache/audio/a9/x"), size: 100, last_used: entry("", 0, 1).last_used },
+                Entry { path: PathBuf::from("youtube/v.m4a"), size: 100, last_used: entry("", 0, 5).last_used },
+            ],
+            Some(150),
+            30 * DAY,
+            now(),
+        );
+        assert_eq!(
+            names(&doomed),
+            vec!["youtube/v.m4a"],
+            "the older play should go regardless of which service it came from"
+        );
+    }
+
+    #[test]
+    fn a_zero_limit_clears_the_lot() {
+        let doomed = plan_eviction(
+            vec![entry("a", 10, 0), entry("b", 10, 0)],
+            Some(0),
+            30 * DAY,
+            now(),
+        );
+        assert_eq!(doomed.len(), 2);
+    }
+
+    #[test]
+    fn a_file_with_a_timestamp_in_the_future_is_not_treated_as_ancient() {
+        // Clock skew, or a file copied in from elsewhere. duration_since fails
+        // here, and reading that as "very old" would delete it immediately.
+        let future = Entry {
+            path: PathBuf::from("future"),
+            size: 10,
+            last_used: now() + Duration::from_secs(60 * 60),
+        };
+        let doomed = plan_eviction(vec![future], Some(1_000), 7 * DAY, now());
+        assert!(doomed.is_empty());
+    }
+
+    #[test]
+    fn a_download_in_progress_is_never_evicted() {
+        assert!(is_partial(Path::new("/c/youtube/abc.1234.part")));
+        assert!(!is_partial(Path::new("/c/youtube/abc.m4a")));
+        assert!(!is_partial(Path::new("/c/spotify_cache/audio/a9/x")));
+    }
+
+    #[test]
+    fn a_partial_file_is_left_out_of_the_listing() {
+        let cache = scratch("partials");
+        write(&cache.join("youtube/done.m4a"), 100);
+        write(&cache.join("youtube/busy.999.part"), 100);
+        let mut found = Vec::new();
+        for dir in clearable_dirs_under(&cache) {
+            collect(&dir, &mut found);
+        }
+        let names: Vec<String> = found
+            .iter()
+            .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["done.m4a"], "a .part download must be invisible");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// The policy against real files, not just the planner.
+    #[test]
+    fn a_sweep_deletes_from_disk_and_reports_what_it_freed() {
+        let cache = scratch("sweep");
+        let stale = cache.join("youtube/stale.m4a");
+        let fresh = cache.join("spotify_cache/audio/a9/fresh");
+        let busy = cache.join("youtube/busy.1.part");
+        write(&stale, 1000);
+        write(&fresh, 1000);
+        write(&busy, 1000);
+
+        let old = std::time::SystemTime::now() - Duration::from_secs(30 * 86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let mut found = Vec::new();
+        for dir in clearable_dirs_under(&cache) {
+            collect(&dir, &mut found);
+        }
+        let doomed = plan_eviction(found, Some(10_000), 7 * DAY, SystemTime::now());
+        let mut swept = Swept::default();
+        for e in doomed {
+            if std::fs::remove_file(&e.path).is_ok() {
+                swept.removed += 1;
+                swept.freed += e.size;
+            }
+        }
+
+        assert_eq!(swept, Swept { removed: 1, freed: 1000 });
+        assert!(!stale.exists(), "the stale track should be gone");
+        assert!(fresh.exists(), "a track played today must stay");
+        assert!(busy.exists(), "a download in progress must stay");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn touching_a_stale_track_saves_it_from_the_next_sweep() {
+        // End to end on the guarantee that matters: playing a track keeps it.
+        let cache = scratch("rescue");
+        let track = cache.join("youtube/old.m4a");
+        write(&track, 100);
+        let old = std::time::SystemTime::now() - Duration::from_secs(30 * 86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&track)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let plan = |cache: &Path| {
+            let mut found = Vec::new();
+            for dir in clearable_dirs_under(cache) {
+                collect(&dir, &mut found);
+            }
+            plan_eviction(found, Some(10_000), 7 * DAY, SystemTime::now())
+        };
+        assert_eq!(plan(&cache).len(), 1, "stale before it is played");
+
+        touch(&track).unwrap();
+        assert!(plan(&cache).is_empty(), "playing it must save it");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// `sweep_to_settings` against the install's real directories.
+    ///
+    /// Ignored: it writes into and deletes from the actual cache, so it is for
+    /// running by hand on a throwaway install, not in CI. Covers the wiring
+    /// from settings.json through to files leaving the disk, which the
+    /// in-process tests above stop short of.
+    #[test]
+    #[ignore = "reads and deletes the real cache directory"]
+    fn sweep_to_settings_evicts_from_the_real_cache() {
+        let dirs = clearable_dirs();
+        let yt = dirs
+            .iter()
+            .find(|d| d.ends_with("youtube"))
+            .expect("a youtube cache dir");
+        std::fs::create_dir_all(yt).unwrap();
+
+        let stale = yt.join("zz_sweep_test_stale.m4a");
+        let fresh = yt.join("zz_sweep_test_fresh.m4a");
+        std::fs::write(&stale, vec![0u8; 4096]).unwrap();
+        std::fs::write(&fresh, vec![0u8; 4096]).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(400 * 86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let swept = sweep_to_settings();
+        println!("swept {} file(s), freed {}", swept.removed, human_size(swept.freed));
+        assert!(!stale.exists(), "a track unplayed for over a year should go");
+        assert!(fresh.exists(), "a track written just now should stay");
+
+        let _ = std::fs::remove_file(&fresh);
     }
 
     #[test]

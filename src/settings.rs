@@ -19,6 +19,13 @@ fn default_cache_limit_mb() -> u64 {
     DEFAULT_CACHE_LIMIT_MB
 }
 
+/// Default age at which an unplayed track is dropped, in days.
+pub const DEFAULT_CACHE_KEEP_DAYS: u32 = 7;
+
+fn default_cache_keep_days() -> u32 {
+    DEFAULT_CACHE_KEEP_DAYS
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default = "default_true", rename = "checkUpdatesOnStartup")]
@@ -27,6 +34,10 @@ pub struct AppSettings {
     /// every bot on this install. 0 keeps nothing.
     #[serde(default = "default_cache_limit_mb", rename = "cacheLimitMb")]
     pub cache_limit_mb: u64,
+    /// Drop a cached track nothing has played for this many days, whatever the
+    /// size limit says. 0 turns the age rule off.
+    #[serde(default = "default_cache_keep_days", rename = "cacheKeepDays")]
+    pub cache_keep_days: u32,
 }
 
 impl Default for AppSettings {
@@ -34,6 +45,7 @@ impl Default for AppSettings {
         Self {
             check_updates_on_startup: true,
             cache_limit_mb: DEFAULT_CACHE_LIMIT_MB,
+            cache_keep_days: DEFAULT_CACHE_KEEP_DAYS,
         }
     }
 }
@@ -55,6 +67,16 @@ impl AppSettings {
     /// The ceiling in bytes, or `None` to keep nothing.
     pub fn cache_limit_bytes(&self) -> Option<u64> {
         (self.cache_limit_mb > 0).then(|| self.cache_limit_mb.saturating_mul(1024 * 1024))
+    }
+
+    /// How long an unplayed track is kept. A very large span when the age rule
+    /// is off, so callers need no special case.
+    pub fn cache_keep_duration(&self) -> std::time::Duration {
+        if self.cache_keep_days == 0 {
+            std::time::Duration::from_secs(u32::MAX as u64 * 86_400)
+        } else {
+            std::time::Duration::from_secs(self.cache_keep_days as u64 * 86_400)
+        }
     }
 
     /// Persist atomically (tmp + rename), matching config.rs's write pattern.
@@ -98,6 +120,28 @@ mod tests {
         let json = serde_json::to_string(&AppSettings::default()).unwrap();
         assert!(json.contains("checkUpdatesOnStartup"));
         assert!(json.contains("cacheLimitMb"));
+        assert!(json.contains("cacheKeepDays"));
+    }
+
+    #[test]
+    fn the_keep_age_is_seven_days_by_default() {
+        let s = AppSettings::default();
+        assert_eq!(s.cache_keep_duration(), std::time::Duration::from_secs(7 * 86_400));
+    }
+
+    #[test]
+    fn zero_keep_days_turns_the_age_rule_off_rather_than_deleting_everything() {
+        // Read the wrong way round this would evict the whole cache on the
+        // first sweep.
+        let s = AppSettings { cache_keep_days: 0, ..AppSettings::default() };
+        assert!(s.cache_keep_duration() > std::time::Duration::from_secs(365 * 86_400 * 100));
+    }
+
+    #[test]
+    fn a_config_without_the_age_key_gets_the_default() {
+        let s: AppSettings = serde_json::from_str(r#"{"cacheLimitMb":512}"#).unwrap();
+        assert_eq!(s.cache_keep_days, DEFAULT_CACHE_KEEP_DAYS);
+        assert_eq!(s.cache_limit_mb, 512);
     }
 
     #[test]

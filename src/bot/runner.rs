@@ -415,6 +415,12 @@ pub async fn run_bot(
         SpotifyPlayer::new(s, &config, audio_tx.clone())
     };
     let metadata = SpotifyMetadata::new(session_holder.clone());
+    // Apply the cache policy once on the way up, so an install that has been
+    // over the limit or sitting on stale tracks is tidied even if nothing is
+    // played this run. Off the startup path: it walks the cache directories.
+    tokio::spawn(async {
+        tokio::task::spawn_blocking(crate::audio_cache::sweep_to_settings).await.ok();
+    });
     // Shared with the recovery supervisor for rebuilding a dead session.
     let auth = Arc::new(auth);
     let youtube_metadata = Arc::new(crate::youtube::metadata::YouTubeMetadata::new(&config)?);
@@ -1333,8 +1339,15 @@ async fn command_processor(
         s.status = PlaybackStatus::Idle;
     };
 
+    let cache_marker = metadata.clone();
+    let sweep_cache = || {
+        tokio::spawn(async {
+            tokio::task::spawn_blocking(crate::audio_cache::sweep_to_settings).await.ok();
+        });
+    };
     let start_track = |service: crate::services::Service, uri_str: &str, player: &SpotifyPlayer, youtube_player: &crate::youtube::player::YouTubePlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
         use crate::player::MediaPlayer;
+        sweep_cache();
         match service {
             crate::services::Service::Spotify => {
                 if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
@@ -1345,6 +1358,13 @@ async fn command_processor(
                     let _ = client.enable_voice_transmission(false);
                     audio_reset.store(true, Ordering::Relaxed);
                     player.load_track(&uri);
+                    // Off the critical path: the track is already loading, and
+                    // a slow or failed lookup must not delay it.
+                    {
+                        let meta = cache_marker.clone();
+                        let uri = uri.clone();
+                        tokio::spawn(async move { meta.mark_played(&uri).await });
+                    }
                     {
                         let mut s = state.lock();
                         s.status = PlaybackStatus::Loading;
