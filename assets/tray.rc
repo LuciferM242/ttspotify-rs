@@ -24,18 +24,26 @@ IDI_TRAY ICON "tray.ico"
 #define IDD_SETTINGS       100
 #define IDC_CHECK_UPDATES  101
 #define IDC_AUTOSTART      102
+#define IDC_CACHE_LIMIT    103
+#define IDC_CACHE_DAYS     104
 
 // WS_POPUP 0x80000000 | WS_CAPTION 0x00C00000 | WS_SYSMENU 0x00080000
 //   | DS_MODALFRAME 0x00000080 | DS_CENTER 0x00000800 | DS_SETFONT 0x00000040
-IDD_SETTINGS DIALOGEX 0, 0, 250, 82
+IDD_SETTINGS DIALOGEX 0, 0, 250, 128
 STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
 CAPTION "Settings"
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
     AUTOCHECKBOX    "Check for &updates on startup", IDC_CHECK_UPDATES, 12, 14, 226, 12
     AUTOCHECKBOX    "Launch on Windows &startup",     IDC_AUTOSTART,     12, 32, 226, 12
-    DEFPUSHBUTTON   "Save",                           IDOK,             136, 60,  50, 14
-    PUSHBUTTON      "Cancel",                         IDCANCEL,         192, 60,  50, 14
+    // Each label sits immediately before its edit box: that ordering is what
+    // names the box for a screen reader.
+    LTEXT           "Saved music &limit (MB), 0 for none:", -1, 12, 56, 160, 10
+    EDITTEXT        IDC_CACHE_LIMIT, 178, 54, 60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    LTEXT           "&Forget tracks unplayed for (days), 0 to keep:", -1, 12, 78, 160, 18
+    EDITTEXT        IDC_CACHE_DAYS,  178, 78, 60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+    DEFPUSHBUTTON   "Save",                           IDOK,             136, 106, 50, 14
+    PUSHBUTTON      "Cancel",                         IDCANCEL,         192, 106, 50, 14
 END
 
 // --- Progress: live log for long-running installs -------------------------

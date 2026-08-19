@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 ### Added
+- The tray's Settings window now has the saved-music limit and how many days
+  an unplayed track is kept, so neither needs editing settings.json by hand.
 - YouTube tracks are saved after the first play, so asking for the same song
   again starts it straight away instead of fetching it once more.
 - The bot now says how much music it has saved, and lets you delete it. On
