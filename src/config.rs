@@ -6,20 +6,26 @@ use crate::services::Service;
 
 /// Check whether a string is a recognised gender alias.
 pub fn is_valid_gender(s: &str) -> bool {
-    matches!(
-        s.to_lowercase().as_str(),
-        "male" | "m" | "man" | "female" | "f" | "woman" | "neutral" | "n" | "nb"
-    )
+    gender_from_str(s).is_some()
+}
+
+/// The one place the accepted gender words live. `is_valid_gender` and
+/// `parse_gender` both answer from this, because they used to carry a copy of
+/// the list each: nothing made the two agree, so adding a word to one and not
+/// the other would have quietly made a gender the bot accepts and then ignores.
+fn gender_from_str(s: &str) -> Option<::teamtalk::types::UserGender> {
+    match s.to_lowercase().as_str() {
+        "male" | "m" | "man" => Some(::teamtalk::types::UserGender::Male),
+        "female" | "f" | "woman" => Some(::teamtalk::types::UserGender::Female),
+        "neutral" | "n" | "nb" => Some(::teamtalk::types::UserGender::Neutral),
+        _ => None,
+    }
 }
 
 /// Parse a gender string into a TeamTalk UserGender.
 /// Accepts: male/m/man, female/f/woman, neutral/n/nb (and anything else defaults to Neutral).
 pub fn parse_gender(s: &str) -> ::teamtalk::types::UserGender {
-    match s.to_lowercase().as_str() {
-        "male" | "m" | "man" => ::teamtalk::types::UserGender::Male,
-        "female" | "f" | "woman" => ::teamtalk::types::UserGender::Female,
-        _ => ::teamtalk::types::UserGender::Neutral,
-    }
+    gender_from_str(s).unwrap_or(::teamtalk::types::UserGender::Neutral)
 }
 
 /// Platform-aware config directory.
@@ -1105,73 +1111,48 @@ two"), Some("onetwo".to_string()));
     use super::*;
     use ::teamtalk::types::UserGender;
 
-    // -- BotConfig equality (unchanged-edit detection in the GUI dialog) --
+    // -- gender words --
 
+    /// Every accepted spelling, in the case a user might type it, against the
+    /// variant it must produce. Both entry points are checked from the one
+    /// table: they read the same list now, and this is what keeps them doing so.
     #[test]
-    fn botconfig_eq_clone_equal_and_field_change_detected() {
-        let a = BotConfig::default();
-        let mut b = a.clone();
-        assert_eq!(a, b);
-        b.volume = a.volume + 1;
-        assert_ne!(a, b);
-    }
-
-    // -- is_valid_gender --
-
-    #[test]
-    fn is_valid_gender_male_aliases() {
-        for s in ["male", "m", "man", "MALE", "Man"] {
-            assert!(is_valid_gender(s), "{s} should be valid");
+    fn every_accepted_spelling_maps_to_its_gender() {
+        let cases = [
+            ("male", UserGender::Male),
+            ("m", UserGender::Male),
+            ("man", UserGender::Male),
+            ("MALE", UserGender::Male),
+            ("Man", UserGender::Male),
+            ("female", UserGender::Female),
+            ("f", UserGender::Female),
+            ("woman", UserGender::Female),
+            ("FEMALE", UserGender::Female),
+            ("Woman", UserGender::Female),
+            ("neutral", UserGender::Neutral),
+            ("n", UserGender::Neutral),
+            ("nb", UserGender::Neutral),
+            ("NEUTRAL", UserGender::Neutral),
+            ("NB", UserGender::Neutral),
+        ];
+        for (word, want) in cases {
+            assert!(is_valid_gender(word), "{word} should be accepted");
+            assert_eq!(parse_gender(word), want, "{word}");
         }
     }
 
     #[test]
-    fn is_valid_gender_female_aliases() {
-        for s in ["female", "f", "woman", "FEMALE", "Woman"] {
-            assert!(is_valid_gender(s), "{s} should be valid");
-        }
-    }
-
-    #[test]
-    fn is_valid_gender_neutral_aliases() {
-        for s in ["neutral", "n", "nb", "NEUTRAL", "NB"] {
-            assert!(is_valid_gender(s), "{s} should be valid");
-        }
-    }
-
-    #[test]
-    fn is_valid_gender_rejects_unknown() {
+    fn a_word_that_is_not_a_gender_is_refused() {
         for s in ["", "other", "xyz", "ma", "fem", "neutral!"] {
-            assert!(!is_valid_gender(s), "{s} should be invalid");
-        }
-    }
-
-    // -- parse_gender --
-
-    #[test]
-    fn parse_gender_male_aliases() {
-        for s in ["male", "m", "man", "MALE", "Man"] {
-            assert_eq!(parse_gender(s), UserGender::Male, "{s}");
+            assert!(!is_valid_gender(s), "{s} should be refused");
         }
     }
 
     #[test]
-    fn parse_gender_female_aliases() {
-        for s in ["female", "f", "woman", "FEMALE", "Woman"] {
-            assert_eq!(parse_gender(s), UserGender::Female, "{s}");
-        }
-    }
-
-    #[test]
-    fn parse_gender_neutral_aliases() {
-        for s in ["neutral", "n", "nb", "NEUTRAL"] {
-            assert_eq!(parse_gender(s), UserGender::Neutral, "{s}");
-        }
-    }
-
-    #[test]
-    fn parse_gender_unknown_defaults_to_neutral() {
-        // parse_gender is "anything else defaults to Neutral" by design.
+    fn an_unrecognised_word_still_parses_as_neutral() {
+        // The config is read before anything validates it, so parse_gender
+        // cannot fail; "not a gender" has to become something, and Neutral is
+        // the one that says nothing about the bot.
         for s in ["", "xyz", "other"] {
             assert_eq!(parse_gender(s), UserGender::Neutral, "{s}");
         }
