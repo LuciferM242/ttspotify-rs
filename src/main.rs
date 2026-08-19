@@ -98,6 +98,26 @@ fn man_arg_label(arg: &clap::Arg) -> String {
     }
 }
 
+/// What a command offers, printed the way an answer is: on stdout, exiting 0.
+///
+/// Naming a command that groups others - `service`, `yt` - and nothing else is
+/// a question, not a mistake. clap's own answer is the missing-subcommand
+/// error, which puts the same help on stderr and exits 2, so piping it shows
+/// nothing and a script reading the code sees a failure.
+#[cfg(not(windows))]
+fn print_subcommand_help(name: &str) -> Result<(), BotError> {
+    let program = tt_spotify_bot::paths::program_name();
+    let mut cmd = cli_command();
+    if let Some(sub) = cmd.find_subcommand_mut(name) {
+        // Lifted out of the tree by hand, so it has no bin_name yet and its
+        // usage line would read "yt [COMMAND]" - not something anybody can type.
+        let mut sub = sub.clone().bin_name(format!("{program} {name}"));
+        let _ = sub.print_help();
+        println!();
+    }
+    Ok(())
+}
+
 /// The man page, with every command spelled out on it.
 ///
 /// clap_mangen's own subcommand section lists cross-references like
@@ -296,13 +316,17 @@ enum Commands {
     #[cfg(target_os = "linux")]
     Service {
         #[command(subcommand)]
-        action: ServiceAction,
+        action: Option<ServiceAction>,
     },
 
     /// Install or update the YouTube tools
+    // Named `yt` after the chat command, keeping the shape `service` and
+    // `cache` already have. A doc comment here would reach `yt --help` as
+    // body text; `youtube` stays as an alias for anything written down.
+    #[command(name = "yt", alias = "youtube")]
     Youtube {
         #[command(subcommand)]
-        action: YoutubeAction,
+        action: Option<YoutubeAction>,
     },
 
     /// Sign in to Spotify
@@ -673,14 +697,16 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
         Commands::Uninstall { purge } => finish(tt_spotify_bot::install::uninstall(purge)),
         #[cfg(target_os = "linux")]
         Commands::Service { action } => match action {
-            ServiceAction::Install => tt_spotify_bot::service::install_service(),
-            ServiceAction::Remove => tt_spotify_bot::service::uninstall_service(),
+            Some(ServiceAction::Install) => tt_spotify_bot::service::install_service(),
+            Some(ServiceAction::Remove) => tt_spotify_bot::service::uninstall_service(),
+            None => print_subcommand_help("service"),
         },
 
         Commands::Youtube { action } => {
             let result = match action {
-                YoutubeAction::Install => tt_spotify_bot::wizard::run_youtube_setup(),
-                YoutubeAction::Update => tt_spotify_bot::wizard::run_update_tools(),
+                Some(YoutubeAction::Install) => tt_spotify_bot::wizard::run_youtube_setup(),
+                Some(YoutubeAction::Update) => tt_spotify_bot::wizard::run_update_tools(),
+                None => return print_subcommand_help("yt"),
             };
             finish(result)
         }

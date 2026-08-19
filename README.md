@@ -31,11 +31,10 @@ YouTube requires **cookies** to play reliably. Export them with a browser extens
 
 ### Limiting a bot to one service
 
-A bot can be restricted to just one of the two. Setup asks, and the Windows
-config editor has checkboxes for it. A YouTube-only bot never touches the
-Spotify login saved on your machine — worth doing for a bot that sits on
-someone else's server. `sp` or `yt` on a bot without that service says so
-instead of switching, and `info` shows what a bot offers.
+A bot can be restricted to just one of the two. Setup asks, on Windows and on
+Linux. A YouTube-only bot never touches the Spotify login saved on your
+machine. `sp` or `yt` on a bot without that service says so instead of
+switching, and `info` shows what a bot offers.
 
 ## Requirements
 
@@ -85,13 +84,13 @@ To install the YouTube tools (yt-dlp, bgutil-pot, and Deno — the JavaScript
 runtime YouTube playback now needs; an existing Deno is used as-is):
 
 ```bash
-ttspotify youtube install
+ttspotify yt install
 ```
 
 To update the YouTube tools later:
 
 ```bash
-ttspotify youtube update
+ttspotify yt update
 ```
 
 Optional systemd service — install it once:
@@ -143,7 +142,7 @@ binary in place. No manual re-download needed.
   your service file when a release improves it.
 
 Updating the YouTube tools (yt-dlp and friends) is separate:
-`ttspotify youtube update`, or **Update tools** in the tray menu.
+`ttspotify yt update`, or **Update tools** in the tray menu.
 
 ## Running multiple bots
 

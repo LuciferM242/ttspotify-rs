@@ -58,10 +58,28 @@ if (Test-Path $llvmBin) {
     }
 }
 
-# Check for C++ compiler (Visual Studio Build Tools)
-$clExe = Get-ChildItem "C:\Program Files (x86)\Microsoft Visual Studio" -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+# Check for a C++ compiler (Visual Studio Build Tools, or the full IDE).
+# Ask vswhere rather than searching a directory: Build Tools 2022 installs
+# under Program Files (x86) while the 2022 IDE installs under Program Files,
+# so looking in either one alone reports a missing compiler to half of people.
+$vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+$clExe = $null
+if (Test-Path $vswhere) {
+    $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null | Select-Object -First 1
+    if ($vsPath) { $clExe = $vsPath }
+}
+if (-not $clExe) {
+    # No vswhere (it ships with 2017 and later): fall back to looking in both
+    # roots for the compiler itself.
+    foreach ($root in @("C:\Program Files\Microsoft Visual Studio", "C:\Program Files (x86)\Microsoft Visual Studio")) {
+        if (Test-Path $root) {
+            $found = Get-ChildItem $root -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $clExe = $found.FullName; break }
+        }
+    }
+}
 if ($clExe) {
-    Info "C++ compiler found: $($clExe.FullName)"
+    Info "C++ compiler found: $clExe"
 } else {
     Warn "Visual Studio C++ compiler not found."
     Warn "Install Build Tools with 'Desktop development with C++' workload from:"

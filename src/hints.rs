@@ -40,7 +40,7 @@ pub fn install_youtube_tools() -> String {
     }
     #[cfg(not(windows))]
     {
-        format!("run: {} youtube install", crate::paths::program_name())
+        format!("run: {} yt install", crate::paths::program_name())
     }
 }
 
@@ -52,7 +52,7 @@ pub fn update_youtube_tools() -> String {
     }
     #[cfg(not(windows))]
     {
-        format!("run: {} youtube update", crate::paths::program_name())
+        format!("run: {} yt update", crate::paths::program_name())
     }
 }
 
@@ -174,8 +174,8 @@ mod tests {
         let expected = [
             ("create_bot", " add "),
             ("sign_in_spotify", " auth"),
-            ("install_youtube_tools", " youtube install"),
-            ("update_youtube_tools", " youtube update"),
+            ("install_youtube_tools", " yt install"),
+            ("update_youtube_tools", " yt update"),
             ("install_service", " service install"),
             ("install_binary", " install"),
             ("restart_bot", " restart home"),

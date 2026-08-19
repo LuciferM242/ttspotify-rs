@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Build setup for tt-spotify-bot (Linux)
-# Installs required build dependencies.
+# Installs the build dependencies, plus curl (rustup is fetched with it, and
+# build-essential does not bring it) and libpulse, which the TeamTalk SDK
+# loads when the bot starts - building without it succeeds and then fails at
+# the first run.
 
 set -e
 
@@ -32,13 +35,13 @@ install_deps() {
     case $PM in
         apt)
             sudo apt-get update
-            sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev
+            sudo apt-get install -y build-essential pkg-config libssl-dev libclang-dev curl libpulse0
             ;;
         dnf)
-            sudo dnf install -y gcc pkg-config openssl-devel clang-devel
+            sudo dnf install -y gcc pkg-config openssl-devel clang-devel curl pulseaudio-libs
             ;;
         pacman)
-            sudo pacman -S --needed --noconfirm base-devel pkg-config openssl clang
+            sudo pacman -S --needed --noconfirm base-devel pkg-config openssl clang curl libpulse
             ;;
         *)
             warn "Unknown package manager. Please install manually:"
@@ -46,6 +49,8 @@ install_deps() {
             warn "  - pkg-config"
             warn "  - OpenSSL development headers (libssl-dev / openssl-devel)"
             warn "  - libclang development headers (libclang-dev / clang-devel)"
+            warn "  - curl (rustup is fetched with it)"
+            warn "  - libpulse (libpulse0 / pulseaudio-libs), which the TeamTalk SDK loads at runtime"
             ;;
     esac
 }
