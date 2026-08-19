@@ -604,17 +604,21 @@ fn prints_and_exits(command: &Option<Commands>) -> bool {
 /// Everything that is not "run a bot".
 #[cfg(not(windows))]
 async fn run_command(command: Commands) -> Result<(), BotError> {
-    use clap::CommandFactory;
-
     // The bot sets up file logging later; these commands exit before that, so
     // without a subscriber here every tracing::warn! they cause goes nowhere.
     // `list` skipping an unreadable config, or `run` reporting a bot as
     // missing when its file failed to parse, then look like the file is simply
     // not there.
+    // `auth status` answers in one line, and reaching that answer means
+    // connecting to Spotify, which librespot narrates at info level. Five lines
+    // about access points either side of the answer is not what somebody asking
+    // a yes-or-no question wants to read.
+    let quiet = matches!(command, Commands::Auth { action: Some(AuthAction::Status) });
     let _ = tracing_subscriber::fmt()
         .with_target(false)
         .with_writer(std::io::stderr)
         .without_time()
+        .with_max_level(if quiet { tracing::Level::ERROR } else { tracing::Level::INFO })
         .try_init();
 
     match command {
@@ -683,13 +687,37 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
 
         Commands::Auth { action: Some(AuthAction::Status) } => {
             let auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
-            if auth.has_cached_credentials() {
-                println!("Spotify: signed in (the login may still have expired).");
-                std::process::exit(0);
+            if !auth.has_cached_credentials() {
+                println!("Spotify: not signed in.");
+                println!("  Sign in with: {} auth", tt_spotify_bot::paths::program_name());
+                std::process::exit(1);
             }
-            println!("Spotify: not signed in.");
-            println!("  Sign in with: {} auth", tt_spotify_bot::paths::program_name());
-            std::process::exit(1);
+
+            // A saved file says only that somebody signed in here once. It
+            // says nothing about whether Spotify still accepts it - a password
+            // change or a revoked app leaves the file exactly as it was. The
+            // answer worth printing needs the credentials actually used, so
+            // this connects with them, the same cached-only way the bot's own
+            // recovery does: never an interactive flow, which from here would
+            // open a browser at somebody checking a status.
+            let session = auth.new_session();
+            match auth.connect_cached_only(&session).await {
+                Ok(()) => {
+                    match auth.cached_username() {
+                        Some(user) => println!("Spotify: signed in as {user}."),
+                        None => println!("Spotify: signed in."),
+                    }
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    println!("Spotify: the saved login did not work ({e}).");
+                    println!(
+                        "  Sign in again with: {} auth",
+                        tt_spotify_bot::paths::program_name()
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::Auth { action: None } => {
             tracing_subscriber::fmt()
