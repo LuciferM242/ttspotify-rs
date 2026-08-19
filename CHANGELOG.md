@@ -109,6 +109,10 @@
   each other's download. On Windows every bot runs inside one program, and both
   were writing to the same temporary file, so the song that got saved was a
   mixture of the two and played back broken until the cache was cleared.
+- The tray's "Clear cache" question reads properly again. Its wording was
+  written across several lines in the source and carried the indentation into
+  the box, which showed as a blank gap and a run of spaces in the middle of a
+  sentence.
 - Saved music no longer fills your disk. Every track played was kept forever
   and nothing ever removed it, so the bot's folder grew for as long as it ran -
   on a Raspberry Pi, until the card was full. There is now a limit, 1 GB by

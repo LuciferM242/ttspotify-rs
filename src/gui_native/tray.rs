@@ -483,6 +483,20 @@ fn handle_action(
     }
 }
 
+/// What the confirmation box asks before the cache is emptied.
+///
+/// Built here rather than inline so the wording can be tested: written across
+/// source lines it carried the indentation into the message, which read as a
+/// blank gap and a run of spaces mid-sentence.
+fn clear_cache_prompt(used: u64) -> String {
+    format!(
+        "Clear {} of cached music?
+
+This cache is shared by every bot on this computer. The tracks will be downloaded again the next time anyone asks for them.",
+        crate::audio_cache::human_size(used)
+    )
+}
+
 /// Empty the downloaded-audio caches, after saying how much that is.
 fn clear_cache(wnd: &gui::WindowMain) {
     let used = crate::audio_cache::size_bytes();
@@ -495,12 +509,7 @@ fn clear_cache(wnd: &gui::WindowMain) {
         return;
     }
     let answer = wnd.hwnd().MessageBox(
-        &format!(
-            "Clear {} of cached music?
-
-             This cache is shared by every bot on this computer. The tracks              will be downloaded again the next time anyone asks for them.",
-            crate::audio_cache::human_size(used)
-        ),
+        &clear_cache_prompt(used),
         "Clear cache",
         co::MB::YESNO | co::MB::ICONQUESTION,
     );
@@ -1026,5 +1035,31 @@ mod hmenu_tests {
             );
             assert!(model.entries.len() >= 5, "expected the global commands");
         });
+    }
+}
+
+/// The window itself is Windows' job; the wording it shows is ours.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clear_prompt_reads_as_one_sentence_per_line() {
+        let text = clear_cache_prompt(56 * 1024 * 1024);
+        assert!(text.starts_with("Clear 56 MB of cached music?"));
+        assert!(
+            !text.contains("  "),
+            "no run of spaces should reach the box: {text:?}"
+        );
+        assert!(
+            text.contains("The tracks will be downloaded again"),
+            "the sentence must not be broken up: {text:?}"
+        );
+    }
+
+    #[test]
+    fn the_clear_prompt_says_the_cache_is_shared() {
+        let text = clear_cache_prompt(0);
+        assert!(text.contains("shared by every bot"));
     }
 }
