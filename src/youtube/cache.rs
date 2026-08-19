@@ -14,14 +14,21 @@ pub fn track_path(video_id: &str) -> Option<PathBuf> {
     safe_name(video_id).map(|name| dir().join(format!("{name}.m4a")))
 }
 
+/// Counts downloads within this process, so two of them never share a name.
+static DOWNLOAD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// The partial file a download writes to before it is complete.
 ///
 /// A distinct name so an interrupted download is never mistaken for a cached
-/// track, and per-process so two bots fetching the same video cannot write
-/// over each other.
+/// track. The name carries both the process id and a per-download counter:
+/// the pid separates two installs sharing a cache, and the counter separates
+/// two bots inside one process - on Windows every bot in the tray runs in the
+/// same process, so a pid alone let two bots asked for the same video write
+/// into one file and publish the mixture as the cached track.
 pub fn partial_path(video_id: &str) -> Option<PathBuf> {
+    let seq = DOWNLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     safe_name(video_id)
-        .map(|name| dir().join(format!("{name}.{}.part", std::process::id())))
+        .map(|name| dir().join(format!("{name}.{}-{seq}.part", std::process::id())))
 }
 
 /// Reject anything that is not a plain YouTube id, so a crafted id cannot
@@ -96,6 +103,34 @@ mod tests {
             name.contains(&std::process::id().to_string()),
             "partial name should carry the pid, got {name}"
         );
+    }
+
+    #[test]
+    fn two_bots_in_one_process_do_not_share_a_partial_file() {
+        // Every bot in the Windows tray runs in the same process, so the pid
+        // cannot tell them apart. Two bots asked for the same video at the
+        // same time used to write into one file and publish the mixture.
+        let id = "dQw4w9WgXcQ";
+        let first = partial_path(id).unwrap();
+        let second = partial_path(id).unwrap();
+        assert_ne!(first, second, "each download needs its own file");
+        assert_eq!(first.parent(), second.parent(), "both still live in the cache");
+    }
+
+    #[test]
+    fn a_partial_is_still_recognised_as_one() {
+        // The name changed; the extension the sweep looks for must not.
+        let p = partial_path("dQw4w9WgXcQ").unwrap();
+        assert_eq!(p.extension().unwrap(), "part");
+    }
+
+    #[test]
+    fn every_download_still_publishes_to_the_one_cached_name() {
+        // Unique partials, one destination: the second copy replaces the
+        // first rather than adding a duplicate cache entry.
+        let id = "dQw4w9WgXcQ";
+        assert_eq!(track_path(id), track_path(id));
+        assert_ne!(partial_path(id), partial_path(id));
     }
 
     #[test]

@@ -105,6 +105,10 @@
   limit, so the cache could sit over its limit with no way to get back under
   it. A download now clears up after itself, and anything left by a crash is
   removed once it has sat untouched for an hour.
+- Two bots asked for the same YouTube song at the same moment no longer spoil
+  each other's download. On Windows every bot runs inside one program, and both
+  were writing to the same temporary file, so the song that got saved was a
+  mixture of the two and played back broken until the cache was cleared.
 - Saved music no longer fills your disk. Every track played was kept forever
   and nothing ever removed it, so the bot's folder grew for as long as it ran -
   on a Raspberry Pi, until the card was full. There is now a limit, 1 GB by
