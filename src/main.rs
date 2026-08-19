@@ -609,13 +609,17 @@ fn report_cache() {
     use tt_spotify_bot::audio_cache;
     let used = audio_cache::size_bytes();
     let settings = tt_spotify_bot::settings::load();
-    match settings.cache_limit_bytes() {
-        Some(limit) => println!(
+    if settings.caching_off() {
+        println!(
+            "Cached music: {} (the limit is 0, so nothing is kept)",
+            audio_cache::human_size(used)
+        );
+    } else {
+        println!(
             "Cached music: {} of {}",
             audio_cache::human_size(used),
-            audio_cache::human_size(limit)
-        ),
-        None => println!("Cached music: {} (caching is off)", audio_cache::human_size(used)),
+            audio_cache::human_size(settings.cache_limit_bytes())
+        );
     }
     println!();
     println!("Shared by every bot on this install. Clear it with:");

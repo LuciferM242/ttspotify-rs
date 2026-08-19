@@ -94,6 +94,17 @@
   2 or 3 instead of spelling the answer out.
 
 ### Fixed
+- A saved-music limit of 0 now really keeps nothing. It was being read as "no
+  limit at all", so setting it to 0 switched the size rule off and let the
+  folder grow without end - the opposite of what the setting says. Everywhere
+  the bot reports the cache now says plainly that 0 keeps nothing.
+- Downloads cut short by a skip, a stop or a shutdown no longer leave pieces of
+  a song behind. Half-finished downloads are deliberately left out of the
+  tidy-up, since deleting one would cut off the song playing, but nothing ever
+  removed them afterwards either: they piled up and still counted against the
+  limit, so the cache could sit over its limit with no way to get back under
+  it. A download now clears up after itself, and anything left by a crash is
+  removed once it has sat untouched for an hour.
 - Saved music no longer fills your disk. Every track played was kept forever
   and nothing ever removed it, so the bot's folder grew for as long as it ran -
   on a Raspberry Pi, until the card was full. There is now a limit, 1 GB by

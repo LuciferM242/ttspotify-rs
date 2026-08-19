@@ -405,31 +405,42 @@ async fn play_track(
     let partial_for_write = partial.clone();
     let download = tokio::task::spawn_blocking(move || -> Result<u64, String> {
         use std::io::Write;
-        let mut file = std::fs::File::create(&partial_for_write)
-            .map_err(|e| format!("create {}: {e}", partial_for_write.display()))?;
-        // The bytes already read to prove this client works come first, or the
-        // file starts mid-track.
-        file.write_all(&first_chunk).map_err(|e| format!("write: {e}"))?;
-        let mut total = first_chunk.len() as u64;
-        let mut chunk = [0u8; 64 * 1024];
-        loop {
-            if ctrl_for_read.stopped.load(Ordering::Relaxed) {
-                return Err("stopped".to_string());
-            }
-            match stdout.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    total += n as u64;
-                    if total > MAX_TRACK_BYTES as u64 {
-                        return Err("track exceeds maximum size".to_string());
-                    }
-                    file.write_all(&chunk[..n]).map_err(|e| format!("write: {e}"))?;
+        let mut fetch = || -> Result<u64, String> {
+            let mut file = std::fs::File::create(&partial_for_write)
+                .map_err(|e| format!("create {}: {e}", partial_for_write.display()))?;
+            // The bytes already read to prove this client works come first, or
+            // the file starts mid-track.
+            file.write_all(&first_chunk).map_err(|e| format!("write: {e}"))?;
+            let mut total = first_chunk.len() as u64;
+            let mut chunk = [0u8; 64 * 1024];
+            loop {
+                if ctrl_for_read.stopped.load(Ordering::Relaxed) {
+                    return Err("stopped".to_string());
                 }
-                Err(e) => return Err(format!("read yt-dlp output: {e}")),
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total += n as u64;
+                        if total > MAX_TRACK_BYTES as u64 {
+                            return Err("track exceeds maximum size".to_string());
+                        }
+                        file.write_all(&chunk[..n]).map_err(|e| format!("write: {e}"))?;
+                    }
+                    Err(e) => return Err(format!("read yt-dlp output: {e}")),
+                }
             }
+            file.flush().map_err(|e| format!("flush: {e}"))?;
+            Ok(total)
+        };
+        let result = fetch();
+        if result.is_err() {
+            // Clean up here rather than after the await: a skip or a stop
+            // aborts the task waiting on this worker, so the tidy-up further
+            // down never runs and the half-written file would be left behind
+            // for good. This worker always finishes, so this always runs.
+            let _ = std::fs::remove_file(&partial_for_write);
         }
-        file.flush().map_err(|e| format!("flush: {e}"))?;
-        Ok(total)
+        result
     });
 
     let download_result = download.await.map_err(|e| format!("download worker join: {e}"))?;

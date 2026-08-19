@@ -232,16 +232,17 @@ pub fn report() {
 
     let settings = crate::settings::load();
     let used = crate::audio_cache::size_bytes();
-    match settings.cache_limit_bytes() {
-        Some(limit) => println!(
+    if settings.caching_off() {
+        println!(
+            "  Cached audio: {} (the limit is 0, so nothing is kept)",
+            crate::audio_cache::human_size(used)
+        );
+    } else {
+        println!(
             "  Cached audio: {} of {}",
             crate::audio_cache::human_size(used),
-            crate::audio_cache::human_size(limit)
-        ),
-        None => println!(
-            "  Cached audio: {} (caching is off)",
-            crate::audio_cache::human_size(used)
-        ),
+            crate::audio_cache::human_size(settings.cache_limit_bytes())
+        );
     }
     if settings.cache_keep_days > 0 {
         println!("  Cached audio is dropped after {} days unplayed", settings.cache_keep_days);

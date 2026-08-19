@@ -164,6 +164,36 @@ fn is_partial(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "part")
 }
 
+/// How long a `.part` file must sit untouched before it counts as abandoned.
+///
+/// A running download writes to its file continuously, so its timestamp keeps
+/// moving; an hour of no writes means the download that owned it is gone. Left
+/// alone these accumulate forever: they are skipped by eviction (deleting a
+/// live download would truncate the track being played) but still count
+/// towards the cache size, so the cache can sit over its limit with the sweep
+/// unable to do anything about it.
+const ABANDONED_PARTIAL_AFTER: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Which half-finished downloads nobody is writing to any more.
+///
+/// Pure so the rule can be tested without waiting an hour.
+fn abandoned_partials(
+    entries: Vec<Entry>,
+    now: std::time::SystemTime,
+    after: std::time::Duration,
+) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .filter(|e| {
+            // A timestamp in the future (clock skew, a copied-in file) fails
+            // duration_since; treat that as "recent" and leave it alone.
+            now.duration_since(e.last_used)
+                .map(|idle| idle > after)
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// Every cached file, with its size and when it was last played.
 fn entries() -> Vec<Entry> {
     let mut out = Vec::new();
@@ -173,18 +203,33 @@ fn entries() -> Vec<Entry> {
     out
 }
 
+/// Every half-finished download, with when it was last written to.
+fn partial_entries() -> Vec<Entry> {
+    let mut out = Vec::new();
+    for dir in clearable_dirs() {
+        collect_matching(&dir, &mut out, true);
+    }
+    out
+}
+
 fn collect(dir: &Path, out: &mut Vec<Entry>) {
+    collect_matching(dir, out, false)
+}
+
+/// Walk `dir`, taking either the finished files or the `.part` ones.
+fn collect_matching(dir: &Path, out: &mut Vec<Entry>, want_partial: bool) {
     let Ok(read) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in read.flatten() {
         let path = entry.path();
         match entry.file_type() {
-            Ok(t) if t.is_dir() => collect(&path, out),
+            Ok(t) if t.is_dir() => collect_matching(&path, out, want_partial),
             Ok(t) if t.is_file() => {
                 // A download in progress is not a cache entry: evicting one
-                // would truncate the track being played right now.
-                if is_partial(&path) {
+                // would truncate the track being played right now. The two
+                // kinds are swept under different rules, never mixed.
+                if is_partial(&path) != want_partial {
                     continue;
                 }
                 let Ok(meta) = entry.metadata() else { continue };
@@ -199,9 +244,18 @@ fn collect(dir: &Path, out: &mut Vec<Entry>) {
 /// Apply the cache policy: drop what is stale, then what is least recently
 /// played, until the total fits.
 pub fn sweep(limit: Option<u64>, keep: std::time::Duration) -> Swept {
-    let doomed = plan_eviction(entries(), limit, keep, std::time::SystemTime::now());
+    let now = std::time::SystemTime::now();
+    let doomed = plan_eviction(entries(), limit, keep, now);
     let mut swept = Swept::default();
     for e in doomed {
+        if std::fs::remove_file(&e.path).is_ok() {
+            swept.removed += 1;
+            swept.freed += e.size;
+        }
+    }
+    // Downloads that were cut short - a skip, a stop, a crash - leave a .part
+    // file behind that no eviction rule would ever pick up.
+    for e in abandoned_partials(partial_entries(), now, ABANDONED_PARTIAL_AFTER) {
         if std::fs::remove_file(&e.path).is_ok() {
             swept.removed += 1;
             swept.freed += e.size;
@@ -217,10 +271,20 @@ pub fn sweep(limit: Option<u64>, keep: std::time::Duration) -> Swept {
     swept
 }
 
+/// The sweep's two rules as the user's settings ask for them.
+///
+/// Pure, and separate from the sweep, because this glue is where a limit of
+/// zero was being handed on as "no ceiling at all" - the opposite of what the
+/// setting says.
+fn policy(settings: &crate::settings::AppSettings) -> (Option<u64>, std::time::Duration) {
+    // Always a ceiling: zero is "keep nothing", never "unlimited".
+    (Some(settings.cache_limit_bytes()), settings.cache_keep_duration())
+}
+
 /// Apply the policy from the user's settings.
 pub fn sweep_to_settings() -> Swept {
-    let settings = crate::settings::load();
-    sweep(settings.cache_limit_bytes(), settings.cache_keep_duration())
+    let (limit, keep) = policy(&crate::settings::load());
+    sweep(limit, keep)
 }
 
 /// Render a byte count the way a person reads it.
@@ -624,6 +688,120 @@ mod tests {
         assert!(fresh.exists(), "a track written just now should stay");
 
         let _ = std::fs::remove_file(&fresh);
+    }
+
+    #[test]
+    fn a_limit_of_zero_reaches_the_sweep_as_a_ceiling_of_zero() {
+        // The setting says "0 keeps nothing". Handing that on as "no limit"
+        // switched the size rule off and let the cache grow without end.
+        let s = crate::settings::AppSettings { cache_limit_mb: 0, ..Default::default() };
+        let (limit, _) = policy(&s);
+        assert_eq!(limit, Some(0), "zero must stay a ceiling, not become None");
+    }
+
+    #[test]
+    fn an_ordinary_limit_reaches_the_sweep_in_bytes() {
+        let s = crate::settings::AppSettings { cache_limit_mb: 256, ..Default::default() };
+        let (limit, keep) = policy(&s);
+        assert_eq!(limit, Some(256 * 1024 * 1024));
+        assert_eq!(keep, s.cache_keep_duration());
+    }
+
+    #[test]
+    fn a_zero_limit_from_the_settings_empties_the_cache() {
+        // End to end on the rule above: the planner must doom everything.
+        let s = crate::settings::AppSettings { cache_limit_mb: 0, ..Default::default() };
+        let (limit, keep) = policy(&s);
+        let doomed = plan_eviction(vec![entry("a", 10, 0), entry("b", 10, 0)], limit, keep, now());
+        assert_eq!(doomed.len(), 2, "a zero limit must keep nothing");
+    }
+
+    #[test]
+    fn a_download_left_behind_by_a_skip_is_eventually_reaped() {
+        // Cancelling a download cannot always delete its own file, so the
+        // sweep has to be able to. Untouched for over an hour means gone.
+        let stale = Entry {
+            path: PathBuf::from("youtube/abc.123.part"),
+            size: 100,
+            last_used: now() - Duration::from_secs(2 * 60 * 60),
+        };
+        let reaped = abandoned_partials(vec![stale], now(), ABANDONED_PARTIAL_AFTER);
+        assert_eq!(reaped.len(), 1);
+    }
+
+    #[test]
+    fn a_download_still_running_is_left_alone() {
+        // It is being written to right now: deleting it would truncate the
+        // track that is playing.
+        let live = Entry {
+            path: PathBuf::from("youtube/abc.123.part"),
+            size: 100,
+            last_used: now() - Duration::from_secs(30),
+        };
+        assert!(abandoned_partials(vec![live], now(), ABANDONED_PARTIAL_AFTER).is_empty());
+    }
+
+    #[test]
+    fn a_partial_with_a_future_timestamp_is_not_reaped() {
+        let future = Entry {
+            path: PathBuf::from("youtube/abc.123.part"),
+            size: 100,
+            last_used: now() + Duration::from_secs(60 * 60),
+        };
+        assert!(abandoned_partials(vec![future], now(), ABANDONED_PARTIAL_AFTER).is_empty());
+    }
+
+    #[test]
+    fn the_two_listings_do_not_overlap() {
+        // Finished files and half-finished ones are swept by different rules,
+        // so a file must appear in exactly one listing or it is either missed
+        // or deleted twice.
+        let cache = scratch("listings");
+        write(&cache.join("youtube/done.m4a"), 10);
+        write(&cache.join("youtube/busy.7.part"), 10);
+
+        let mut finished = Vec::new();
+        let mut partials = Vec::new();
+        for dir in clearable_dirs_under(&cache) {
+            collect_matching(&dir, &mut finished, false);
+            collect_matching(&dir, &mut partials, true);
+        }
+        let leaf = |v: &[Entry]| -> Vec<String> {
+            v.iter().map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(leaf(&finished), vec!["done.m4a"]);
+        assert_eq!(leaf(&partials), vec!["busy.7.part"]);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    #[test]
+    fn an_abandoned_download_is_deleted_from_disk() {
+        let cache = scratch("reap");
+        let orphan = cache.join("youtube/gone.42.part");
+        let live = cache.join("youtube/busy.43.part");
+        write(&orphan, 500);
+        write(&live, 500);
+        let old = std::time::SystemTime::now() - Duration::from_secs(3 * 60 * 60);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&orphan)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        let mut partials = Vec::new();
+        for dir in clearable_dirs_under(&cache) {
+            collect_matching(&dir, &mut partials, true);
+        }
+        let reaped = abandoned_partials(partials, SystemTime::now(), ABANDONED_PARTIAL_AFTER);
+        for e in &reaped {
+            std::fs::remove_file(&e.path).unwrap();
+        }
+
+        assert_eq!(reaped.len(), 1);
+        assert!(!orphan.exists(), "the abandoned download should be gone");
+        assert!(live.exists(), "a download in progress must stay");
+        let _ = std::fs::remove_dir_all(&cache);
     }
 
     #[test]

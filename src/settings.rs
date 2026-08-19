@@ -64,9 +64,16 @@ pub fn load() -> AppSettings {
 }
 
 impl AppSettings {
-    /// The ceiling in bytes, or `None` to keep nothing.
-    pub fn cache_limit_bytes(&self) -> Option<u64> {
-        (self.cache_limit_mb > 0).then(|| self.cache_limit_mb.saturating_mul(1024 * 1024))
+    /// The ceiling in bytes. Zero is a real ceiling - keep nothing - not the
+    /// absence of one, so it is always a number and never an "unset" that the
+    /// sweep would read as "no limit at all".
+    pub fn cache_limit_bytes(&self) -> u64 {
+        self.cache_limit_mb.saturating_mul(1024 * 1024)
+    }
+
+    /// True when the user asked for no saved music at all.
+    pub fn caching_off(&self) -> bool {
+        self.cache_limit_mb == 0
     }
 
     /// How long an unplayed track is kept. A very large span when the age rule
@@ -151,20 +158,25 @@ mod tests {
     }
 
     #[test]
-    fn the_limit_reaches_librespot_as_bytes() {
+    fn the_limit_is_reported_in_bytes() {
         let s = AppSettings { cache_limit_mb: 512, ..AppSettings::default() };
-        assert_eq!(s.cache_limit_bytes(), Some(512 * 1024 * 1024));
+        assert_eq!(s.cache_limit_bytes(), 512 * 1024 * 1024);
+        assert!(!s.caching_off());
     }
 
     #[test]
     fn zero_means_keep_nothing_rather_than_keep_everything() {
+        // A zero ceiling used to arrive at the sweep as "no ceiling", which
+        // switched the size rule off and let the cache grow without end -
+        // the exact opposite of what the box says.
         let s = AppSettings { cache_limit_mb: 0, ..AppSettings::default() };
-        assert_eq!(s.cache_limit_bytes(), None);
+        assert_eq!(s.cache_limit_bytes(), 0, "zero must stay a ceiling of zero");
+        assert!(s.caching_off());
     }
 
     #[test]
     fn an_absurd_limit_does_not_wrap_around() {
         let s = AppSettings { cache_limit_mb: u64::MAX, ..AppSettings::default() };
-        assert!(s.cache_limit_bytes().unwrap() > 0);
+        assert!(s.cache_limit_bytes() > 0);
     }
 }
