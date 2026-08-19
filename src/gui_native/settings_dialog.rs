@@ -164,8 +164,14 @@ mod tests {
         assert!(days.to_lowercase().contains("days"), "got {days:?}");
     }
 
+    /// The two round-trip tests below both write the one real settings.json.
+    /// Run at the same time they overwrite each other, and one restoring its
+    /// copy mid-way through the other reads as a save that did not stick.
+    static SETTINGS_FILE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_cache_settings_survive_a_save_and_load() {
+        let _guard = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let original = settings::load();
         let changed = AppSettings {
             cache_limit_mb: 321,
@@ -183,6 +189,7 @@ mod tests {
     fn the_dialog_reads_and_writes_the_same_setting() {
         // Guards against the save path and the load path drifting apart, which
         // would show as a checkbox that forgets what the user chose.
+        let _guard = SETTINGS_FILE.lock().unwrap_or_else(|e| e.into_inner());
         let original = settings::load();
 
         let flipped = AppSettings {
