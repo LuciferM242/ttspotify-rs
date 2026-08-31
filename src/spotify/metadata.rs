@@ -223,6 +223,13 @@ impl SpotifyMetadata {
 
     /// Fetch radio recommendations using Spotify's radio-apollo endpoint.
     /// This is the same engine Spotify uses for autoplay/radio.
+    ///
+    /// `exclude_ids` — what has already been played or queued — is handed to
+    /// Spotify itself as the station's history, so the server picks around it
+    /// the way real autoplay does. Filtering only on our side threw away
+    /// picks after the fact, and the server, never told what had played,
+    /// recommended the same songs again batch after batch. The local filter
+    /// stays as a backstop for whatever the server still repeats.
     pub async fn get_radio_tracks(
         &self,
         seed_track_uri: &SpotifyUri,
@@ -230,44 +237,37 @@ impl SpotifyMetadata {
         exclude_ids: &[String],
     ) -> Result<Vec<SpotifyTrack>, BotError> {
         let uri_str = seed_track_uri.to_uri();
+        let previous: Vec<librespot_core::SpotifyId> = exclude_ids
+            .iter()
+            .filter_map(|id| librespot_core::SpotifyId::from_base62(id).ok())
+            .collect();
 
+        // The "tracks" scope is the autoplay continuation: it answers tracks
+        // directly and accepts the played history. The "stations" scope
+        // ignores the history and wraps the same array in a station object.
         let response = self.session().spclient()
-            .get_apollo_station("stations", &uri_str, Some(limit), vec![], true)
+            .get_apollo_station("tracks", &uri_str, Some(limit), previous, true)
             .await
             .map_err(|e| BotError::Playback(format!("Radio fetch failed: {e}")))?;
 
-        let json_str = String::from_utf8_lossy(&response);
-        let json: serde_json::Value = serde_json::from_str(&json_str)
+        let json: serde_json::Value = serde_json::from_slice(&response)
             .map_err(|e| BotError::Playback(format!("Radio parse failed: {e}")))?;
 
-        let track_uris: Vec<&str> = json["tracks"].as_array()
-            .map(|arr| arr.iter().filter_map(|t| t["uri"].as_str()).collect())
-            .unwrap_or_default();
+        let uris: Vec<SpotifyUri> = station_track_uris(&json)
+            .iter()
+            .filter_map(|uri_text| SpotifyUri::from_uri(uri_text).ok())
+            .filter(|uri| {
+                let id = uri.to_id();
+                !exclude_ids.iter().any(|eid| eid == &id)
+            })
+            .take(limit)
+            .collect();
 
-        if track_uris.is_empty() {
+        if uris.is_empty() {
             return Err(BotError::NoResults);
         }
 
-        let mut tracks = Vec::new();
-        for uri_str in track_uris.into_iter() {
-            if tracks.len() >= limit {
-                break;
-            }
-            let uri = match SpotifyUri::from_uri(uri_str) {
-                Ok(u) => u,
-                Err(_) => continue,
-            };
-            // Skip tracks already in the queue
-            let id = uri.to_id();
-            if exclude_ids.iter().any(|eid| eid == &id) {
-                continue;
-            }
-            match self.fetch_track(&uri).await {
-                Ok(t) => tracks.push(t),
-                Err(e) => tracing::warn!("Failed to fetch radio track {uri_str}: {e}"),
-            }
-        }
-
+        let tracks = self.fetch_tracks_meta(&uris).await;
         if tracks.is_empty() {
             Err(BotError::NoResults)
         } else {
@@ -360,6 +360,26 @@ impl SpotifyMetadata {
 }
 
 
+/// The track uris a station or autoplay reply carries.
+///
+/// The "tracks" scope answers a bare `{"tracks": ...}`, the "stations" scope
+/// wraps the same array in a station object, and a seed-to-playlist reply
+/// uses `mediaItems` instead. All three are read here so the caller does not
+/// have to know which shape it asked for.
+pub(crate) fn station_track_uris(json: &serde_json::Value) -> Vec<String> {
+    json.get("tracks")
+        .or_else(|| json.get("mediaItems"))
+        .and_then(|items| items.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.get("uri").and_then(|uri| uri.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The spotify uri a context page's `page_url` stands for.
 ///
 /// A resolved context inlines the pages it can and leaves the rest as an
@@ -426,6 +446,50 @@ fn search_context_uri(query: &str) -> String {
 mod tests {
     use super::page_url_to_uri;
     use super::search_context_uri;
+
+    #[test]
+    fn a_tracks_scope_reply_lists_its_tracks() {
+        // What /radio-apollo/v3/tracks answers, trimmed.
+        let reply = r#"{"tracks":[{"uri":"spotify:track:4WedBZTeFawYCBCgfj36iK","uid":"08c3"},
+                                  {"uri":"spotify:track:54L0ET2WHVHKpEce8NYKLX","uid":"5bc9"}],
+                        "next_page_url":"hm://radio-apollo/v3/tracks"}"#;
+        let json: serde_json::Value = serde_json::from_str(reply).expect("json");
+        assert_eq!(
+            super::station_track_uris(&json),
+            vec![
+                "spotify:track:4WedBZTeFawYCBCgfj36iK".to_string(),
+                "spotify:track:54L0ET2WHVHKpEce8NYKLX".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stations_scope_reply_lists_the_tracks_inside_the_station() {
+        let reply = r#"{"uri":"spotify:station:track:54L0ET2WHVHKpEce8NYKLX","title":"orange",
+                        "seeds":["spotify:track:54L0ET2WHVHKpEce8NYKLX"],
+                        "tracks":[{"uri":"spotify:track:4WedBZTeFawYCBCgfj36iK"}]}"#;
+        let json: serde_json::Value = serde_json::from_str(reply).expect("json");
+        assert_eq!(
+            super::station_track_uris(&json),
+            vec!["spotify:track:4WedBZTeFawYCBCgfj36iK".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_media_items_reply_lists_its_items() {
+        let reply = r#"{"total":1,"mediaItems":[{"uri":"spotify:playlist:37i9dQZF1E8PVA1jdbapzL"}]}"#;
+        let json: serde_json::Value = serde_json::from_str(reply).expect("json");
+        assert_eq!(
+            super::station_track_uris(&json),
+            vec!["spotify:playlist:37i9dQZF1E8PVA1jdbapzL".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_reply_with_no_tracks_lists_nothing() {
+        let json: serde_json::Value = serde_json::from_str(r#"{"correlation_id":"x"}"#).unwrap();
+        assert!(super::station_track_uris(&json).is_empty());
+    }
 
     #[test]
     fn a_context_page_url_becomes_the_uri_it_stands_for() {
