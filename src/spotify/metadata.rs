@@ -77,23 +77,11 @@ impl SpotifyMetadata {
 
     // ---- helpers ----
 
-    /// Convert a librespot Track + URI into our SpotifyTrack.
-    fn track_to_spotify(track: &librespot_metadata::Track, uri: &SpotifyUri) -> SpotifyTrack {
-        SpotifyTrack {
-            id: uri.to_id(),
-            name: track.name.clone(),
-            artists: track.artists.0.iter().map(|a| a.name.clone()).collect(),
-            album: track.album.name.clone(),
-            duration_ms: track.duration as u32,
-            uri: uri.to_uri(),
-        }
-    }
-
     /// Fetch a Track from Spotify and convert to SpotifyTrack.
     async fn fetch_track(&self, uri: &SpotifyUri) -> Result<SpotifyTrack, BotError> {
         let track = librespot_metadata::Track::get(&self.session(), uri).await
             .map_err(|e| BotError::Playback(format!("Failed to fetch track metadata: {e}")))?;
-        Ok(Self::track_to_spotify(&track, uri))
+        Ok(track_to_spotify(&track, uri))
     }
 
     // ---- librespot-metadata (Mercury protocol, no HTTP) ----
@@ -109,31 +97,41 @@ impl SpotifyMetadata {
             .map_err(|e| BotError::Playback(format!("Failed to fetch album metadata: {e}")))?;
 
         let album_name = album.name.clone();
-        let mut tracks = Vec::new();
-
-        for track_uri in album.tracks() {
-            match self.fetch_track(track_uri).await {
-                Ok(mut t) => {
-                    t.album = album_name.clone();
-                    tracks.push(t);
-                }
-                Err(e) => tracing::warn!("Failed to fetch track {track_uri:?}: {e}"),
-            }
+        let uris: Vec<SpotifyUri> = album.tracks().cloned().collect();
+        let mut tracks = self.fetch_tracks_meta(&uris).await;
+        for t in tracks.iter_mut() {
+            t.album = album_name.clone();
         }
 
         Ok(tracks)
     }
 
-    /// Fetch metadata for each URI, skipping failures with a warning.
+    /// Fetch metadata for every URI in one batched request per few hundred
+    /// tracks (see `spotify::batch`), skipping unavailable ones with a
+    /// warning. A whole-batch failure falls back to per-track lookups rather
+    /// than losing the list: the batch endpoint failing outright is the odd
+    /// case, and the slow path is only as slow as this function always was.
     pub async fn fetch_tracks_meta(&self, uris: &[SpotifyUri]) -> Vec<SpotifyTrack> {
-        let mut tracks = Vec::with_capacity(uris.len());
-        for uri in uris {
-            match self.fetch_track(uri).await {
-                Ok(t) => tracks.push(t),
-                Err(e) => tracing::warn!("Failed to fetch track {uri:?}: {e}"),
+        let uri_strings: Vec<String> = uris.iter().map(|u| u.to_uri()).collect();
+        match crate::spotify::batch::tracks_for_uris(&self.session(), &uri_strings).await {
+            Ok(found) => {
+                for uri in found.missing.iter() {
+                    tracing::warn!("Skipping {uri}: no metadata");
+                }
+                found.tracks
+            }
+            Err(e) => {
+                tracing::warn!("Batched metadata failed ({e}); fetching per track");
+                let mut tracks = Vec::with_capacity(uris.len());
+                for uri in uris {
+                    match self.fetch_track(uri).await {
+                        Ok(t) => tracks.push(t),
+                        Err(e) => tracing::warn!("Failed to fetch track {uri:?}: {e}"),
+                    }
+                }
+                tracks
             }
         }
-        tracks
     }
 
     /// All track URIs of a playlist (metadata is fetched in batches later).
@@ -243,25 +241,19 @@ impl SpotifyMetadata {
         let ctx = self.session().spclient().get_context(&search_uri).await
             .map_err(|e| BotError::Playback(format!("Search failed: {e}")))?;
 
-        let mut tracks = Vec::new();
-        for page in ctx.pages.iter() {
-            for track_ctx in page.tracks.iter() {
-                if tracks.len() >= limit as usize { break; }
-                let uri_str = match track_ctx.uri.as_deref() {
-                    Some(u) => u,
-                    None => continue,
-                };
-                let uri = match SpotifyUri::from_uri(uri_str) {
-                    Ok(u) => u,
-                    Err(_) => continue,
-                };
-                match self.fetch_track(&uri).await {
-                    Ok(t) => tracks.push(t),
-                    Err(_) => continue,
-                }
-            }
-            if tracks.len() >= limit as usize { break; }
-        }
+        // One batched lookup for the hits instead of one request per hit. A
+        // couple of extras are taken so an unavailable track does not shrink
+        // the result below the limit the caller asked for.
+        let uris: Vec<SpotifyUri> = ctx
+            .pages
+            .iter()
+            .flat_map(|page| page.tracks.iter())
+            .filter_map(|track_ctx| SpotifyUri::from_uri(track_ctx.uri.as_deref()?).ok())
+            .take(limit as usize + 3)
+            .collect();
+
+        let mut tracks = self.fetch_tracks_meta(&uris).await;
+        tracks.truncate(limit as usize);
 
         if tracks.is_empty() {
             return Err(BotError::NoResults);
@@ -325,6 +317,22 @@ impl SpotifyMetadata {
     }
 }
 
+
+/// Convert a librespot Track + URI into our SpotifyTrack.
+///
+/// A free function rather than a method because `spotify::batch` performs the
+/// same conversion on rows it decodes itself; one conversion means a batched
+/// row and a single lookup can never disagree about metadata.
+pub(crate) fn track_to_spotify(track: &librespot_metadata::Track, uri: &SpotifyUri) -> SpotifyTrack {
+    SpotifyTrack {
+        id: uri.to_id(),
+        name: track.name.clone(),
+        artists: track.artists.0.iter().map(|a| a.name.clone()).collect(),
+        album: track.album.name.clone(),
+        duration_ms: track.duration as u32,
+        uri: uri.to_uri(),
+    }
+}
 
 /// Build a `spotify:search:` context URI from free-form query text.
 ///

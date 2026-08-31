@@ -18,6 +18,12 @@ librespot-core = { git = "https://github.com/librespot-org/librespot", rev = "15
 librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-metadata = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+# The batched metadata endpoint is a protobuf request librespot-metadata does
+# not build: it asks for one track per call, which is one HTTP request per
+# track. Building the batch in spotify::batch needs the protobuf types
+# directly. Both are already in the tree as librespot dependencies.
+librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false }
+protobuf = "3"
 
 # YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
 # whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.

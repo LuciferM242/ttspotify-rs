@@ -922,8 +922,8 @@ fn schedule_radio_prefetch(
 }
 
 /// How many tracks each background batch fetches, and the pause between
-/// batches. Pacing keeps the request stream looking like a normal client.
-const BULK_BG_BATCH: usize = 25;
+/// batches. One batch is one metadata request.
+const BULK_BG_BATCH: usize = crate::spotify::batch::BATCH_SIZE;
 const BULK_BG_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The not-yet-loaded remainder of a bulk source, per service: Spotify tracks
