@@ -143,17 +143,59 @@ impl SpotifyMetadata {
 
     /// URIs of the user's Liked Songs, newest first, via the same spclient
     /// context endpoint Connect devices use for `spotify:user:<id>:collection`.
+    ///
+    /// A resolved context inlines the pages it can and leaves the rest as
+    /// `page_url` links; a large library only arrives in full by following
+    /// them. Reading only the inlined pages silently truncated big libraries
+    /// to their first page.
     pub async fn get_liked_track_uris(&self) -> Result<Vec<SpotifyUri>, BotError> {
-        let ctx_uri = format!("spotify:user:{}:collection", self.session().username());
-        let ctx = self.session().spclient().get_context(&ctx_uri).await
-            .map_err(|e| BotError::Playback(format!("Liked songs fetch failed: {e}")))?;
+        // Every page is one request, and a page that names itself would loop
+        // forever. A liked library arrives in far fewer pages than this; the
+        // cap only exists so a malformed answer cannot spin.
+        const MAX_CONTEXT_PAGES: usize = 200;
 
-        let mut uris = Vec::new();
-        for page in ctx.pages.iter() {
-            for track_ctx in page.tracks.iter() {
-                if let Some(uri_str) = track_ctx.uri.as_deref() {
-                    if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
-                        uris.push(uri);
+        let session = self.session();
+        let mut uris: Vec<SpotifyUri> = Vec::new();
+        // Walked in order, not popped: Liked Songs come back newest first,
+        // and a later page belongs after the pages that named it.
+        let mut queue: Vec<String> =
+            vec![format!("spotify:user:{}:collection", session.username())];
+        let mut at = 0usize;
+
+        while at < queue.len() && at < MAX_CONTEXT_PAGES {
+            let next = queue[at].clone();
+            at += 1;
+
+            let ctx = session.spclient().get_context(&next).await
+                .map_err(|e| BotError::Playback(format!("Liked songs fetch failed: {e}")))?;
+
+            for page in ctx.pages.iter() {
+                for track_ctx in page.tracks.iter() {
+                    if let Some(uri_str) = track_ctx.uri.as_deref() {
+                        if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
+                            uris.push(uri);
+                        }
+                    }
+                }
+                // A page with tracks is done; one with only a url has to be
+                // asked for. Both fields can be set, which is why the tracks
+                // are read first and the url only followed when there were
+                // none.
+                if page.tracks.is_empty() {
+                    for url in [page.page_url.as_deref(), page.next_page_url.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .filter(|url| !url.is_empty())
+                    {
+                        if let Some(uri) = page_url_to_uri(url) {
+                            // A page that names itself, or one already
+                            // queued, would otherwise loop.
+                            if !queue.contains(&uri) {
+                                queue.push(uri);
+                            }
+                        } else {
+                            tracing::warn!("Unreadable context page url: {url}");
+                        }
                     }
                 }
             }
@@ -318,6 +360,27 @@ impl SpotifyMetadata {
 }
 
 
+/// The spotify uri a context page's `page_url` stands for.
+///
+/// A resolved context inlines the pages it can and leaves the rest as an
+/// `hm://` url; reading one means turning that url back into a spotify uri
+/// and asking `/context-resolve` again. The url looks like
+/// `hm://artistplaycontext/v1/page/spotify/album/<id>/km_artist`, so the uri
+/// is the three segments starting at `spotify`, joined with colons.
+pub(crate) fn page_url_to_uri(page_url: &str) -> Option<String> {
+    let rest = page_url.strip_prefix("hm://").unwrap_or(page_url);
+    let parts: Vec<&str> = rest
+        .split('/')
+        .skip_while(|part| *part != "spotify")
+        .take(3)
+        .collect();
+    if parts.len() == 3 {
+        Some(parts.join(":"))
+    } else {
+        None
+    }
+}
+
 /// Convert a librespot Track + URI into our SpotifyTrack.
 ///
 /// A free function rather than a method because `spotify::batch` performs the
@@ -361,7 +424,36 @@ fn search_context_uri(query: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::page_url_to_uri;
     use super::search_context_uri;
+
+    #[test]
+    fn a_context_page_url_becomes_the_uri_it_stands_for() {
+        // The shape Spotify actually answers with.
+        assert_eq!(
+            page_url_to_uri(
+                "hm://artistplaycontext/v1/page/spotify/album/5LFzwirfFwBKXJQGfwmiMY/km_artist"
+            ),
+            Some("spotify:album:5LFzwirfFwBKXJQGfwmiMY".to_string())
+        );
+    }
+
+    #[test]
+    fn a_page_url_without_the_hm_scheme_still_reads() {
+        assert_eq!(
+            page_url_to_uri("/v1/page/spotify/playlist/652TD735fW0JesE9VgHhzS"),
+            Some("spotify:playlist:652TD735fW0JesE9VgHhzS".to_string())
+        );
+    }
+
+    #[test]
+    fn a_page_url_naming_nothing_is_skipped_rather_than_guessed() {
+        // No `spotify` segment, or a truncated one: following either would
+        // ask for a context that does not exist.
+        assert_eq!(page_url_to_uri("hm://something/else/entirely"), None);
+        assert_eq!(page_url_to_uri("hm://v1/page/spotify/album"), None);
+        assert_eq!(page_url_to_uri(""), None);
+    }
 
     #[test]
     fn ascii_query_uses_plus_for_spaces() {
