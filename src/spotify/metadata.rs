@@ -447,6 +447,88 @@ mod tests {
     use super::page_url_to_uri;
     use super::search_context_uri;
 
+    /// Live test, as below: the whole liked library must arrive, following
+    /// the pages the context reply does not inline.
+    #[tokio::test]
+    #[ignore = "hits Spotify; needs TTSPOTIFY_LIVE_CACHE with a login"]
+    async fn the_liked_library_arrives_beyond_the_first_page() {
+        use std::sync::Arc;
+
+        let dir = std::env::var("TTSPOTIFY_LIVE_CACHE").expect("TTSPOTIFY_LIVE_CACHE");
+        let dir = std::path::PathBuf::from(dir);
+        let cache =
+            librespot_core::cache::Cache::new(Some(dir.join("credentials")), None, None, None)
+                .expect("cache");
+        let credentials = cache.credentials().expect("a stored login");
+        let session = librespot_core::session::Session::new(
+            librespot_core::config::SessionConfig::default(),
+            Some(cache),
+        );
+        session.connect(credentials, false).await.expect("connect");
+
+        let metadata =
+            super::SpotifyMetadata::new(Arc::new(parking_lot::Mutex::new(session.clone())));
+        let uris = metadata.get_liked_track_uris().await.expect("liked");
+        println!("liked library: {} tracks", uris.len());
+        assert!(!uris.is_empty());
+        session.shutdown();
+    }
+
+    /// Live test. Needs TTSPOTIFY_LIVE_CACHE pointing at a directory holding
+    /// a completed librespot login in `credentials/`; run with --ignored.
+    ///
+    /// Exists because the radio moved from the "stations" scope to the
+    /// "tracks" scope with a played history — the reply shape and the
+    /// history handling are Spotify's, and only Spotify can confirm them.
+    #[tokio::test]
+    #[ignore = "hits Spotify; needs TTSPOTIFY_LIVE_CACHE with a login"]
+    async fn radio_avoids_what_it_is_told_was_played() {
+        use std::sync::Arc;
+
+        let dir = std::env::var("TTSPOTIFY_LIVE_CACHE").expect("TTSPOTIFY_LIVE_CACHE");
+        let dir = std::path::PathBuf::from(dir);
+        let cache = librespot_core::cache::Cache::new(
+            Some(dir.join("credentials")),
+            None,
+            None,
+            None,
+        )
+        .expect("cache");
+        let credentials = cache.credentials().expect("a stored login");
+        let session = librespot_core::session::Session::new(
+            librespot_core::config::SessionConfig::default(),
+            Some(cache),
+        );
+        session.connect(credentials, false).await.expect("connect");
+
+        let metadata =
+            super::SpotifyMetadata::new(Arc::new(parking_lot::Mutex::new(session.clone())));
+        let seed = librespot_core::spotify_uri::SpotifyUri::from_uri(
+            "spotify:track:0DiWol3AO6WpXZgp0goxAV", // Around the World
+        )
+        .expect("seed uri");
+
+        // First batch with no history.
+        let first = metadata.get_radio_tracks(&seed, 5, &[]).await.expect("radio");
+        assert!(!first.is_empty(), "the tracks scope answered nothing");
+
+        // Second batch told the first was played: nothing may repeat.
+        let played: Vec<String> = first.iter().map(|t| t.id.clone()).collect();
+        let second = metadata
+            .get_radio_tracks(&seed, 5, &played)
+            .await
+            .expect("radio continuation");
+        assert!(!second.is_empty());
+        for track in second.iter() {
+            assert!(
+                !played.contains(&track.id),
+                "{} came back although it was reported played",
+                track.name
+            );
+        }
+        session.shutdown();
+    }
+
     #[test]
     fn a_tracks_scope_reply_lists_its_tracks() {
         // What /radio-apollo/v3/tracks answers, trimmed.

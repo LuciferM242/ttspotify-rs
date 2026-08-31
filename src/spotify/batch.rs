@@ -227,4 +227,42 @@ mod tests {
         assert!(expanded.tracks.is_empty());
         assert!(expanded.missing.is_empty());
     }
+
+    /// Live test. Needs a directory holding a completed librespot login in
+    /// `credentials/` — set TTSPOTIFY_LIVE_CACHE to it and run with
+    /// --ignored.
+    #[tokio::test]
+    #[ignore = "hits Spotify; needs TTSPOTIFY_LIVE_CACHE with a login"]
+    async fn a_batch_answers_real_metadata_in_one_request() {
+        let dir = std::env::var("TTSPOTIFY_LIVE_CACHE").expect("TTSPOTIFY_LIVE_CACHE");
+        let dir = std::path::PathBuf::from(dir);
+        let cache = librespot_core::cache::Cache::new(
+            Some(dir.join("credentials")),
+            None,
+            None,
+            None,
+        )
+        .expect("cache");
+        let credentials = cache.credentials().expect("a stored login");
+        let session =
+            Session::new(librespot_core::config::SessionConfig::default(), Some(cache));
+        session.connect(credentials, false).await.expect("connect");
+
+        // Three well-known tracks plus a repeat and a malformed id: the
+        // repeat must come back twice, the junk must land in `missing`.
+        let uris = vec![
+            "spotify:track:6rqhFgbbKwnb9MLmUQDhG6".to_string(), // Bohemian Rhapsody
+            "spotify:track:0DiWol3AO6WpXZgp0goxAV".to_string(), // Around the World
+            "spotify:track:6rqhFgbbKwnb9MLmUQDhG6".to_string(),
+            "spotify:track:0000000000000000000000".to_string(),
+        ];
+        let answer = tracks_for_uris(&session, &uris).await.expect("batch");
+        assert_eq!(answer.tracks.len(), 3, "repeat kept, junk missing");
+        assert_eq!(answer.tracks[0].id, answer.tracks[2].id);
+        assert!(!answer.tracks[0].name.is_empty());
+        assert!(!answer.tracks[0].artists.is_empty());
+        assert!(answer.tracks[0].duration_ms > 0);
+        assert_eq!(answer.missing.len(), 1);
+        session.shutdown();
+    }
 }
