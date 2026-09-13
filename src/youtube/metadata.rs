@@ -112,9 +112,20 @@ impl YouTubeMetadata {
         // The default is the process working directory, which under systemd
         // may be unwritable (silently losing the cache) and during development
         // litters the repo root.
-        let client = RustyPipe::builder()
+        // Locale matters more than it looks: YouTube Music ranks by it, and
+        // the library defaults to US/en, so an unset bot searches as an
+        // American wherever it actually runs. Regional music ranked badly for
+        // exactly this reason.
+        let mut builder = RustyPipe::builder()
             .no_botguard()
-            .storage_dir(crate::paths::cache_dir())
+            .storage_dir(crate::paths::cache_dir());
+        if let Some(c) = parse_country(&config.youtube_country) {
+            builder = builder.country(c);
+        }
+        if let Some(l) = parse_language(&config.youtube_language) {
+            builder = builder.lang(l);
+        }
+        let client = builder
             .build()
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
         // Resolve bundled paths but don't require them — falling back to PATH
@@ -208,14 +219,14 @@ impl YouTubeMetadata {
                 Ok(t) => Ok(vec![t]),
                 Err(e) => {
                     tracing::debug!("Bare token '{id}' is not a video id ({e}); searching instead");
-                    self.search_tracks(query, 1).await
+                    self.search_top_track(query).await
                 }
             },
             Some(YouTubeRef::Playlist(id)) => self.fetch_playlist(&id).await,
             Some(YouTubeRef::Album(id)) => self.fetch_album(&id).await,
             // A free-form search returns just the top hit so play_and_queue
             // doesn't accidentally enqueue 5 tracks for a single song name.
-            None => self.search_tracks(query, 1).await,
+            None => self.search_top_track(query).await,
         }
     }
 
@@ -300,6 +311,11 @@ impl YouTubeMetadata {
 
     /// Search YouTube Music for tracks matching the query.
     /// Returns up to `limit` results (sliced from the first page).
+    ///
+    /// Deliberately the songs shelf: this backs the numbered `search` list,
+    /// where a tidy list of actual songs beats a better single top hit. The
+    /// all-categories search ranks its first result better but its tail worse,
+    /// mixing in remixes and live clips.
     pub async fn search_tracks(&self, query: &str, limit: u8) -> Result<Vec<YouTubeTrack>, BotError> {
         let q = self.client.query();
         let result = retry_once(|| q.music_search_tracks(query))
@@ -316,6 +332,35 @@ impl YouTubeMetadata {
             Err(BotError::NoResults)
         } else {
             Ok(tracks)
+        }
+    }
+
+    /// The single best song for a query, for a bare play: the first YouTube
+    /// Music song in the all-categories ranking, else the songs shelf.
+    ///
+    /// Uploaded videos in the ranking are passed over. YouTube returns
+    /// different top results on repeated runs, so tests must not pin a song.
+    pub async fn search_top_track(&self, query: &str) -> Result<Vec<YouTubeTrack>, BotError> {
+        let q = self.client.query();
+        match retry_once(|| q.music_search_main(query)).await {
+            Ok(result) => {
+                if let Some(corrected) = &result.corrected_query {
+                    tracing::info!("YouTube: searched {corrected:?} instead of {query:?}");
+                }
+                match top_song(result.items.items) {
+                    Some(t) => Ok(vec![track_item_to_track(t)]),
+                    None => {
+                        tracing::debug!("YouTube: no song among the top results for {query:?}; using the songs shelf");
+                        self.search_tracks(query, 1).await
+                    }
+                }
+            }
+            Err(e) => {
+                // Never fail the play over the better-ranked path being
+                // unavailable; the songs shelf is still a usable answer.
+                tracing::warn!("YouTube: top-result search failed ({e}); using the songs shelf");
+                self.search_tracks(query, 1).await
+            }
         }
     }
 
@@ -410,6 +455,38 @@ impl YouTubeMetadata {
     }
 }
 
+/// Parse a two-letter country code from config. An unset or unrecognised value
+/// yields `None`, which leaves the library's own default in place rather than
+/// failing to start over a typo.
+fn parse_country(code: &str) -> Option<rustypipe::param::Country> {
+    let code = code.trim();
+    if code.is_empty() {
+        return None;
+    }
+    match code.to_uppercase().parse::<rustypipe::param::Country>() {
+        Ok(c) => Some(c),
+        Err(_) => {
+            tracing::warn!("YouTube: ignoring unrecognised youtubeCountry {code:?}");
+            None
+        }
+    }
+}
+
+/// As `parse_country`, for the language code.
+fn parse_language(code: &str) -> Option<rustypipe::param::Language> {
+    let code = code.trim();
+    if code.is_empty() {
+        return None;
+    }
+    match code.to_lowercase().parse::<rustypipe::param::Language>() {
+        Ok(l) => Some(l),
+        Err(_) => {
+            tracing::warn!("YouTube: ignoring unrecognised youtubeLanguage {code:?}");
+            None
+        }
+    }
+}
+
 /// Run a rustypipe query, retrying once on error.
 ///
 /// Every rustypipe request is backed by a visitor-data fetch that can fail
@@ -432,6 +509,15 @@ where
             op().await
         }
     }
+}
+
+/// The first YouTube Music song in search results; artists, albums and
+/// uploaded videos are skipped.
+fn top_song(items: Vec<rustypipe::model::MusicItem>) -> Option<rustypipe::model::TrackItem> {
+    items.into_iter().find_map(|item| match item {
+        rustypipe::model::MusicItem::Track(t) if t.track_type == rustypipe::model::TrackType::Track => Some(t),
+        _ => None,
+    })
 }
 
 fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
@@ -556,6 +642,111 @@ mod tests {
             !second.iter().any(|t| exclude.contains(&t.id)),
             "excluded ids came back anyway"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_bare_play_always_gets_exactly_one_playable_track() {
+        // Deliberately asserts the shape, not which song. YouTube returns
+        // different top results for the same query on repeated runs - measured
+        // across countries and rounds, "perfect by edge" alternates between two
+        // different songs regardless of locale - so pinning a title here would
+        // be a coin flip in CI.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        // "relaxing piano music" leads with an uploaded video; a song must be played instead.
+        for query in ["perfect by edge", "shape of yu", "konkani", "relaxing piano music"] {
+            let top = meta.search_top_track(query).await.expect(query);
+            assert_eq!(top.len(), 1, "{query}: a bare play must get one track");
+            assert!(!top[0].id.is_empty(), "{query}: track has no id");
+            assert!(!top[0].name.is_empty(), "{query}: track has no name");
+            let details = meta.client.query().music_details(&top[0].id).await.expect("details");
+            assert_eq!(
+                details.track.track_type,
+                rustypipe::model::TrackType::Track,
+                "{query}: {} is an uploaded video, not a YouTube Music song",
+                top[0].name
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_query_whose_top_hit_is_an_artist_still_yields_a_track() {
+        // "konkani" returns an Artist first from the all-categories search,
+        // which is not playable; the songs shelf has to catch it.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let top = meta.search_top_track("konkani").await.expect("top");
+        assert_eq!(top.len(), 1, "a bare play must always get exactly one track");
+        assert!(!top[0].id.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_typo_still_finds_the_song() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let top = meta.search_top_track("believr imagine dragon").await.expect("top");
+        assert!(
+            top[0].name.to_lowercase().contains("believer"),
+            "got {} - {}",
+            top[0].artists.join(", "),
+            top[0].name
+        );
+    }
+
+    #[test]
+    fn locale_codes_are_parsed_case_insensitively() {
+        use rustypipe::param::{Country, Language};
+        assert_eq!(super::parse_country("in"), Some(Country::In));
+        assert_eq!(super::parse_country("IN"), Some(Country::In));
+        assert_eq!(super::parse_language("EN"), Some(Language::En));
+    }
+
+    #[test]
+    fn an_unset_locale_leaves_the_library_default_alone() {
+        assert_eq!(super::parse_country(""), None);
+        assert_eq!(super::parse_country("   "), None);
+        assert_eq!(super::parse_language(""), None);
+    }
+
+    #[test]
+    fn a_typo_is_ignored_rather_than_fatal() {
+        // A bad code in a config file must not stop the bot starting.
+        assert_eq!(super::parse_country("XX"), None);
+        assert_eq!(super::parse_country("not a country"), None);
+        assert_eq!(super::parse_language("zzz"), None);
+    }
+
+    /// A YouTube Music search item as rustypipe deserializes it.
+    fn item(id: &str, track_type: &str) -> rustypipe::model::MusicItem {
+        serde_json::from_value(serde_json::json!({
+            "Track": {
+                "id": id,
+                "name": format!("name of {id}"),
+                "duration": 200,
+                "cover": [],
+                "artists": [{ "id": null, "name": "someone" }],
+                "artist_id": null,
+                "album": null,
+                "view_count": null,
+                "track_type": track_type,
+                "track_nr": null,
+                "by_va": false,
+                "unavailable": false
+            }
+        }))
+        .expect("a valid search item")
+    }
+
+    #[test]
+    fn a_bare_play_takes_the_first_song_not_an_uploaded_video() {
+        let items = vec![item("video1", "video"), item("song1", "track"), item("song2", "track")];
+        assert_eq!(super::top_song(items).map(|t| t.id), Some("song1".to_string()));
+    }
+
+    #[test]
+    fn results_holding_only_videos_give_no_song() {
+        let items = vec![item("video1", "video"), item("episode1", "episode")];
+        assert!(super::top_song(items).is_none(), "the caller falls back to the songs shelf");
     }
 
     #[tokio::test]

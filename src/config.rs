@@ -580,6 +580,12 @@ pub struct BotConfig {
     // None = stay out until started again, Some(0) = reconnect at once.
     #[serde(default, rename = "rejoinAfterKickSeconds")]
     pub rejoin_after_kick_seconds: Option<u32>,
+
+    // Locale for YouTube searches, which YouTube Music ranks by. Empty = US, English.
+    #[serde(default, rename = "youtubeCountry")]
+    pub youtube_country: String,
+    #[serde(default, rename = "youtubeLanguage")]
+    pub youtube_language: String,
 }
 
 impl Default for BotConfig {
@@ -627,6 +633,8 @@ impl Default for BotConfig {
             enabled_services: EnabledServices::default(),
             youtube_cookies_file: String::new(),
             rejoin_after_kick_seconds: None,
+            youtube_country: String::new(),
+            youtube_language: String::new(),
         }
     }
 }
