@@ -14,10 +14,10 @@ teamtalk = { git = "https://github.com/LuciferM242/TeamTalkRust.git", branch = "
 # native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
 # already uses), and drops librespot-playback's rodio/cpal speaker backend that
 # this bot never uses (audio goes to a custom TeamTalkSink, not local output).
-librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-metadata = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-oauth = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-core = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-metadata = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
 
 # YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
 # whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.

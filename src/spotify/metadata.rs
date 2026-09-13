@@ -80,12 +80,12 @@ impl SpotifyMetadata {
     /// Convert a librespot Track + URI into our SpotifyTrack.
     fn track_to_spotify(track: &librespot_metadata::Track, uri: &SpotifyUri) -> SpotifyTrack {
         SpotifyTrack {
-            id: uri.to_id().unwrap_or_default(),
+            id: uri.to_id(),
             name: track.name.clone(),
             artists: track.artists.0.iter().map(|a| a.name.clone()).collect(),
             album: track.album.name.clone(),
             duration_ms: track.duration as u32,
-            uri: uri.to_uri().unwrap_or_default(),
+            uri: uri.to_uri(),
         }
     }
 
@@ -189,8 +189,7 @@ impl SpotifyMetadata {
         limit: usize,
         exclude_ids: &[String],
     ) -> Result<Vec<SpotifyTrack>, BotError> {
-        let uri_str = seed_track_uri.to_uri()
-            .map_err(|e| BotError::Playback(format!("Invalid seed URI: {e}")))?;
+        let uri_str = seed_track_uri.to_uri();
 
         let response = self.session().spclient()
             .get_apollo_station("stations", &uri_str, Some(limit), vec![], true)
@@ -219,7 +218,7 @@ impl SpotifyMetadata {
                 Err(_) => continue,
             };
             // Skip tracks already in the queue
-            let id = uri.to_id().unwrap_or_default();
+            let id = uri.to_id();
             if exclude_ids.iter().any(|eid| eid == &id) {
                 continue;
             }

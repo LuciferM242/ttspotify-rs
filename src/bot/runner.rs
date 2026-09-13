@@ -2409,10 +2409,10 @@ async fn player_event_loop(
                 // ended track is still the current one.
                 let is_current = {
                     let s = state.lock();
-                    match (s.current().map(|e| e.track.uri().to_string()), track_id.to_uri()) {
-                        (Some(cur_uri), Ok(ended_uri)) => cur_uri == ended_uri,
+                    match s.current().map(|e| e.track.uri().to_string()) {
+                        Some(cur_uri) => cur_uri == track_id.to_uri(),
                         // If we can't compare, fall back to advancing (old behavior).
-                        _ => true,
+                        None => true,
                     }
                 };
                 // Under repeat-track the URI check above can't tell a duplicate
@@ -2433,7 +2433,7 @@ async fn player_event_loop(
                         cmd_tx.clone(),
                         pipeline_drained.clone(),
                         pause_flag.clone(),
-                        track_id.to_uri().ok(),
+                        Some(track_id.to_uri()),
                     );
                 } else {
                     tracing::debug!("Ignoring stale Spotify EndOfTrack for {track_id:?}");
@@ -2457,7 +2457,7 @@ async fn player_event_loop(
                 // and under repeat-track one region-locked song looped forever.
                 let _ = cmd_tx.send(BotCommand::Next {
                     user_id: 0,
-                    after_track: track_id.to_uri().ok(),
+                    after_track: Some(track_id.to_uri()),
                     failed: true,
                 });
             }
