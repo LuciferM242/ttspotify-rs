@@ -15,6 +15,11 @@ pub enum BotError {
     Playback(String),
     #[error("No results found")]
     NoResults,
+    /// A YouTube account feature was used without a signed-in cookies file.
+    #[error("no YouTube cookies file with a sign-in")]
+    YouTubeSignInMissing,
+    #[error("YouTube sign-in: {0}")]
+    YouTubeSignInRejected(String),
     #[error("TeamTalk: {0}")]
     TeamTalk(String),
     #[error("Not implemented: {0}")]

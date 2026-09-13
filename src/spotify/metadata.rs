@@ -309,16 +309,19 @@ impl SpotifyMetadata {
                         Err(_) => Err(BotError::Playback(format!("Invalid playlist ID: {id}"))),
                     }
                 }
-                SpotifyRef::Liked => {
-                    let uris = self.get_liked_track_uris().await?;
-                    self.split_and_fetch_first(uris).await
-                }
+                SpotifyRef::Liked => self.liked().await,
             };
         }
 
         // Free-form search plays just the top hit (matching YouTube's
         // resolve); the `search` command is the multi-result picker.
         self.search_tracks(query, 1).await.map(complete)
+    }
+
+    /// The account's Liked Songs: the first batch now, the rest as `remaining`.
+    pub async fn liked(&self) -> Result<ResolvedTracks, BotError> {
+        let uris = self.get_liked_track_uris().await?;
+        self.split_and_fetch_first(uris).await
     }
 }
 

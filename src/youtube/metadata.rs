@@ -14,7 +14,12 @@ use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 /// `fetch_more_playlist` by the background loader.
 pub struct YtPlaylistRest {
     paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    /// Later pages of an account playlist are read signed in too.
+    signed_in: bool,
 }
+
+/// YouTube Music's playlist of the signed-in account's liked songs.
+const LIKED_MUSIC: &str = "LM";
 
 /// A live YouTube Music radio station: the paginator YouTube handed back, plus
 /// enough memory to know whether we are still inside it.
@@ -63,6 +68,11 @@ pub enum YtResolved {
 /// changes.
 pub struct YouTubeMetadata {
     client: Arc<RustyPipe>,
+    /// Signed in with the cookies file, for the account's own library. Built on
+    /// first use and never stored: rustypipe would write the cookie to its cache file.
+    account: tokio::sync::OnceCell<Arc<RustyPipe>>,
+    country: Option<rustypipe::param::Country>,
+    language: Option<rustypipe::param::Language>,
     /// Cookies file handed to the sidecar. Empty = don't pass one.
     /// Resolved at init: explicit config override → falls back to the
     /// default `<config_dir>/cookies.txt` if it exists → empty.
@@ -113,10 +123,12 @@ impl YouTubeMetadata {
         let mut builder = RustyPipe::builder()
             .no_botguard()
             .storage_dir(crate::paths::cache_dir());
-        if let Some(c) = parse_country(&config.youtube_country) {
+        let country = parse_country(&config.youtube_country);
+        let language = parse_language(&config.youtube_language);
+        if let Some(c) = country {
             builder = builder.country(c);
         }
-        if let Some(l) = parse_language(&config.youtube_language) {
+        if let Some(l) = language {
             builder = builder.lang(l);
         }
         let client = builder
@@ -187,6 +199,9 @@ impl YouTubeMetadata {
 
         Ok(Self {
             client: Arc::new(client),
+            account: tokio::sync::OnceCell::new(),
+            country,
+            language,
             cookies_file,
             deno_exe,
             lib_dir,
@@ -201,6 +216,11 @@ impl YouTubeMetadata {
             return self.fetch_playlist_first_page(&id).await;
         }
         self.resolve(query, search_limit).await.map(YtResolved::Tracks)
+    }
+
+    /// The account's YouTube Music liked songs, read signed in with the cookies file.
+    pub async fn liked(&self) -> Result<YtResolved, BotError> {
+        self.fetch_playlist_first_page(LIKED_MUSIC).await
     }
 
     /// Resolve a YouTube URL/ID/playlist/album/search query into a list of
@@ -235,14 +255,51 @@ impl YouTubeMetadata {
         Ok(track_item_to_track(details.track))
     }
 
+    /// The client signed in with the cookies file, built on first use.
+    async fn account(&self) -> Result<Arc<RustyPipe>, BotError> {
+        self.account
+            .get_or_try_init(|| async {
+                let text = std::fs::read_to_string(&self.cookies_file).unwrap_or_default();
+                if self.cookies_file.is_empty() || !crate::youtube::sidecar::cookies_have_sign_in(&text) {
+                    return Err(BotError::YouTubeSignInMissing);
+                }
+                let mut builder = RustyPipe::builder().no_botguard().no_storage();
+                if let Some(c) = self.country {
+                    builder = builder.country(c);
+                }
+                if let Some(l) = self.language {
+                    builder = builder.lang(l);
+                }
+                let client = builder
+                    .build()
+                    .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
+                client
+                    .user_auth_set_cookie_txt(&text)
+                    .await
+                    .map_err(|e| BotError::YouTubeSignInRejected(e.to_string()))?;
+                Ok(Arc::new(client))
+            })
+            .await
+            .map(Arc::clone)
+    }
+
+    /// Liked Music belongs to the account, so it is read signed in.
+    async fn playlist_query(&self, playlist_id: &str) -> Result<rustypipe::client::RustyPipeQuery, BotError> {
+        if playlist_id == LIKED_MUSIC {
+            Ok(self.account().await?.query().authenticated())
+        } else {
+            Ok(self.client.query())
+        }
+    }
+
     async fn fetch_playlist(&self, playlist_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
-        let q = self.client.query();
+        let q = self.playlist_query(playlist_id).await?;
         let mut playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
         // Pull all pages, not just the first. A paging failure truncates the
         // list; say so instead of silently returning a partial playlist.
-        if let Err(e) = playlist.tracks.extend_all(&self.client.query()).await {
+        if let Err(e) = playlist.tracks.extend_all(&q).await {
             tracing::warn!("YouTube playlist only partially loaded: {e}");
         }
         let tracks: Vec<YouTubeTrack> = playlist.tracks.items.into_iter().map(track_item_to_track).collect();
@@ -255,7 +312,7 @@ impl YouTubeMetadata {
 
     /// First page of a playlist plus a continuation for background loading.
     async fn fetch_playlist_first_page(&self, playlist_id: &str) -> Result<YtResolved, BotError> {
-        let q = self.client.query();
+        let q = self.playlist_query(playlist_id).await?;
         let playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
@@ -270,7 +327,10 @@ impl YouTubeMetadata {
         if tracks.is_empty() {
             return Err(BotError::NoResults);
         }
-        let rest = paginator.ctoken.is_some().then_some(YtPlaylistRest { paginator });
+        let rest = paginator.ctoken.is_some().then_some(YtPlaylistRest {
+            paginator,
+            signed_in: playlist_id == LIKED_MUSIC,
+        });
         Ok(YtResolved::PlaylistFirstPage { tracks, rest })
     }
 
@@ -280,7 +340,12 @@ impl YouTubeMetadata {
         &self,
         rest: &mut YtPlaylistRest,
     ) -> Result<Option<Vec<YouTubeTrack>>, BotError> {
-        let more = rest.paginator.extend(self.client.query())
+        let q = if rest.signed_in {
+            self.account().await?.query().authenticated()
+        } else {
+            self.client.query()
+        };
+        let more = rest.paginator.extend(q)
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist page fetch failed: {e}")))?;
         if !more {
@@ -673,6 +738,47 @@ mod tests {
             let track = meta.fetch_video(id).await.unwrap_or_else(|e| panic!("{id}: {e}"));
             assert_eq!(track.id, id);
         }
+    }
+
+    #[tokio::test]
+    async fn liked_music_without_a_signed_in_cookies_file_asks_for_one() {
+        use crate::error::BotError;
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = String::new();
+        let result = meta.liked().await;
+        assert!(matches!(result, Err(BotError::YouTubeSignInMissing)));
+
+        let signed_out = std::env::temp_dir().join(format!("liked_signed_out_{}.txt", std::process::id()));
+        std::fs::write(&signed_out, ".youtube.com\tTRUE\t/\tTRUE\t0\tYSC\tx\n").unwrap();
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = signed_out.to_string_lossy().into_owned();
+        let result = meta.liked().await;
+        let _ = std::fs::remove_file(&signed_out);
+        assert!(matches!(result, Err(BotError::YouTubeSignInMissing)));
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network and needs TTSPOTIFY_TEST_COOKIES"]
+    async fn liked_music_loads_signed_in_and_search_stays_anonymous() {
+        let Ok(path) = std::env::var("TTSPOTIFY_TEST_COOKIES") else {
+            println!("skipped: no TTSPOTIFY_TEST_COOKIES");
+            return;
+        };
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = path;
+        match meta.liked().await.expect("liked music") {
+            super::YtResolved::PlaylistFirstPage { tracks, rest } => {
+                assert!(!tracks.is_empty());
+                assert!(tracks.iter().all(|t| !t.id.is_empty()));
+                if let Some(mut rest) = rest {
+                    assert!(rest.signed_in);
+                    meta.fetch_more_playlist(&mut rest).await.expect("next page");
+                }
+            }
+            super::YtResolved::Tracks(_) => panic!("liked music is a playlist"),
+        }
+        let top = meta.search_top_track("imagine dragons believer").await.expect("search");
+        assert_eq!(top.len(), 1);
     }
 
     #[tokio::test]

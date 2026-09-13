@@ -15,6 +15,8 @@ loading_track = Загрузка трека...
 nothing_to_play = Нечего воспроизводить. Используйте: p <запрос>
 restarting_track = Трек начат заново
 loading_liked = Загрузка любимых треков...
+liked_needs_cookies = Нет входа в YouTube.
+liked_sign_in_rejected = Вход в YouTube истёк.
 nothing_playing = Ничего не играет
 current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
 search_cancelled = Поиск отменён
@@ -114,7 +116,7 @@ failed_to_start = Не удалось запустить трек: {track}
 # The main help listing: playback, queue and mode sections.
 help_overview_playback = Воспроизведение:\n  p <запрос>     Найти и включить трек, плейлист или альбом\n  p               Пауза или продолжение\n  s               Остановить и очистить очередь\n  n               Следующий трек\n  o               Предыдущий трек\n  replay          Начать трек заново\n  c               Информация о текущем треке\n\nОчередь:\n  queue           Показать очередь\n  queue clear     Удалить предстоящие треки\n  queue rm <N>    Удалить предстоящий трек номер N\n\nРежимы:\n  mode [r|rq|off]     Режим повтора\n  shuffle [on|off]    Перемешать предстоящие треки
 
-# Extra help lines shown only when Spotify is the active service.
+# Help lines for radio and liked songs, on both services.
 help_overview_spotify =   radio [on|off]      Включить радио (автоматические рекомендации)\n  liked               Включить любимые треки (также: fav)
 
 # The rest of the main help listing: audio, search, service, bot.
@@ -154,6 +156,8 @@ help_seek = sf / sb [секунды]\n  sf         Перемотать впер
 help_search = search <запрос>\n  Найти и показать результаты. Затем:\n  <номер>    Выбрать результат для воспроизведения или очереди\n  a / cancel Убрать результаты\nПример:\n  search photograph\n  2          Включить второй результат
 
 help_radio = radio [on|off]\n  radio on   Включить радио. Когда одиночный трек заканчивается\n             и ничего не осталось, бот сам находит\n             рекомендации по последнему треку.\n             Для плейлистов и альбомов не срабатывает.\n  radio off  Выключить радио.\n  radio      Показать состояние радио.
+
+help_liked = liked / fav\nВключить любимые треки активного сервиса.\n  Spotify: ваши любимые треки.\n  YouTube: понравившиеся треки в YouTube Music. Нужен файл cookies с выполненным входом.
 
 help_link = link / url\nПолучить ссылку на текущий трек.\nОткройте её в приложении сервиса или поделитесь с другими.
 

@@ -352,7 +352,8 @@ pub fn run_wizard(
         println!();
         println!("YouTube");
         println!("  A track YouTube refuses without an account, such as an age-restricted");
-        println!("  video, is tried again signed in with a cookies file. Most never need it.");
+        println!("  video, is tried again signed in with a cookies file, and liked plays");
+        println!("  your YouTube Music liked songs from it. Most tracks never need it.");
         if or_cancel!(ask_bool("Use a cookies file", false)) {
             let default = setup::default_cookies_path().to_string_lossy().into_owned();
             let path = or_cancel!(ask("Cookies file path", &default, false));

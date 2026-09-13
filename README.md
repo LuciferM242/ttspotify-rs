@@ -24,8 +24,9 @@ YouTube tools install sets up.
 
 **Cookies** are optional. Most tracks play without an account. When YouTube
 refuses one without a sign-in, such as an age-restricted video, the bot tries it
-again signed in with your cookies; nothing else uses them. Export them with a
-browser extension:
+again signed in with your cookies. They also let `liked` play your YouTube Music
+liked songs; search and autoplay never use them. Export them with a browser
+extension:
 
 1. Install a cookies-export extension — **Get cookies.txt LOCALLY** ([Chrome / Edge](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc), or the equivalent for Firefox).
 2. Open a **private / incognito** window and sign in to YouTube.
@@ -300,8 +301,8 @@ Send these to the bot in a **private message** — it only responds to PMs, not 
 | `sf [N]` / `sb [N]` | Seek forward / backward N seconds (default 10) |
 | `search <query>` | Search, then type a number to pick (`a` to cancel) |
 | `pick <N>` | Pick from the last search by number |
-| `radio [on\|off]` | Toggle Spotify recommendations (Spotify only) |
-| `liked` | Play your Spotify Liked Songs (alias: `fav`, Spotify only) |
+| `radio [on\|off]` | Toggle recommendations when the queue runs out |
+| `liked` | Play your liked songs: Spotify Liked Songs, or YouTube Music liked songs when a cookies file is set (alias: `fav`) |
 | `sp` / `yt` | Switch between Spotify and YouTube |
 | `link` | URL of the current track |
 | `lang [code]` | Show available languages, or set yours (`lang clear` to reset) |

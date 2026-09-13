@@ -1068,6 +1068,8 @@ pub(crate) fn queue_wait_info(
 fn search_error_key(error: &BotError) -> Key {
     match error {
         BotError::NoResults => Key::NoResults,
+        BotError::YouTubeSignInMissing => Key::LikedNeedsCookies,
+        BotError::YouTubeSignInRejected(_) => Key::LikedSignInRejected,
         _ => Key::SearchFailed,
     }
 }
@@ -1603,7 +1605,8 @@ async fn command_processor(
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            BotCommand::SearchAndPlay { query, user_id, user_name } => {
+            BotCommand::SearchAndPlay { request, user_id, user_name } => {
+                use crate::bot::commands::PlayRequest;
                 let active = state.lock().active_service;
                 type ResolveOk = (Vec<crate::track::Track>, Option<BulkRest>, bool);
                 let result: Result<ResolveOk, BotError> = match active {
@@ -1614,7 +1617,12 @@ async fn command_processor(
                             ]);
                             continue;
                         }
-                        with_reconnect!(metadata.resolve(&query, search_limit))
+                        with_reconnect!(async {
+                            match &request {
+                                PlayRequest::Query(query) => metadata.resolve(query, search_limit).await,
+                                PlayRequest::Liked => metadata.liked().await,
+                            }
+                        })
                             .map(|r| {
                                 let rest = (!r.remaining.is_empty()).then_some(BulkRest::Spotify(r.remaining));
                                 (r.tracks.into_iter().map(Into::into).collect(), rest, r.bulk)
@@ -1622,7 +1630,11 @@ async fn command_processor(
                     }
                     crate::services::Service::YouTube => {
                         use crate::youtube::metadata::YtResolved;
-                        youtube_metadata.resolve_paged(&query, search_limit).await
+                        let resolved = match &request {
+                            PlayRequest::Query(query) => youtube_metadata.resolve_paged(query, search_limit).await,
+                            PlayRequest::Liked => youtube_metadata.liked().await,
+                        };
+                        resolved
                             .map(|resolved| match resolved {
                                 YtResolved::Tracks(v) => {
                                     (v.into_iter().map(Into::into).collect(), None, false)

@@ -26,7 +26,7 @@ librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1
 # panic = "abort", that killed a user's bot outright. The fix landed upstream
 # 2025-06-17 (commit 71712e4, "remove unwrap trying to fetch visitor data") but
 # was never published. Rev is repo HEAD; upstream is dead since 2025-06-18.
-rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e613038e14fe775f0d2eae889737d93", default-features = false, features = ["rustls-tls-native-roots"] }
+rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e613038e14fe775f0d2eae889737d93", default-features = false, features = ["rustls-tls-native-roots", "userdata"] }
 
 # YouTube audio: HTTP fetch + decode + resample.
 # symphonia decodes YouTube's m4a (ISO-MP4 container + AAC). default-features

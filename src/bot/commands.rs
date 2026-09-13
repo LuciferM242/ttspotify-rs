@@ -9,11 +9,20 @@ use crate::bot::state::{PlaybackStatus, SharedState};
 use crate::i18n::{I18n, Key};
 use crate::services::Service;
 
+/// What a play request asks for; each service resolves it its own way.
+#[derive(Debug)]
+pub enum PlayRequest {
+    /// Search text, a link or a URI.
+    Query(String),
+    /// The liked songs of the account signed in to the active service.
+    Liked,
+}
+
 /// Commands sent from the bot thread to the async command processor.
 #[derive(Debug)]
 #[allow(dead_code)] // user_id fields kept for consistent command protocol + debug logging
 pub enum BotCommand {
-    SearchAndPlay { query: String, user_id: i32, user_name: String },
+    SearchAndPlay { request: PlayRequest, user_id: i32, user_name: String },
     Play { user_id: i32 },
     Pause { user_id: i32 },
     Stop { user_id: i32 },
@@ -450,7 +459,7 @@ impl CommandDispatcher {
             "p" | "play" => {
                 if !args.is_empty() {
                     self.send(BotCommand::SearchAndPlay {
-                        query: args.to_string(),
+                        request: PlayRequest::Query(args.to_string()),
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
@@ -493,17 +502,13 @@ impl CommandDispatcher {
                 self.send(BotCommand::Seek { offset_ms: -86_400_000, user_id: sender_id });
                 self.reply_t(client, sender_id, Key::RestartingTrack, &[]);
             }
-            // Spotify-only: queue the user's Liked Songs. Silently no-ops on
-            // YouTube (service-private, same convention as radio).
             "liked" | "fav" => {
-                if self.state.lock().active_service == Service::Spotify {
-                    self.send(BotCommand::SearchAndPlay {
-                        query: "spotify:collection:liked".to_string(),
-                        user_id: sender_id,
-                        user_name: format!("User#{sender_id}"),
-                    });
-                    self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
-                }
+                self.send(BotCommand::SearchAndPlay {
+                    request: PlayRequest::Liked,
+                    user_id: sender_id,
+                    user_name: format!("User#{sender_id}"),
+                });
+                self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
             }
 
             // -- Info --
@@ -906,6 +911,7 @@ impl CommandDispatcher {
                         // Autoplay works on both services now, so the topic
                         // is no longer hidden from YouTube users.
                         "radio" => Key::HelpRadio,
+                        "liked" | "fav" => Key::HelpLiked,
                         "link" | "url" => Key::HelpLink,
                         "stats" => Key::HelpStats,
                         "jc" => Key::HelpJc,
@@ -931,13 +937,10 @@ impl CommandDispatcher {
 }
 
 /// Build help text for the currently active service, in the caller's language.
-/// Spotify-only sections (radio, liked) are omitted on YouTube.
 fn help_text(i18n: &I18n, user_id: i32, active: Service, is_admin: bool) -> String {
     let mut out = i18n.tr(user_id, Key::HelpOverviewPlayback, &[]);
-    if active == Service::Spotify {
-        out.push('\n');
-        out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
-    }
+    out.push('\n');
+    out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
     out.push('\n');
     out.push_str(&i18n.tr(user_id, Key::HelpOverviewRest, &[]));
     if is_admin {
@@ -958,6 +961,15 @@ mod tests {
 
     fn cmd(name: &str, args: &str) -> Input {
         Input::Command { name: name.to_string(), args: args.to_string() }
+    }
+
+    #[test]
+    fn help_lists_radio_and_liked_on_both_services() {
+        let i18n = test_i18n("en");
+        for service in [Service::Spotify, Service::YouTube] {
+            let help = help_text(&i18n, 0, service, false);
+            assert!(help.contains("radio [on|off]") && help.contains("liked"), "{service:?}");
+        }
     }
 
     // -- help_text admin gating --

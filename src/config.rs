@@ -569,8 +569,9 @@ pub struct BotConfig {
     #[serde(default, rename = "enabledServices")]
     pub enabled_services: EnabledServices,
 
-    // YouTube: Netscape cookies file, used only to retry a track refused without
-    // a sign-in. Empty = `<config_dir>/cookies.txt` when that exists.
+    // YouTube: Netscape cookies file, used to retry a track refused without a
+    // sign-in and to read the account's liked songs. Empty = `<config_dir>/cookies.txt`
+    // when that exists.
     #[serde(default, rename = "youtubeCookiesFile")]
     pub youtube_cookies_file: String,
 

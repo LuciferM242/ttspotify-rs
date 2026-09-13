@@ -15,6 +15,8 @@ loading_track = Cargando pista...
 nothing_to_play = Nada que reproducir. Usa: p <búsqueda>
 restarting_track = Reiniciando la pista
 loading_liked = Cargando tus canciones favoritas...
+liked_needs_cookies = Sin sesión de YouTube.
+liked_sign_in_rejected = La sesión de YouTube caducó.
 nothing_playing = Nada en reproducción
 current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
 search_cancelled = Búsqueda cancelada
@@ -114,7 +116,7 @@ failed_to_start = Error al iniciar la pista: {track}
 # The main help listing: playback, queue and mode sections.
 help_overview_playback = Reproduccion:\n  p <consulta>   Buscar y reproducir una pista, lista o album\n  p               Alternar reproducir/pausar\n  s               Detener y vaciar la cola\n  n               Pista siguiente\n  o               Pista anterior\n  replay          Reiniciar la pista actual\n  c               Informacion de la pista actual\n\nCola:\n  queue           Mostrar la cola\n  queue clear     Quitar las pistas pendientes\n  queue rm <N>    Quitar la pista pendiente N\n\nModos:\n  mode [r|rq|off]     Modo de repeticion\n  shuffle [on|off]    Mezclar las pistas pendientes
 
-# Extra help lines shown only when Spotify is the active service.
+# Help lines for radio and liked songs, on both services.
 help_overview_spotify =   radio [on|off]      Activar radio (recomendaciones automaticas)\n  liked               Reproducir tus canciones guardadas (tambien: fav)
 
 # The rest of the main help listing: audio, search, service, bot.
@@ -154,6 +156,8 @@ help_seek = sf / sb [segundos]\n  sf         Avanzar 10 segundos (por defecto)\n
 help_search = search <consulta>\n  Buscar y mostrar resultados. Despues:\n  <numero>   Elegir un resultado para reproducir o encolar\n  a / cancel Descartar los resultados\nEjemplo:\n  search photograph\n  2          Reproducir el segundo resultado
 
 help_radio = radio [on|off]\n  radio on   Activar la radio. Cuando termina una pista suelta\n             y no queda nada, busca recomendaciones\n             basadas en la ultima pista.\n             No se activa con listas ni albumes.\n  radio off  Desactivar la radio.\n  radio      Ver el estado de la radio.
+
+help_liked = liked / fav\nReproducir tus canciones favoritas del servicio activo.\n  Spotify: tus canciones guardadas.\n  YouTube: tus canciones que te gustan de YouTube Music. Necesita un archivo de cookies con la sesion iniciada.
 
 help_link = link / url\nObtener el enlace de la pista actual.\nAbrelo en la aplicacion del servicio o compartelo.
 

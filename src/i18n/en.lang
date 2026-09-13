@@ -27,8 +27,14 @@ nothing_to_play = Nothing to play. Use: p <query>
 # Shown when the current track restarts from the beginning.
 restarting_track = Restarting track
 
-# Shown while the user's Spotify Liked Songs are being loaded.
+# Shown while the user's liked songs are being loaded, from either service.
 loading_liked = Loading liked songs...
+
+# Shown when liked is used on YouTube but the bot has no cookies file with a sign-in.
+liked_needs_cookies = Not signed in to YouTube.
+
+# Shown when YouTube does not accept the sign-in in the bot's cookies file.
+liked_sign_in_rejected = YouTube sign-in expired.
 
 # Shown when there is no current track (current / link commands).
 nothing_playing = Nothing playing
@@ -239,8 +245,8 @@ failed_to_start = Failed to start track: {track}
 # The main help listing: playback, queue and mode sections.
 help_overview_playback = Playback:\n  p <query>      Search and play a track, playlist, or album\n  p               Toggle play/pause\n  s               Stop playback and clear queue\n  n               Next track\n  o               Previous track\n  replay          Restart current track\n  c               Show current track info\n\nQueue:\n  queue           Show the queue\n  queue clear     Clear upcoming tracks\n  queue rm <N>    Remove Nth upcoming track\n\nModes:\n  mode [r|rq|off]     Set repeat mode\n  shuffle [on|off]    Shuffle the upcoming tracks
 
-# Extra help lines shown only when Spotify is the active service.
-help_overview_spotify =   radio [on|off]      Toggle radio (auto-recommendations)\n  liked               Play your Liked Songs (also: fav)
+# Help lines for radio and liked songs, on both services.
+help_overview_spotify =   radio [on|off]      Toggle radio (auto-recommendations)\n  liked               Play your liked songs (also: fav)
 
 # The rest of the main help listing: audio, search, service, bot.
 help_overview_rest = \nAudio:\n  v [0-100]       Get or set volume\n  sf/sb [N]       Seek forward/backward N seconds\n\nSearch:\n  search <query>  Search and pick from results\n  <number>        Pick a search result\n  a / cancel      Cancel search\n\nService:\n  /sp             Switch to Spotify\n  /yt             Switch to YouTube\n\nBot:\n  link         Get URL for current track\n  stats        Show bot uptime and session stats\n  lang         Show or set your language\n  cn <name>    Change nickname\n  gender       Set bot gender\n  info         Bot info
@@ -279,6 +285,8 @@ help_seek = sf / sb [seconds]\n  sf         Seek forward 10 seconds (default)\n 
 help_search = search <query>\n  Search and show results. Then:\n  <number>   Pick a result to play/queue\n  a / cancel Dismiss search results\nExample:\n  search photograph\n  2          Play the 2nd result
 
 help_radio = radio [on|off]\n  radio on   Enable radio mode. When a single track finishes\n             and nothing is left, automatically fetches\n             recommendations based on the last track.\n             Does not trigger for playlists or albums.\n  radio off  Disable radio mode.\n  radio      Show current radio status.
+
+help_liked = liked / fav\nPlay your liked songs from the active service.\n  Spotify: your Liked Songs.\n  YouTube: your YouTube Music liked songs. Needs a cookies file with a sign-in.
 
 help_link = link / url\nGet the URL for the currently playing track.\nOpen it in the service's app or share it with others.
 
