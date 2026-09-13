@@ -240,10 +240,15 @@ fn channel_move_needs_flush(
     prev != ::teamtalk::types::ChannelId(0) && prev != new
 }
 
-/// What to do about a `MySelfKicked` event. `source` is `TTMessage.nSource`:
-/// greater than zero is a kick from that channel, otherwise from the server.
+/// Whether a `MySelfKicked` event removed the bot from the server. `source` is
+/// `TTMessage.nSource`: greater than zero is a kick from that channel.
+fn kicked_off_server(source: i32) -> bool {
+    source <= 0
+}
+
+/// What to do about a `MySelfKicked` event.
 fn kick_action(source: i32, rejoin_after: Option<u32>) -> KickAction {
-    if source > 0 {
+    if !kicked_off_server(source) {
         return KickAction::Ignore;
     }
     match rejoin_after {
@@ -339,6 +344,13 @@ pub async fn run_bot(
         crate::tt::connection::setup_teamtalk(&tt_config)
     }).await.map_err(|e| BotError::TeamTalk(format!("TT setup task failed: {e}")))??;
     let client = Arc::new(client);
+    // The SDK sends a new login inside the poll that reports a server kick,
+    // before the event loop sees the kick. Hooks run ahead of that login.
+    client.set_hooks(::teamtalk::ClientHooks::default().on_myself_kicked(|client, message| {
+        if kicked_off_server(message.source()) {
+            client.disable_auto_reconnect();
+        }
+    }));
 
     send_event(RunnerEvent::Connected);
 
@@ -2679,6 +2691,17 @@ mod tests {
         #[case] expected: KickAction,
     ) {
         assert_eq!(kick_action(source, rejoin_after), expected);
+    }
+
+    #[test]
+    fn only_a_server_kick_turns_recovery_off() {
+        assert!(kicked_off_server(0));
+        assert!(kicked_off_server(-1));
+        assert!(!kicked_off_server(7));
+        // The hook and the event loop must agree on which kicks end the session.
+        for source in [-1, 0, 1, 7] {
+            assert_eq!(kicked_off_server(source), kick_action(source, None) != KickAction::Ignore);
+        }
     }
 
     #[test]
