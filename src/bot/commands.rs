@@ -63,8 +63,9 @@ pub enum BotCommand {
     QueueRemove { index: usize, expected_uri: String, user_id: i32 },
     SearchOnly { query: String, user_id: i32 },
     SearchPick { user_id: i32, pick: usize, user_name: String },
-    /// List the Spotify account's playlists to pick from.
-    Library { user_id: i32 },
+    /// List the Spotify account's playlists to pick from, narrowed to those
+    /// matching `query` when it is not empty; a single match plays.
+    Library { query: String, user_id: i32, user_name: String },
     JoinChannel { path: String, user_id: i32 },
     ChangeNick { name: String, user_id: i32 },
     SetGender { gender: String, user_id: i32 },
@@ -558,7 +559,11 @@ impl CommandDispatcher {
             // Spotify-only: list the account's playlists to pick one by number.
             "library" | "lib" => {
                 if self.state.lock().active_service == Service::Spotify {
-                    self.send(BotCommand::Library { user_id: sender_id });
+                    self.send(BotCommand::Library {
+                        query: args.to_string(),
+                        user_id: sender_id,
+                        user_name: format!("User#{sender_id}"),
+                    });
                     self.reply_t(client, sender_id, Key::LoadingLibrary, &[]);
                 }
             }

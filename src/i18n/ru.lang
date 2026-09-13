@@ -64,6 +64,7 @@ loading_library = Загрузка ваших плейлистов...
 library_header = Ваши плейлисты:
 library_entry = {name} (треков: {count})
 library_empty = В вашей библиотеке нет плейлистов
+library_no_match = Нет плейлистов по запросу {query}
 library_failed = Не удалось загрузить плейлисты: {error}
 pick_usage = Использование: pick <номер>
 pick_too_low = Номер должен быть 1 или больше
@@ -124,7 +125,7 @@ help_overview_playback = Воспроизведение:\n  p <запрос>    
 
 # Help lines for radio and liked songs, on both services.
 help_overview_spotify =   radio [on|off]      Включить радио (автоматические рекомендации)\n  liked               Включить любимые треки (также: fav)
-help_overview_library =   library             Список ваших плейлистов для выбора
+help_overview_library =   library [слова]     Список плейлистов или сразу нужный плейлист
 
 # The rest of the main help listing: audio, search, service, bot.
 help_overview_rest = \nЗвук:\n  v [0-100]       Показать или изменить громкость\n  sf/sb [N]       Перемотать вперёд или назад на N секунд\n\nПоиск:\n  search <запрос>  Найти и выбрать из результатов\n  <номер>         Выбрать результат\n  a / cancel      Отменить поиск\n\nСервис:\n  /sp             Переключиться на Spotify\n  /yt             Переключиться на YouTube\n\nБот:\n  link         Ссылка на текущий трек\n  stats        Время работы и статистика сессии\n  lang         Показать или выбрать язык\n  cn <имя>     Изменить имя бота\n  gender       Пол бота\n  info         Информация о боте

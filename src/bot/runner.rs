@@ -2224,16 +2224,37 @@ async fn command_processor(
                 }
             }
 
-            BotCommand::Library { user_id } => {
+            BotCommand::Library { query, user_id, user_name } => {
                 if let Err(e) = ensure_spotify!() {
                     reply_t(user_id, Key::SpotifyUnavailable, &[
                         ("error", crate::bot::commands::user_error(&e)),
                     ]);
                     continue;
                 }
-                match with_reconnect!(metadata.get_user_playlists()) {
+                let fetched = with_reconnect!(metadata.get_user_playlists()).map(|all| {
+                    if query.trim().is_empty() {
+                        all
+                    } else {
+                        crate::bot::fuzzy::rank(&query, &all, |p| p.name.as_str())
+                            .into_iter()
+                            .cloned()
+                            .collect()
+                    }
+                });
+                match fetched {
+                    Ok(playlists) if playlists.is_empty() && !query.trim().is_empty() => {
+                        reply_t(user_id, Key::LibraryNoMatch, &[("query", query.trim().to_string())]);
+                    }
                     Ok(playlists) if playlists.is_empty() => {
                         reply_t(user_id, Key::LibraryEmpty, &[]);
+                    }
+                    Ok(playlists) if playlists.len() == 1 && !query.trim().is_empty() => {
+                        state.lock().remove_library_results(user_id);
+                        let _ = radio_cmd_tx.send(BotCommand::SearchAndPlay {
+                            request: crate::bot::commands::PlayRequest::SpotifyPlaylist(playlists[0].uri.clone()),
+                            user_id,
+                            user_name,
+                        });
                     }
                     Ok(playlists) => {
                         reply(user_id, &crate::bot::commands::format_library(

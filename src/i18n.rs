@@ -139,6 +139,7 @@ keys! {
     LibraryHeader => "library_header",
     LibraryEntry => "library_entry",
     LibraryEmpty => "library_empty",
+    LibraryNoMatch => "library_no_match",
     LibraryFailed => "library_failed",
     // Radio
     RadioAlreadyOn => "radio_already_on",
