@@ -220,24 +220,26 @@ pub fn report() {
     }
 
     let tools = crate::youtube::setup::installed_tool_versions();
-    println!("  yt-dlp: {}", tools.yt_dlp.as_deref().unwrap_or("not installed"));
-    println!("  bgutil-pot: {}", tools.bgutil.as_deref().unwrap_or("not installed"));
+    let paths = crate::youtube::setup::resolve_paths().ok();
+    let script_present = paths
+        .as_ref()
+        .map(|p| p.lib_dir.join(crate::youtube::sidecar::SCRIPT_NAME).is_file())
+        .unwrap_or(false);
     println!(
         "  JavaScript runtime: {}",
-        tools.js_runtime.as_deref().unwrap_or("none - some YouTube formats will be unavailable")
+        tools.js_runtime.as_deref().unwrap_or("none - YouTube playback cannot start")
     );
-    if wants_youtube && tools.yt_dlp.is_none() {
-        fixes.push(format!("Install the YouTube tools - {}", crate::hints::install_youtube_tools()));
-    }
-    // An install from before yt-dlp needed a JavaScript runtime reports every
-    // tool present and still fails on most tracks. Naming the problem without
-    // naming the cure sent people looking for a bug instead of running one
-    // command.
-    if wants_youtube && tools.yt_dlp.is_some() && tools.js_runtime.is_none() {
-        fixes.push(format!(
-            "Add the JavaScript runtime YouTube needs - {}",
-            crate::hints::update_youtube_tools()
-        ));
+    println!(
+        "  YouTube sidecar: {}",
+        if script_present { "installed" } else { "not installed" }
+    );
+    if wants_youtube {
+        // Both halves are needed, and either one missing stops playback
+        // entirely - the sidecar is a Deno program, so a missing runtime is
+        // not a degraded mode the way it was for yt-dlp.
+        if let Some(what) = youtube_tools_status(tools.js_runtime.is_some(), script_present) {
+            fixes.push(what);
+        }
     }
 
     let settings = crate::settings::load();
@@ -344,6 +346,17 @@ pub fn report() {
     }
 }
 
+/// The fix to list when YouTube playback cannot start. Both the runtime and the
+/// sidecar script are needed; either one missing stops every track.
+fn youtube_tools_status(runtime_present: bool, script_present: bool) -> Option<String> {
+    let install = crate::hints::install_youtube_tools();
+    match (runtime_present, script_present) {
+        (true, true) => None,
+        (false, _) => Some(format!("Install Deno, which YouTube playback runs on - {install}")),
+        (true, false) => Some(format!("Install the YouTube sidecar - {install}")),
+    }
+}
+
 fn describe_services(spotify: bool, youtube: bool) -> &'static str {
     match (spotify, youtube) {
         (true, true) => "Spotify and YouTube",
@@ -355,6 +368,27 @@ fn describe_services(spotify: bool, youtube: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::youtube_tools_status;
+
+    #[test]
+    fn nothing_to_say_when_both_halves_are_present() {
+        assert_eq!(youtube_tools_status(true, true), None);
+    }
+
+    #[test]
+    fn a_missing_runtime_names_deno_not_the_old_tools() {
+        let msg = youtube_tools_status(false, true).expect("should report");
+        assert!(msg.contains("Deno"), "{msg}");
+        let lower = msg.to_lowercase();
+        assert!(!lower.contains("yt-dlp") && !lower.contains("bgutil"), "{msg}");
+    }
+
+    #[test]
+    fn a_missing_script_is_reported_separately() {
+        let msg = youtube_tools_status(true, false).expect("should report");
+        assert!(msg.contains("sidecar"), "{msg}");
+    }
+
     use super::*;
 
     #[test]

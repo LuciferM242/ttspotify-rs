@@ -2,8 +2,8 @@
 //! binary that arrived rather than the one it replaced.
 //!
 //! Every step here compares something on disk against a constant compiled into
-//! this build: the config schema, the systemd unit template, the tools yt-dlp
-//! now needs. That comparison only means anything in the new binary. It used to
+//! this build: the config schema, the systemd unit template, the YouTube tools
+//! this build plays with. That comparison only means anything in the new binary. It used to
 //! run in the old one — `self_replace` swaps the file on disk, but the process
 //! already in memory keeps its own code and its own constants, so a v0.7.0 bot
 //! updating to v1.0.0 compared v0.7.0's unit stamp against v0.7.0's version
@@ -75,31 +75,34 @@ fn reconcile_unit(mode: Mode) {
     }
 }
 
-/// A YouTube install from before yt-dlp needed a JavaScript runtime looks
-/// complete and plays badly: formats go missing and streams 403. The tools
-/// themselves know how to fix it, so this only has to notice and say so.
+/// YouTube tools installed by a version that played through yt-dlp do not
+/// include the Deno sidecar, so YouTube is silent until they are installed.
 fn check_youtube_tools(mode: Mode) {
-    let tools = crate::youtube::setup::installed_tool_versions();
-    if tools.yt_dlp.is_none() || tools.js_runtime.is_some() {
+    use crate::youtube::setup;
+    let Ok(paths) = setup::resolve_paths() else {
+        return;
+    };
+    if !setup::has_legacy_tools(&paths) || setup::is_installed(&paths) {
         return;
     }
     match mode {
         Mode::Startup => tracing::warn!(
-            "The YouTube tools are installed without a JavaScript runtime, which YouTube now \
-             needs; some tracks will fail to play. To fix it, {}",
-            crate::hints::update_youtube_tools()
+            "YouTube playback now runs on Deno, which the YouTube tools installed by an older \
+             version do not include; YouTube tracks will not play until they are installed. \
+             To install them, {}",
+            crate::hints::install_youtube_tools()
         ),
         Mode::Interactive => {
             println!();
-            println!("Your YouTube tools predate the JavaScript runtime YouTube now requires,");
-            println!("so some tracks would fail to play. Updating them also refreshes yt-dlp.");
-            if prompt_yes_no("Update the YouTube tools now?") {
-                if let Err(e) = crate::wizard::run_update_tools() {
-                    println!("  Could not update the YouTube tools: {e}");
-                    println!("  To try again later, {}", crate::hints::update_youtube_tools());
+            println!("YouTube playback now runs on Deno, which your YouTube tools do not include yet,");
+            println!("so YouTube tracks would not play.");
+            if prompt_yes_no("Install the YouTube tools now?") {
+                if let Err(e) = crate::wizard::run_youtube_setup() {
+                    println!("  Could not install the YouTube tools: {e}");
+                    println!("  To try again later, {}", crate::hints::install_youtube_tools());
                 }
             } else {
-                println!("  Skipped. To do it later, {}", crate::hints::update_youtube_tools());
+                println!("  Skipped. To do it later, {}", crate::hints::install_youtube_tools());
             }
         }
     }

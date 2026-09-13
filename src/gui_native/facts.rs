@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use crate::gui_native::menu::MenuFacts;
 
 /// How long a reading is trusted without being marked stale. Covers changes
-/// made outside the app, such as installing yt-dlp by hand.
+/// made outside the app, such as installing Deno by hand.
 pub const MAX_AGE: Duration = Duration::from_secs(15);
 
 /// Whether the facts must be read from disk again.

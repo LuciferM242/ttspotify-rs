@@ -640,9 +640,9 @@ fn offer_youtube_setup(parent: &(impl GuiParent + 'static), cfg: &BotConfig) {
     }
 
     let prompt = if cfg.default_service == Service::YouTube {
-        "YouTube support needs extra programs (about 50 MB: yt-dlp, bgutil-pot and a JavaScript runtime).\n\nDownload them now?"
+        "YouTube support needs a JavaScript runtime (Deno, about 40 MB).\n\nDownload it now?"
     } else {
-        "You can also enable YouTube support. This downloads about 50 MB of programs (yt-dlp, bgutil-pot and a JavaScript runtime).\n\nSkip this if you only need Spotify.\n\nInstall YouTube support?"
+        "You can also enable YouTube support. This downloads a JavaScript runtime (Deno, about 40 MB).\n\nSkip this if you only need Spotify.\n\nInstall YouTube support?"
     };
     let answer = parent.hwnd().MessageBox(
         prompt,

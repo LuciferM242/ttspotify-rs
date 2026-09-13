@@ -1,13 +1,12 @@
-//! YouTube binaries auto-installer.
+//! YouTube tooling installer.
 //!
-//! Downloads `yt-dlp`, the bgutil-pot binary, and the bgutil yt-dlp plugin
-//! into `<exe-dir>/lib/` so the bot can resolve them at runtime without the
-//! user installing anything by hand.
+//! Installs the JavaScript runtime the audio sidecar runs on, writes the
+//! sidecar and its pinned dependency files out of this binary, and warms the
+//! dependency cache so the first track does not pay a cold npm fetch.
 //!
-//! yt-dlp installs the newest GitHub release (verified against that release's
-//! own SHA2-256SUMS), so a fresh install is already current — no second
-//! `--update` download on metered connections. bgutil stays pinned below;
-//! bump it periodically and ship a new release.
+//! Only the runtime is downloaded. The sidecar, its import map and its
+//! lockfile are compiled in, so an update ships new ones without a download,
+//! and every install runs the dependency versions that were tested.
 
 use std::fs;
 use std::io::Write;
@@ -15,91 +14,73 @@ use std::path::{Path, PathBuf};
 
 use crate::error::BotError;
 
-const BGUTIL_VERSION: &str = "v0.8.1";
 
-/// The GitHub repo bgutil-pot and its yt-dlp plugin are released from.
-const BGUTIL_REPO: &str = "jim60105/bgutil-ytdlp-pot-provider-rs";
 
-/// This platform's yt-dlp release asset.
-fn yt_dlp_asset_name() -> &'static str {
-    if cfg!(windows) {
-        "yt-dlp.exe"
-    } else if cfg!(target_arch = "aarch64") {
-        "yt-dlp_linux_aarch64"
-    } else {
-        "yt-dlp_linux"
-    }
-}
 
-/// This platform's bgutil-pot release asset.
-fn bgutil_asset_name() -> &'static str {
-    if cfg!(windows) {
-        "bgutil-pot-windows-x86_64.exe"
-    } else if cfg!(target_arch = "aarch64") {
-        "bgutil-pot-linux-aarch64"
-    } else {
-        "bgutil-pot-linux-x86_64"
-    }
-}
 
-/// Download URL for a bgutil release asset at a version.
-fn bgutil_download_url(version: &str, asset: &str) -> String {
-    format!("https://github.com/{BGUTIL_REPO}/releases/download/{version}/{asset}")
-}
-
-/// Filename for the sidecar that records which bgutil version is on disk.
-/// Lives next to the bgutil binary in `lib/`.
+/// Stamp written by versions that installed bgutil-pot. Nothing writes it any
+/// more; it survives only as proof that a directory was made by an older
+/// install, so the migration can recognise and clean it.
 const BGUTIL_VERSION_FILE: &str = ".bgutil-version";
 
 /// Records which Deno we installed, so --update-tools can compare.
 const DENO_VERSION_FILE: &str = ".deno-version";
 
-/// Oldest Deno yt-dlp's EJS solver supports. An older one on PATH is ignored
+/// Oldest Deno the sidecar is known to run on. An older one on PATH is ignored
 /// rather than used, because the failure it produces looks like a YouTube
 /// problem rather than a runtime problem.
+///
+/// A minimum, deliberately not an exact pin: Deno is a general-purpose runtime
+/// with a stability promise, and a user who already has one should not be made
+/// to download a second. What actually breaks between releases is the npm
+/// dependencies, and those are pinned by the sidecar's lockfile.
 const MIN_DENO_VERSION: (u32, u32, u32) = (2, 3, 0);
 
-/// Resolved on-disk paths for all three components.
+/// Resolved on-disk paths for the YouTube tools.
 #[derive(Debug, Clone)]
 pub struct YoutubeSetupPaths {
-    /// Directory for binaries: `<exe-dir>/lib`.
+    /// Directory holding the runtime and the sidecar's three files.
     pub lib_dir: PathBuf,
-    /// `lib/yt-dlp` (Linux) or `lib/yt-dlp.exe` (Windows).
-    pub yt_dlp: PathBuf,
-    /// `lib/bgutil-pot` or `lib/bgutil-pot.exe`.
-    pub bgutil_pot: PathBuf,
-    /// `lib/yt-dlp-plugins` (the dir we pass to `--plugin-dirs`).
-    pub plugin_dir: PathBuf,
-    /// `lib/deno` or `lib/deno.exe`: the JavaScript runtime yt-dlp needs to
-    /// solve YouTube's player challenges. Only present when we installed it;
-    /// a system-wide Deno is used as-is.
+    /// `lib/deno` or `lib/deno.exe`. Only present when we installed it; a
+    /// new enough Deno already on PATH is used as-is.
     pub deno: PathBuf,
 }
 
-/// Pick the directory the YouTube tools live in.
-/// An exe-side `lib/` that already holds tools wins, so existing installs and
-/// dev checkouts keep working. Otherwise use `<data_dir>/ttspotify/lib`, which
-/// stays user-writable when the binary itself is installed somewhere
-/// root-owned like /usr/local/bin.
-#[cfg_attr(windows, allow(dead_code))] // Linux-only policy; kept cross-platform for tests
-fn pick_tools_dir(legacy: PathBuf, legacy_has_tools: bool, data_dir: Option<PathBuf>) -> PathBuf {
-    if legacy_has_tools {
-        return legacy;
-    }
-    match data_dir {
-        Some(d) => d.join("ttspotify").join("lib"),
-        None => legacy,
-    }
+fn deno_name() -> &'static str {
+    if cfg!(windows) { "deno.exe" } else { "deno" }
+}
+fn ytdlp_name() -> &'static str {
+    if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" }
+}
+fn bgutil_name() -> &'static str {
+    if cfg!(windows) { "bgutil-pot.exe" } else { "bgutil-pot" }
 }
 
-/// Everything our installer puts into the tools dir. Used by the migration to
-/// move exactly our items and nothing else.
-fn tool_item_names() -> [&'static str; 6] {
-    if cfg!(windows) {
-        ["yt-dlp.exe", "bgutil-pot.exe", "yt-dlp-plugins", BGUTIL_VERSION_FILE, "deno.exe", DENO_VERSION_FILE]
-    } else {
-        ["yt-dlp", "bgutil-pot", "yt-dlp-plugins", BGUTIL_VERSION_FILE, "deno", DENO_VERSION_FILE]
-    }
+/// What a current install puts in the tools dir. Carried across a migration.
+fn live_item_names() -> [&'static str; 5] {
+    [
+        deno_name(),
+        DENO_VERSION_FILE,
+        crate::youtube::sidecar::SCRIPT_NAME,
+        crate::youtube::sidecar::DENO_CONFIG_NAME,
+        crate::youtube::sidecar::DENO_LOCK_NAME,
+    ]
+}
+
+/// What older versions installed and nothing reads any more. Removed rather
+/// than carried across, so an upgrade reclaims the disk instead of moving dead
+/// weight into the directory the bot actively uses.
+fn dead_item_names() -> [&'static str; 4] {
+    [ytdlp_name(), bgutil_name(), "yt-dlp-plugins", BGUTIL_VERSION_FILE]
+}
+
+/// True when this directory is one our installer made. `.bgutil-version`
+/// proves an old install; the sidecar script or the Deno stamp prove a
+/// current one.
+fn is_our_tools_dir(dir: &Path) -> bool {
+    dir.join(BGUTIL_VERSION_FILE).is_file()
+        || dir.join(crate::youtube::sidecar::SCRIPT_NAME).is_file()
+        || dir.join(DENO_VERSION_FILE).is_file()
 }
 
 fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -126,11 +107,11 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
 /// installer didn't create are left alone; the legacy dir itself is removed
 /// only when the move emptied it. Returns whether a migration happened.
 pub fn migrate_tools_dir(legacy: &Path, target: &Path) -> bool {
-    if legacy == target || !legacy.join(BGUTIL_VERSION_FILE).is_file() {
+    if legacy == target || !is_our_tools_dir(legacy) {
         return false;
     }
     // Copy phase: legacy stays intact until everything landed.
-    for name in tool_item_names() {
+    for name in live_item_names() {
         let src = legacy.join(name);
         if !src.exists() {
             continue;
@@ -149,18 +130,19 @@ pub fn migrate_tools_dir(legacy: &Path, target: &Path) -> bool {
             return false;
         }
     }
-    // Delete phase: failures here leave harmless duplicates, never a split.
-    for name in tool_item_names() {
-        let src = legacy.join(name);
-        let removed = if src.is_dir() {
-            std::fs::remove_dir_all(&src)
-        } else if src.exists() {
-            std::fs::remove_file(&src)
-        } else {
-            Ok(())
-        };
-        if let Err(e) = removed {
-            tracing::warn!("Could not remove migrated {name} from old tools dir: {e}");
+    // Delete phase, live items: failures leave harmless duplicates, never a
+    // split.
+    for name in live_item_names() {
+        remove_item(&legacy.join(name), name);
+    }
+    // Delete phase, dead items: nothing reads these again, so they are removed
+    // rather than moved. Only these exact names - anything else the user keeps
+    // in that folder is left alone.
+    for name in dead_item_names() {
+        let path = legacy.join(name);
+        if path.exists() {
+            tracing::info!("Removing obsolete YouTube tool: {}", path.display());
+            remove_item(&path, name);
         }
     }
     // Only ours in there? Then the folder goes too. remove_dir refuses
@@ -174,6 +156,19 @@ pub fn migrate_tools_dir(legacy: &Path, target: &Path) -> bool {
     true
 }
 
+fn remove_item(path: &Path, name: &str) {
+    let removed = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else if path.exists() {
+        std::fs::remove_file(path)
+    } else {
+        Ok(())
+    };
+    if let Err(e) = removed {
+        tracing::warn!("Could not remove {name} from the old tools dir: {e}");
+    }
+}
+
 /// Move a legacy exe-side tools install to the XDG data dir (Linux only; on
 /// Windows the exe-side dir remains the home). Call at startup before
 /// anything resolves tool paths.
@@ -185,83 +180,66 @@ pub fn migrate_legacy_tools() {
     migrate_tools_dir(&exe_dir.join("lib"), &data.join("ttspotify").join("lib"));
 }
 
-/// Compute where the binaries should live.
-/// Windows: `<dir of current_exe>\lib` (unchanged; installs are per-user).
-/// Linux: exe-side `lib/` when it already holds the tools, else
-/// `~/.local/share/ttspotify/lib` (see `pick_tools_dir`).
+/// Where the binaries live.
+/// Windows: `<dir of current_exe>\lib`. Linux: `~/.local/share/ttspotify/lib`.
+///
+/// No probing. The directory used to be chosen by checking whether yt-dlp sat
+/// beside the executable, which meant the answer changed the moment the set of
+/// installed tools changed - exactly what happened when yt-dlp was removed.
+/// `migrate_legacy_tools()` runs at startup and moves any exe-side install
+/// into place, so there is nothing left to infer.
 pub fn resolve_paths() -> Result<YoutubeSetupPaths, BotError> {
     let exe = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("current_exe failed: {e}")))?;
-    let exe_dir = exe.parent()
+    let exe_dir = exe
+        .parent()
         .ok_or_else(|| BotError::Config("current_exe has no parent".to_string()))?;
-    let legacy_lib = exe_dir.join("lib");
+
     #[cfg(windows)]
-    let lib_dir = legacy_lib;
+    let lib_dir = exe_dir.join("lib");
     #[cfg(not(windows))]
-    let lib_dir = {
-        let has_tools = legacy_lib.join("yt-dlp").is_file() || legacy_lib.join("bgutil-pot").is_file();
-        pick_tools_dir(legacy_lib, has_tools, dirs::data_dir())
+    let lib_dir = match dirs::data_dir() {
+        Some(d) => d.join("ttspotify").join("lib"),
+        None => exe_dir.join("lib"),
     };
-    let (yt_dlp_name, bgutil_name, deno_name) = if cfg!(windows) {
-        ("yt-dlp.exe", "bgutil-pot.exe", "deno.exe")
-    } else {
-        ("yt-dlp", "bgutil-pot", "deno")
-    };
-    Ok(YoutubeSetupPaths {
-        yt_dlp: lib_dir.join(yt_dlp_name),
-        bgutil_pot: lib_dir.join(bgutil_name),
-        plugin_dir: lib_dir.join("yt-dlp-plugins"),
-        deno: lib_dir.join(deno_name),
-        lib_dir,
-    })
+
+    Ok(YoutubeSetupPaths { deno: lib_dir.join(deno_name()), lib_dir })
 }
 
-/// True if all three components are present on disk.
+/// True when YouTube can play: the sidecar script is written and a usable
+/// runtime exists, ours or a new enough one already on the system.
 pub fn is_installed(paths: &YoutubeSetupPaths) -> bool {
-    paths.yt_dlp.is_file() && paths.bgutil_pot.is_file() && paths.plugin_dir.is_dir()
+    // The script first: without it there is no reason to go looking for Deno.
+    let script_present = paths.lib_dir.join(crate::youtube::sidecar::SCRIPT_NAME).is_file();
+    script_present && tools_installed(script_present, &find_js_runtime(paths))
+}
+
+/// Whether the tools count as installed, given what was found.
+///
+/// A Deno on PATH counts. Counting only ours in `lib/` meant a machine with its
+/// own Deno played YouTube fine while the tray kept offering Install and never
+/// enabled Update.
+pub fn tools_installed(script_present: bool, runtime: &JsRuntime) -> bool {
+    script_present && !matches!(runtime, JsRuntime::Missing)
+}
+
+/// Tools an older version installed for yt-dlp. They cannot play anything now,
+/// so their presence without the sidecar means the tools need installing.
+pub fn has_legacy_tools(paths: &YoutubeSetupPaths) -> bool {
+    paths.lib_dir.join(BGUTIL_VERSION_FILE).is_file() || paths.lib_dir.join(ytdlp_name()).is_file()
 }
 
 /// Detected versions of the YouTube tools, for the startup version log.
 /// `None` means the tool isn't installed.
 pub struct ToolVersions {
-    pub yt_dlp: Option<String>,
-    pub bgutil: Option<String>,
-    /// The JavaScript runtime yt-dlp uses for YouTube. `None` means none was
-    /// found, which is why formats can go missing.
+    /// The JavaScript runtime the sidecar runs on. `None` means none was
+    /// found, which is why YouTube playback cannot start.
     pub js_runtime: Option<String>,
 }
 
-/// Detect installed YouTube tool versions: `yt-dlp --version` (bundled first,
-/// then PATH) and the bgutil sidecar version file.
+/// Detect which JavaScript runtime is installed, bundled copy first.
 pub fn installed_tool_versions() -> ToolVersions {
     let paths = resolve_paths().ok();
-
-    let yt_dlp_exe = paths
-        .as_ref()
-        .map(|p| p.yt_dlp.clone())
-        .filter(|p| p.is_file())
-        .or_else(|| which("yt-dlp"));
-    let yt_dlp = yt_dlp_exe.and_then(|exe| {
-        let mut cmd = std::process::Command::new(&exe);
-        cmd.arg("--version");
-        crate::proc::hide_console_window(&mut cmd);
-        let out = cmd.output().ok()?;
-        if out.status.success() {
-            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        } else {
-            None
-        }
-    });
-
-    // Run the binary rather than trusting the sidecar: the sidecar says what
-    // was downloaded, not what works.
-    let bgutil = paths.as_ref().and_then(|p| {
-        describe_bgutil(
-            p.bgutil_pot.is_file(),
-            probed_bgutil_version(p),
-            &installed_bgutil_version(p),
-        )
-    });
 
     let js_runtime = paths.as_ref().and_then(|p| match find_js_runtime(p) {
         JsRuntime::Bundled(exe) => Some(
@@ -278,11 +256,11 @@ pub fn installed_tool_versions() -> ToolVersions {
         JsRuntime::Missing => None,
     });
 
-    ToolVersions { yt_dlp, bgutil, js_runtime }
+    ToolVersions { js_runtime }
 }
 
-/// Download + install yt-dlp, bgutil-pot, and the plugin zip.
-/// Reports progress via the callback.
+/// Install the JavaScript runtime, write the sidecar, and warm its dependency
+/// cache. Reports progress via the callback.
 pub async fn install(
     paths: &YoutubeSetupPaths,
     progress: impl Fn(&str),
@@ -290,59 +268,10 @@ pub async fn install(
     fs::create_dir_all(&paths.lib_dir)
         .map_err(|e| BotError::Config(format!("create lib dir: {e}")))?;
 
-    let client = http_client()?;
-
-    // 1. yt-dlp — install the newest release, verified against that release's
-    // SHA2-256SUMS manifest. The `latest` alias redirects to the current tag;
-    // fetching the asset and its manifest from the same alias keeps them paired.
-    progress("Downloading yt-dlp (latest)...");
-    let yt_dlp_asset = yt_dlp_asset_name();
-    let yt_dlp_url = format!(
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{yt_dlp_asset}"
-    );
-    let yt_dlp_hash = match fetch_text(
-        &client,
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS",
-    ).await {
-        Ok(sums) => parse_sums_file(&sums, yt_dlp_asset),
-        Err(e) => {
-            tracing::warn!("Could not fetch yt-dlp checksums: {e}");
-            None
-        }
-    };
-    download_verified(&client, &yt_dlp_url, &paths.yt_dlp, yt_dlp_hash.as_deref(), true).await?;
-    make_executable(&paths.yt_dlp)?;
-    progress("  yt-dlp installed.");
-
-    // Fetch bgutil release asset digests once for the binary + zip.
-    let bgutil_digests = fetch_release_asset_digests(&client, BGUTIL_REPO, BGUTIL_VERSION).await;
-
-    // 2. bgutil-pot
-    progress(&format!("Downloading bgutil-pot {BGUTIL_VERSION}..."));
-    let bgutil_asset = bgutil_asset_name();
-    let bgutil_url = bgutil_download_url(BGUTIL_VERSION, bgutil_asset);
-    download_verified(&client, &bgutil_url, &paths.bgutil_pot, bgutil_digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
-    make_executable(&paths.bgutil_pot)?;
-    progress("  bgutil-pot installed.");
-
-    // 3. plugin zip
-    progress(&format!("Downloading bgutil yt-dlp plugin {BGUTIL_VERSION}..."));
-    let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
-    let plugin_url = bgutil_download_url(BGUTIL_VERSION, zip_asset);
-    let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
-    download_verified(&client, &plugin_url, &zip_path, bgutil_digests.get(zip_asset).map(|s| s.as_str()), false).await?;
-    // The zip goes whether extraction worked or not — a failed extract used
-    // to strand bgutil-plugin.zip in lib/ permanently.
-    let extracted = extract_plugin_zip(&zip_path, &paths.plugin_dir);
-    let _ = fs::remove_file(&zip_path);
-    extracted?;
-    progress("  Plugin extracted.");
-
-    // 4. JavaScript runtime. Since yt-dlp 2025.11.12 YouTube's player
-    // challenges are solved by running its own JavaScript, so without a
-    // runtime formats go missing. Deno is the one yt-dlp enables by default,
-    // and it sandboxes that untrusted code away from the file system and
-    // network. Skipped when the machine already has a usable one.
+    // 1. JavaScript runtime. The sidecar is a Deno program, so unlike the old
+    // yt-dlp setup - where a missing runtime merely cost some formats - this
+    // is the thing YouTube playback is. A Deno the user already installed is
+    // used as-is rather than downloading a second copy.
     match find_js_runtime(paths) {
         JsRuntime::OnPath => {
             progress("  JavaScript runtime: using the Deno already installed on this system.");
@@ -351,19 +280,19 @@ pub async fn install(
             progress(&format!("  JavaScript runtime: already installed ({}).", path.display()));
         }
         JsRuntime::Missing => {
-            progress("Downloading Deno (JavaScript runtime for YouTube)...");
-            if let Err(e) = install_deno(&client, paths, &progress).await {
-                // Not fatal: YouTube still plays, just with fewer formats.
-                tracing::warn!("Deno install failed: {e}");
-                progress(&format!(
-                    "  Could not install Deno ({e}). YouTube will still work, but some formats may be unavailable."
-                ));
-            }
+            progress("Downloading Deno (the runtime YouTube playback needs)...");
+            let client = http_client()?;
+            install_deno(&client, paths, &progress).await?;
         }
     }
 
-    // Record what we just installed so --update-tools can compare later.
-    let _ = fs::write(paths.lib_dir.join(BGUTIL_VERSION_FILE), BGUTIL_VERSION);
+    // 2. The sidecar itself, plus its import map and lockfile. All three are
+    // compiled into this binary, so there is nothing to download.
+    crate::youtube::sidecar::ensure_script(&paths.lib_dir)?;
+    progress("  Sidecar script installed.");
+
+    // 3. Warm the dependency cache.
+    warm_dependency_cache(paths, &progress);
 
     progress(&format!("YouTube support ready in {}", paths.lib_dir.display()));
     Ok(())
@@ -409,8 +338,26 @@ fn deno_is_supported(version: (u32, u32, u32)) -> bool {
     version >= MIN_DENO_VERSION
 }
 
-/// Ask a Deno binary its version.
+/// Ask a Deno binary its version, once per binary.
+///
+/// The tray asks whether the tools are installed on its message loop, and a
+/// Deno on PATH can only answer by being run. Remembering the answer per file
+/// keeps a process launch off that thread after the first time, and an upgrade
+/// that replaces the file is asked again.
 fn deno_version_of(exe: &Path) -> Option<(u32, u32, u32)> {
+    let Ok(meta) = fs::metadata(exe) else {
+        return probe_deno_version(exe);
+    };
+    let key = RuntimeKey {
+        path: exe.to_path_buf(),
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    };
+    static VERSIONS: std::sync::OnceLock<VersionMemo> = std::sync::OnceLock::new();
+    VERSIONS.get_or_init(VersionMemo::default).get(key, || probe_deno_version(exe))
+}
+
+fn probe_deno_version(exe: &Path) -> Option<(u32, u32, u32)> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--version");
     crate::proc::hide_console_window(&mut cmd);
@@ -418,17 +365,101 @@ fn deno_version_of(exe: &Path) -> Option<(u32, u32, u32)> {
     parse_deno_version(&String::from_utf8_lossy(&out.stdout))
 }
 
-/// A usable JavaScript runtime, preferring one already on the system so an
-/// install does not download 100 MB somebody already has.
+/// Identifies one Deno binary on disk. A replaced file differs in size or
+/// modification time, which is what makes an upgrade get asked again.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct RuntimeKey {
+    path: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// Versions already read, by binary.
+#[derive(Default)]
+struct VersionMemo {
+    seen: parking_lot::Mutex<std::collections::HashMap<RuntimeKey, (u32, u32, u32)>>,
+}
+
+impl VersionMemo {
+    fn get(
+        &self,
+        key: RuntimeKey,
+        probe: impl FnOnce() -> Option<(u32, u32, u32)>,
+    ) -> Option<(u32, u32, u32)> {
+        if let Some(v) = self.seen.lock().get(&key) {
+            return Some(*v);
+        }
+        // Probed outside the lock: it runs a process. A failure is not kept,
+        // so a Deno that could not start once is asked again next time rather
+        // than reading as missing until the bot restarts.
+        let found = probe();
+        if let Some(v) = found {
+            self.seen.lock().insert(key, v);
+        }
+        found
+    }
+}
+
+/// What Update says when the runtime is one the user installed.
+fn system_deno_update_note(version: Option<(u32, u32, u32)>) -> String {
+    let deno = version
+        .map(|(a, b, c)| format!("Deno {a}.{b}.{c}"))
+        .unwrap_or_else(|| "Deno".to_string());
+    format!(
+        "Using the {deno} installed on this system, which the bot leaves alone. \
+         Update it the way it was installed, for example with `deno upgrade`."
+    )
+}
+
+/// Fetch the sidecar's npm dependencies into the bot's Deno cache.
 ///
-/// Returns the path only when we must tell yt-dlp about it: a Deno on PATH is
-/// found by yt-dlp itself.
+/// Without this the first track pays a cold npm fetch, and a machine that is
+/// offline afterwards never plays at all. Run on update too, because a new bot
+/// version can ship a lockfile naming versions the cache does not hold yet.
+/// Not fatal: Deno fetches them by itself on first use if the network was down.
+pub fn warm_dependency_cache(paths: &YoutubeSetupPaths, progress: &dyn Fn(&str)) {
+    progress("Fetching the sidecar's dependencies...");
+    let deno = match find_js_runtime(paths) {
+        JsRuntime::Bundled(p) => p,
+        _ => which(deno_name()).unwrap_or_else(|| PathBuf::from(deno_name())),
+    };
+    let mut cmd = std::process::Command::new(&deno);
+    cmd.arg("cache")
+        .arg("--config")
+        .arg(paths.lib_dir.join(crate::youtube::sidecar::DENO_CONFIG_NAME))
+        .arg("--lock")
+        .arg(paths.lib_dir.join(crate::youtube::sidecar::DENO_LOCK_NAME))
+        .arg("--frozen")
+        .arg(paths.lib_dir.join(crate::youtube::sidecar::SCRIPT_NAME))
+        .env("DENO_DIR", crate::youtube::sidecar::deno_cache_dir());
+    crate::proc::hide_console_window(&mut cmd);
+    match cmd.output() {
+        Ok(out) if out.status.success() => progress("  Dependencies cached."),
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            tracing::warn!("deno cache failed: {}", err.trim());
+            progress("  Could not pre-fetch dependencies; they will be fetched on first play.");
+        }
+        Err(e) => {
+            tracing::warn!("deno cache could not run: {e}");
+            progress("  Could not pre-fetch dependencies; they will be fetched on first play.");
+        }
+    }
+}
+
+/// A usable JavaScript runtime, preferring one already on the system so an
+/// install does not download 40 MB somebody already has.
+///
+/// A minimum version rather than an exact pin: Deno has a stability promise,
+/// and what actually breaks between releases is the npm dependencies, which
+/// the sidecar's lockfile pins instead.
 pub enum JsRuntime {
-    /// Found on PATH; yt-dlp picks it up with no arguments.
+    /// A new enough Deno found on PATH. Used as-is.
     OnPath,
-    /// Ours, in `lib/`; yt-dlp must be pointed at it.
+    /// Ours, in `lib/`, installed because none was found or it was too old.
     Bundled(PathBuf),
-    /// Nothing usable. YouTube still works, but formats will be missing.
+    /// Nothing usable. YouTube playback cannot start at all: the sidecar is a
+    /// Deno program, not an accessory to one.
     Missing,
 }
 
@@ -533,7 +564,8 @@ pub async fn update_js_runtime(
     progress: impl Fn(&str),
 ) -> Result<(), BotError> {
     if let JsRuntime::OnPath = find_js_runtime(paths) {
-        progress("  Using the Deno installed on this system; nothing to update.");
+        let version = which("deno").and_then(|exe| deno_version_of(&exe));
+        progress(&format!("  {}", system_deno_update_note(version)));
         return Ok(());
     }
     let before = installed_deno_version(paths);
@@ -555,117 +587,11 @@ pub fn installed_deno_version(paths: &YoutubeSetupPaths) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Ask the bgutil binary its version, by running it.
-///
-/// The sidecar file records what we downloaded; this reports what actually
-/// runs. They disagree when the binary is missing, corrupt, or built for
-/// another architecture - and a PO token provider that cannot run is the
-/// difference between YouTube playing and answering 403.
-pub fn probed_bgutil_version(paths: &YoutubeSetupPaths) -> Option<String> {
-    if !paths.bgutil_pot.is_file() {
-        return None;
-    }
-    let mut cmd = std::process::Command::new(&paths.bgutil_pot);
-    cmd.arg("--version");
-    crate::proc::hide_console_window(&mut cmd);
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_bgutil_version(&String::from_utf8_lossy(&out.stdout))
-}
 
-/// Pull the version out of `bgutil-pot --version`, which prints
-/// `bgutil-pot 0.8.1`.
-fn parse_bgutil_version(output: &str) -> Option<String> {
-    let first = output.lines().next()?.trim();
-    let version = first.split_whitespace().nth(1)?;
-    (!version.is_empty()).then(|| version.to_string())
-}
 
-/// How to describe bgutil in the startup log.
-///
-/// A binary that is present but will not run is the case worth naming: it
-/// looks installed everywhere else, and its only symptom is tracks failing
-/// with no stated reason.
-pub fn describe_bgutil(file_exists: bool, probed: Option<String>, sidecar: &str) -> Option<String> {
-    match (file_exists, probed) {
-        (false, _) => None,
-        (true, Some(version)) => Some(version),
-        (true, None) => Some(format!(
-            "{sidecar} (INSTALLED BUT WILL NOT RUN - YouTube will fail with 403)"
-        )),
-    }
-}
 
-/// Returns the bgutil version recorded on disk (read from the sidecar).
-/// Falls back to the pinned const if the sidecar is missing, which covers
-/// older installs that predate the sidecar. This is what `--update-tools`
-/// compares against; for what actually runs, see `probed_bgutil_version`.
-pub fn installed_bgutil_version(paths: &YoutubeSetupPaths) -> String {
-    fs::read_to_string(paths.lib_dir.join(BGUTIL_VERSION_FILE))
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| BGUTIL_VERSION.to_string())
-}
 
-/// Re-download just the bgutil binary + plugin at a specific version,
-/// overwriting any existing files. Updates the sidecar.
-pub async fn install_bgutil_version(
-    paths: &YoutubeSetupPaths,
-    version: &str,
-    progress: impl Fn(&str),
-) -> Result<(), BotError> {
-    fs::create_dir_all(&paths.lib_dir)
-        .map_err(|e| BotError::Config(format!("create lib dir: {e}")))?;
 
-    let client = http_client()?;
-
-    let digests = fetch_release_asset_digests(&client, BGUTIL_REPO, version).await;
-
-    progress(&format!("Downloading bgutil-pot {version}..."));
-    let bgutil_asset = bgutil_asset_name();
-    let bgutil_url = bgutil_download_url(version, bgutil_asset);
-    download_verified(&client, &bgutil_url, &paths.bgutil_pot, digests.get(bgutil_asset).map(|s| s.as_str()), true).await?;
-    make_executable(&paths.bgutil_pot)?;
-
-    progress(&format!("Downloading bgutil yt-dlp plugin {version}..."));
-    let zip_asset = "bgutil-ytdlp-pot-provider-rs.zip";
-    let plugin_url = bgutil_download_url(version, zip_asset);
-    let zip_path = paths.lib_dir.join("bgutil-plugin.zip");
-    download_verified(&client, &plugin_url, &zip_path, digests.get(zip_asset).map(|s| s.as_str()), false).await?;
-    // Wipe the old plugin dir to avoid stale files lingering after a version bump.
-    let _ = fs::remove_dir_all(&paths.plugin_dir);
-    // The zip goes whether extraction worked or not — a failed extract used
-    // to strand bgutil-plugin.zip in lib/ permanently.
-    let extracted = extract_plugin_zip(&zip_path, &paths.plugin_dir);
-    let _ = fs::remove_file(&zip_path);
-    extracted?;
-
-    let _ = fs::write(paths.lib_dir.join(BGUTIL_VERSION_FILE), version);
-    progress(&format!("bgutil-pot updated to {version}."));
-    Ok(())
-}
-
-/// Hit the GitHub API for the latest bgutil release tag.
-pub async fn latest_bgutil_version() -> Result<String, BotError> {
-    let client = http_client()?;
-    let response = client
-        .get(format!("https://api.github.com/repos/{BGUTIL_REPO}/releases/latest"))
-        .send().await
-        .map_err(|e| BotError::Config(format!("GitHub API: {e}")))?;
-    if !response.status().is_success() {
-        return Err(BotError::Config(format!("GitHub API returned {}", response.status())));
-    }
-    let json: serde_json::Value = response.json().await
-        .map_err(|e| BotError::Config(format!("GitHub API JSON: {e}")))?;
-    let tag = json.get("tag_name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| BotError::Config("GitHub API: missing tag_name".to_string()))?
-        .to_string();
-    Ok(tag)
-}
 
 /// Compute the lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -692,23 +618,6 @@ fn verify_sha256(bytes: &[u8], expected_hex: &str) -> bool {
     sha256_hex(bytes).eq_ignore_ascii_case(expected_hex.trim())
 }
 
-/// Parse a `SHA2-256SUMS`-style file (`<hex>  <filename>` per line) and return
-/// the digest for `asset_name`, if present.
-fn parse_sums_file(text: &str, asset_name: &str) -> Option<String> {
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        // Skip lines that don't parse (blank, comment) instead of aborting:
-        // a `?` here made one blank line silently disable hash verification
-        // for the whole file.
-        let Some(hash) = parts.next() else { continue };
-        // The filename is the remainder (may be prefixed with '*' for binary).
-        let name = parts.next().unwrap_or("").trim_start_matches('*');
-        if name == asset_name && hash.len() == 64 {
-            return Some(hash.to_string());
-        }
-    }
-    None
-}
 
 /// Basic executable magic-byte sanity check, used as a fallback when no hash
 /// is available: PE ("MZ") on Windows, ELF ("\x7fELF") on Unix.
@@ -731,54 +640,6 @@ async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, BotEr
         .map_err(|e| BotError::Config(format!("read {url}: {e}")))
 }
 
-/// Download `url` to `dest` atomically (temp file + rename), verifying the
-/// SHA-256 when `expected_sha256` is provided. A hash mismatch aborts the
-/// install and leaves no file behind — these bytes are executed later, so a
-/// tampered or corrupted download must never land on disk. When no hash is
-/// available, fall back to a magic-byte sanity check for executables.
-/// Fetch a GitHub release's asset SHA-256 digests, keyed by asset filename.
-/// GitHub populates `assets[].digest` as `sha256:<hex>` for most releases; any
-/// asset without a digest is simply absent from the map. Returns an empty map
-/// (not an error) if the release can't be fetched, so verification degrades to
-/// the magic-byte fallback rather than blocking installs.
-async fn fetch_release_asset_digests(
-    client: &reqwest::Client,
-    repo: &str,
-    tag: &str,
-) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
-    let json: serde_json::Value = match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => match resp.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("bgutil release JSON parse failed: {e}");
-                return map;
-            }
-        },
-        Ok(resp) => {
-            tracing::warn!("bgutil release API returned {}", resp.status());
-            return map;
-        }
-        Err(e) => {
-            tracing::warn!("bgutil release API request failed: {e}");
-            return map;
-        }
-    };
-    if let Some(assets) = json.get("assets").and_then(|a| a.as_array()) {
-        for asset in assets {
-            let name = asset.get("name").and_then(|v| v.as_str());
-            let digest = asset
-                .get("digest")
-                .and_then(|v| v.as_str())
-                .and_then(|d| d.strip_prefix("sha256:"));
-            if let (Some(name), Some(digest)) = (name, digest) {
-                map.insert(name.to_string(), digest.to_string());
-            }
-        }
-    }
-    map
-}
 
 async fn download_verified(
     client: &reqwest::Client,
@@ -855,38 +716,6 @@ fn make_executable(_path: &Path) -> Result<(), BotError> {
     Ok(())
 }
 
-fn extract_plugin_zip(zip_path: &Path, dest_dir: &Path) -> Result<(), BotError> {
-    let file = fs::File::open(zip_path)
-        .map_err(|e| BotError::Config(format!("open zip: {e}")))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| BotError::Config(format!("read zip: {e}")))?;
-
-    fs::create_dir_all(dest_dir)
-        .map_err(|e| BotError::Config(format!("mkdir plugin dir: {e}")))?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)
-            .map_err(|e| BotError::Config(format!("zip entry {i}: {e}")))?;
-        let outpath = match entry.enclosed_name() {
-            Some(p) => dest_dir.join(p),
-            None => continue,
-        };
-        if entry.is_dir() {
-            fs::create_dir_all(&outpath)
-                .map_err(|e| BotError::Config(format!("mkdir {}: {e}", outpath.display())))?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| BotError::Config(format!("mkdir {}: {e}", parent.display())))?;
-            }
-            let mut out = fs::File::create(&outpath)
-                .map_err(|e| BotError::Config(format!("create {}: {e}", outpath.display())))?;
-            std::io::copy(&mut entry, &mut out)
-                .map_err(|e| BotError::Config(format!("write {}: {e}", outpath.display())))?;
-        }
-    }
-    Ok(())
-}
 
 /// Default cookies file path. The bot auto-loads this if it exists when
 /// `youtube_cookies_file` is empty.
@@ -928,33 +757,39 @@ mod tests {
         dir
     }
 
+    /// A tools dir as an older version left it: live tools plus the ones this
+    /// release no longer uses.
     fn fake_legacy_install(legacy: &Path) {
         std::fs::create_dir_all(legacy).unwrap();
-        for name in tool_item_names() {
-            if name == "yt-dlp-plugins" {
+        for name in live_item_names().iter().chain(dead_item_names().iter()) {
+            if *name == "yt-dlp-plugins" {
                 let plug = legacy.join(name).join("bgutil_ytdlp_pot_provider");
                 std::fs::create_dir_all(&plug).unwrap();
                 std::fs::write(plug.join("plugin.py"), "py").unwrap();
             } else {
-                std::fs::write(legacy.join(name), name).unwrap();
+                std::fs::write(legacy.join(name), *name).unwrap();
             }
         }
     }
 
     #[test]
-    fn migrates_marked_lib_and_removes_empty_legacy() {
+    fn migration_carries_live_tools_and_deletes_dead_ones() {
         let base = mig_tmp("full");
         let legacy = base.join("lib");
         fake_legacy_install(&legacy);
         let target = base.join("data").join("ttspotify").join("lib");
 
         assert!(migrate_tools_dir(&legacy, &target));
-        for name in tool_item_names() {
+        for name in live_item_names() {
             assert!(target.join(name).exists(), "missing {name} in target");
             assert!(!legacy.join(name).exists(), "{name} left in legacy");
         }
-        // Plugin contents survived the move.
-        assert!(target.join("yt-dlp-plugins").join("bgutil_ytdlp_pot_provider").join("plugin.py").is_file());
+        // Obsolete tools are removed, not carried into the directory the bot
+        // now uses - otherwise every upgrade drags ~100MB of dead weight along.
+        for name in dead_item_names() {
+            assert!(!target.join(name).exists(), "{name} should not have been moved");
+            assert!(!legacy.join(name).exists(), "{name} should have been deleted");
+        }
         // Nothing of ours left: the folder itself goes too.
         assert!(!legacy.exists());
 
@@ -962,78 +797,78 @@ mod tests {
     }
 
     #[test]
-    fn refuses_lib_without_our_marker() {
-        // No .bgutil-version sidecar: could be anyone's lib folder. Hands off.
-        let base = mig_tmp("unmarked");
+    fn migration_recognises_a_dir_holding_only_the_sidecar() {
+        // A post-migration install has no .bgutil-version; it must still be
+        // recognised as ours or a later migration would refuse to run.
+        let base = mig_tmp("newonly");
         let legacy = base.join("lib");
         std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("yt-dlp"), "x").unwrap();
-        let target = base.join("data").join("lib");
-
-        assert!(!migrate_tools_dir(&legacy, &target));
-        assert!(legacy.join("yt-dlp").is_file());
-        assert!(!target.exists());
-
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn keeps_legacy_dir_when_it_holds_foreign_files() {
-        let base = mig_tmp("foreign");
-        let legacy = base.join("lib");
-        fake_legacy_install(&legacy);
-        std::fs::write(legacy.join("users-own-notes.txt"), "keep me").unwrap();
-        let target = base.join("data").join("lib");
+        std::fs::write(legacy.join(crate::youtube::sidecar::SCRIPT_NAME), "// x").unwrap();
+        let target = base.join("data");
 
         assert!(migrate_tools_dir(&legacy, &target));
-        // Our items moved, the stranger's file and its folder stay.
-        assert!(legacy.join("users-own-notes.txt").is_file());
-        assert!(!legacy.join(BGUTIL_VERSION_FILE).exists());
-        assert!(target.join(BGUTIL_VERSION_FILE).is_file());
+        assert!(target.join(crate::youtube::sidecar::SCRIPT_NAME).is_file());
 
         let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
-    fn existing_exe_side_lib_with_tools_wins() {
-        let legacy = PathBuf::from("/opt/bot/lib");
-        let picked = pick_tools_dir(legacy.clone(), true, Some(PathBuf::from("/home/u/.local/share")));
-        assert_eq!(picked, legacy);
+    fn tools_left_by_the_yt_dlp_versions_are_recognised() {
+        let base = mig_tmp("legacy");
+        let paths = YoutubeSetupPaths { deno: base.join(deno_name()), lib_dir: base.clone() };
+        assert!(!has_legacy_tools(&paths), "an empty folder is not a legacy install");
+
+        std::fs::write(base.join(BGUTIL_VERSION_FILE), "0.8.4").unwrap();
+        assert!(has_legacy_tools(&paths));
+        assert!(!is_installed(&paths), "a legacy install has no sidecar, so it cannot play");
+
+        std::fs::remove_file(base.join(BGUTIL_VERSION_FILE)).unwrap();
+        std::fs::write(base.join(ytdlp_name()), "binary").unwrap();
+        assert!(has_legacy_tools(&paths), "yt-dlp alone is enough to tell");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
-    fn fresh_install_uses_xdg_data_dir() {
-        let picked = pick_tools_dir(
-            PathBuf::from("/usr/local/bin/lib"),
-            false,
-            Some(PathBuf::from("/home/u/.local/share")),
-        );
-        assert_eq!(picked, PathBuf::from("/home/u/.local/share/ttspotify/lib"));
+    fn migration_refuses_a_directory_that_is_not_ours() {
+        let base = mig_tmp("foreign");
+        let legacy = base.join("lib");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("somebody-elses-file"), "x").unwrap();
+
+        assert!(!migrate_tools_dir(&legacy, &base.join("data")));
+        assert!(legacy.join("somebody-elses-file").is_file(), "must not touch it");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
-    fn missing_data_dir_falls_back_to_exe_side_lib() {
-        let legacy = PathBuf::from("/opt/bot/lib");
-        assert_eq!(pick_tools_dir(legacy.clone(), false, None), legacy);
+    #[cfg(not(windows))]
+    fn tools_dir_is_the_data_dir_with_no_probing() {
+        // The old code returned the exe-side dir when it spotted yt-dlp there,
+        // so removing yt-dlp would have silently relocated every install.
+        // Startup migration means there is one answer.
+        let paths = resolve_paths().expect("resolve");
+        if let Some(data) = dirs::data_dir() {
+            assert_eq!(paths.lib_dir, data.join("ttspotify").join("lib"));
+        }
     }
 
     #[test]
     fn resolve_paths_lands_in_lib_subdir() {
         let paths = resolve_paths().expect("resolve_paths");
         assert!(paths.lib_dir.ends_with("lib"));
-        assert!(paths.yt_dlp.starts_with(&paths.lib_dir));
-        assert!(paths.bgutil_pot.starts_with(&paths.lib_dir));
-        assert!(paths.plugin_dir.starts_with(&paths.lib_dir));
+        assert!(paths.deno.starts_with(&paths.lib_dir));
     }
 
     #[test]
-    fn yt_dlp_filename_matches_platform() {
+    fn deno_filename_matches_platform() {
         let paths = resolve_paths().unwrap();
-        let name = paths.yt_dlp.file_name().unwrap().to_str().unwrap();
+        let name = paths.deno.file_name().unwrap().to_str().unwrap();
         if cfg!(windows) {
-            assert_eq!(name, "yt-dlp.exe");
+            assert_eq!(name, "deno.exe");
         } else {
-            assert_eq!(name, "yt-dlp");
+            assert_eq!(name, "deno");
         }
     }
 
@@ -1057,92 +892,6 @@ mod tests {
         let h = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
         assert!(verify_sha256(b"abc", h));
         assert!(!verify_sha256(b"abd", h));
-    }
-
-    #[test]
-    fn parse_sums_file_finds_asset() {
-        let text = "\
-aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  yt-dlp.exe
-bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222 *yt-dlp_linux
-short  ignored.bin";
-        assert_eq!(
-            parse_sums_file(text, "yt-dlp.exe").as_deref(),
-            Some("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
-        );
-        // Handles the '*' binary-mode prefix.
-        assert_eq!(
-            parse_sums_file(text, "yt-dlp_linux").as_deref(),
-            Some("bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222")
-        );
-        // Missing asset -> None; malformed short hash -> not matched.
-        assert_eq!(parse_sums_file(text, "nope.exe"), None);
-        assert_eq!(parse_sums_file(text, "ignored.bin"), None);
-    }
-
-    #[test]
-    fn parse_sums_file_survives_blank_and_comment_lines() {
-        // A blank line used to abort the scan via `?`, silently downgrading
-        // yt-dlp verification to the magic-byte fallback.
-        let text = "\n# comment\n\naaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  yt-dlp.exe\n";
-        assert_eq!(
-            parse_sums_file(text, "yt-dlp.exe").as_deref(),
-            Some("aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111")
-        );
-    }
-}
-
-#[cfg(test)]
-mod bgutil_reporting_tests {
-    use super::*;
-
-    #[test]
-    fn a_working_binary_reports_the_version_it_printed() {
-        assert_eq!(
-            describe_bgutil(true, Some("0.8.1".to_string()), "v0.8.0"),
-            Some("0.8.1".to_string()),
-            "what runs wins over what the sidecar remembers"
-        );
-    }
-
-    #[test]
-    fn a_binary_that_will_not_run_says_so_loudly() {
-        // The case that hid a broken PO token provider for months: present on
-        // disk, reported as installed, and silently doing nothing. Its only
-        // symptom was tracks failing with no stated reason, so the log has to
-        // name it.
-        let described = describe_bgutil(true, None, "v0.8.1").expect("should describe");
-        assert!(described.contains("WILL NOT RUN"), "got: {described}");
-        assert!(described.contains("403"), "should name the symptom: {described}");
-    }
-
-    #[test]
-    fn a_missing_binary_is_simply_absent() {
-        // Not installed is a normal state for a Spotify-only user, and must not
-        // read as a fault.
-        assert_eq!(describe_bgutil(false, None, "v0.8.1"), None);
-    }
-
-    #[test]
-    fn the_version_is_read_from_what_the_binary_prints() {
-        assert_eq!(
-            parse_bgutil_version("bgutil-pot 0.8.1
-"),
-            Some("0.8.1".to_string())
-        );
-        assert_eq!(
-            parse_bgutil_version("bgutil-pot 1.0.0-rc.2"),
-            Some("1.0.0-rc.2".to_string())
-        );
-    }
-
-    #[test]
-    fn unreadable_version_output_is_not_invented() {
-        // Better to report "will not run" than to make a version up.
-        assert_eq!(parse_bgutil_version(""), None);
-        assert_eq!(parse_bgutil_version("bgutil-pot"), None);
-        assert_eq!(parse_bgutil_version("
-
-"), None);
     }
 }
 
@@ -1208,5 +957,49 @@ mod deno_tests {
         assert_eq!(paths.deno.parent(), Some(paths.lib_dir.as_path()));
         let name = paths.deno.file_name().unwrap().to_string_lossy().to_string();
         assert_eq!(name, if cfg!(windows) { "deno.exe" } else { "deno" });
+    }
+
+    #[rstest]
+    #[case(true, JsRuntime::Bundled(PathBuf::from("lib/deno")), true)]
+    // A new enough Deno the user installed themselves is as good as ours. The
+    // tray used to count only ours, so with a system Deno it kept offering
+    // Install and never enabled Update, although playback worked.
+    #[case(true, JsRuntime::OnPath, true)]
+    #[case(true, JsRuntime::Missing, false)]
+    #[case(false, JsRuntime::Bundled(PathBuf::from("lib/deno")), false)]
+    #[case(false, JsRuntime::OnPath, false)]
+    fn installed_means_the_script_and_a_usable_runtime(
+        #[case] script_present: bool,
+        #[case] runtime: JsRuntime,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(tools_installed(script_present, &runtime), expected);
+    }
+
+    #[test]
+    fn a_runtime_is_asked_its_version_once_per_binary() {
+        // The tray checks on the message loop; spawning `deno --version` every
+        // time would put a process launch there.
+        let memo = VersionMemo::default();
+        let calls = std::cell::Cell::new(0);
+        let key = |len| RuntimeKey { path: PathBuf::from("deno"), len, modified: None };
+        let probe = || {
+            calls.set(calls.get() + 1);
+            Some((2, 6, 2))
+        };
+        assert_eq!(memo.get(key(10), probe), Some((2, 6, 2)));
+        assert_eq!(memo.get(key(10), probe), Some((2, 6, 2)));
+        assert_eq!(calls.get(), 1, "the same binary was asked twice");
+        // An upgrade replaces the file, so it must be asked again.
+        memo.get(key(11), probe);
+        assert_eq!(calls.get(), 2, "a replaced binary kept its old answer");
+    }
+
+    #[test]
+    fn a_system_deno_is_left_to_its_owner_with_directions() {
+        let note = system_deno_update_note(Some((2, 6, 2)));
+        assert!(note.contains("2.6.2"), "{note}");
+        assert!(note.contains("deno upgrade"), "{note}");
+        assert!(system_deno_update_note(None).contains("deno upgrade"));
     }
 }

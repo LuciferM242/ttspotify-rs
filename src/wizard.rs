@@ -365,9 +365,9 @@ pub fn run_wizard(
         println!("YouTube Support");
         let yt_default = if default_service == Service::YouTube { "y" } else { "n" };
         let prompt = if default_service == Service::YouTube {
-            "YouTube support requires extra binaries (~50 MB: yt-dlp, bgutil-pot, plugin). Download now? (Y/n)"
+            "YouTube support requires a JavaScript runtime (Deno, ~40 MB). Download now? (Y/n)"
         } else {
-            "You can also enable YouTube support. Downloads ~50 MB of binaries (yt-dlp, bgutil-pot, plugin). Skip if you only need Spotify. Install YouTube support? (y/N)"
+            "You can also enable YouTube support. Downloads a JavaScript runtime (Deno, ~40 MB). Skip if you only need Spotify. Install YouTube support? (y/N)"
         };
         let do_yt = ask(prompt, yt_default, false);
         let want_yt = matches!(
@@ -458,9 +458,8 @@ pub fn run_youtube_setup() -> Result<(), BotError> {
 
 /// Public entry point for `--update-tools`.
 ///
-/// 1. Self-update yt-dlp via its built-in `--update` command.
-/// 2. Compare installed bgutil version (sidecar) with the latest GitHub release.
-///    Re-download bgutil + plugin only if newer is available.
+/// 1. Rewrite the sidecar script from the copy compiled into this binary.
+/// 2. Refresh the JavaScript runtime it needs.
 pub fn run_update_tools() -> Result<(), BotError> {
     let paths = setup::resolve_paths()?;
 
@@ -472,44 +471,15 @@ pub fn run_update_tools() -> Result<(), BotError> {
         return Ok(());
     }
 
-    // 1. yt-dlp self-update. The socket timeout bounds a dead network, same
-    // as the tray's update path — a stalled connection should end in an error
-    // line, not a terminal that hangs until the OS gives up.
-    println!("Updating yt-dlp...");
-    match std::process::Command::new(&paths.yt_dlp)
-        .args(["--update", "--socket-timeout", "30"])
-        .status()
-    {
-        Ok(status) if status.success() => {
-            println!("  yt-dlp update check complete.");
-        }
-        Ok(status) => {
-            println!("  yt-dlp --update exited with {status}");
-        }
-        Err(e) => {
-            println!("  Could not run yt-dlp --update: {e}");
-        }
+    // The only thing left to update is the runtime. The sidecar and its pinned
+    // dependencies ship inside this binary, so they are already current the
+    // moment the bot itself is.
+    println!("Refreshing the sidecar script...");
+    match crate::youtube::sidecar::ensure_script(&paths.lib_dir) {
+        Ok(_) => println!("  Sidecar up to date."),
+        Err(e) => println!("  Could not write the sidecar: {e}"),
     }
 
-    // 2. bgutil version check vs GitHub releases.
-    println!();
-    println!("Checking bgutil-pot for updates...");
-    let installed = setup::installed_bgutil_version(&paths);
-    let latest = run_blocking_async(|| async { setup::latest_bgutil_version().await })?;
-
-    if installed == latest {
-        println!("  bgutil-pot already on {installed} (latest).");
-    } else {
-        println!("  Installed: {installed}, latest: {latest}. Updating...");
-        let target = latest.clone();
-        run_blocking_async(move || async move {
-            let paths = setup::resolve_paths()?;
-            setup::install_bgutil_version(&paths, &target, |line| println!("  {line}")).await
-        })?;
-    }
-
-    // 3. JavaScript runtime: yt-dlp needs one to solve YouTube's player
-    // challenges, and it changes often enough to be worth refreshing.
     println!();
     println!("Checking the JavaScript runtime (Deno)...");
     if let Err(e) = run_blocking_async(|| async {
@@ -517,8 +487,11 @@ pub fn run_update_tools() -> Result<(), BotError> {
         setup::update_js_runtime(&paths, |line| println!("  {line}")).await
     }) {
         println!("  Could not update Deno: {e}");
-        println!("  YouTube will still work, but some formats may be unavailable.");
+        println!("  The Deno already installed is still used.");
     }
+
+    println!();
+    setup::warm_dependency_cache(&paths, &|line| println!("  {line}"));
 
     println!();
     println!("  Done.");

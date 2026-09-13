@@ -303,9 +303,8 @@ pub async fn run_bot(
 
     tracing::info!("TeamTalk Spotify Bot starting...");
     tracing::info!("Config loaded from {}", config_path);
-    // On a background worker, not inline: the tool probes RUN the tools to ask
-    // their versions, and yt-dlp alone (a PyInstaller binary that unpacks
-    // itself every start) costs ~0.9 s warm and several seconds cold — that
+    // On a background worker, not inline: probing the runtime RUNS it to ask
+    // its version, which costs ~0.9 s warm and several seconds cold — and that
     // was sitting between launch and the TeamTalk login. The log line arriving
     // a moment later is fine; delaying the connect for it is not.
     tokio::task::spawn_blocking(log_startup_versions);
@@ -818,7 +817,7 @@ pub async fn run_bot(
 }
 
 /// Log the app version plus the versions of the tools we depend on (TeamTalk
-/// SDK, yt-dlp, bgutil-pot). Written to each instance's log at startup so a bug
+/// SDK, JavaScript runtime). Written to each instance's log at startup so a bug
 /// report's log self-identifies exactly what was running.
 fn log_startup_versions() {
     let app = env!("CARGO_PKG_VERSION");
@@ -830,15 +829,11 @@ fn log_startup_versions() {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     let tools = crate::youtube::setup::installed_tool_versions();
-    let yt = tools.yt_dlp.as_deref().unwrap_or("not installed");
-    let bg = tools.bgutil.as_deref().unwrap_or("not installed");
-    // Without a JavaScript runtime yt-dlp cannot solve YouTube's player
-    // challenges, and formats quietly go missing - worth seeing in any log
-    // that comes with a bug report.
-    let js = tools.js_runtime.as_deref().unwrap_or("none (some YouTube formats unavailable)");
-    tracing::info!(
-        "Versions — app: v{app}, TeamTalk SDK: {sdk}, yt-dlp: {yt}, bgutil-pot: {bg}, JS runtime: {js}"
-    );
+    // The sidecar is a Deno program, so without a runtime YouTube playback
+    // cannot start at all - worth seeing in any log that comes with a bug
+    // report.
+    let js = tools.js_runtime.as_deref().unwrap_or("none (YouTube playback unavailable)");
+    tracing::info!("Versions — app: v{app}, TeamTalk SDK: {sdk}, JS runtime: {js}");
 }
 
 fn schedule_radio_prefetch(

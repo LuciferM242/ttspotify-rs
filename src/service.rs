@@ -462,9 +462,8 @@ fn unescape_specifiers(path: &str) -> String {
 ///
 /// The sandbox block makes the filesystem read-only to the bot except its own
 /// dirs: the config dir (configs, logs, caches, and — via WorkingDirectory —
-/// the downloaded TeamTalk SDK), the YouTube tools dir, and ~/.cache (yt-dlp's
-/// own cache). The `-` prefix keeps a not-yet-created path from failing the
-/// unit.
+/// the downloaded TeamTalk SDK), the YouTube tools dir, and ~/.cache. The `-`
+/// prefix keeps a not-yet-created path from failing the unit.
 fn unit_file_contents(exec_start: &str, config_dir: &Path, tools_dir: Option<&Path>) -> String {
     // WorkingDirectory and ReadWritePaths are specifier-expanded as well, so a
     // `%` in any of these paths has to survive as a literal.

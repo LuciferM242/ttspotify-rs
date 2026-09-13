@@ -1,5 +1,8 @@
 pub mod cache;
 pub mod metadata;
+pub mod mp4;
 pub mod player;
+pub mod ranged;
 pub mod setup;
+pub mod sidecar;
 pub mod types;

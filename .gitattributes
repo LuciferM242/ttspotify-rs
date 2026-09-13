@@ -2,3 +2,6 @@
 # CRLF in the shebang line on Windows checkouts.
 *.sh text eol=lf
 .githooks/pre-push text eol=lf
+
+# The sidecar is read by Deno on every platform; keep it LF like the shell scripts.
+*.ts text eol=lf

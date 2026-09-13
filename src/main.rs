@@ -373,7 +373,7 @@ enum ServiceAction {
 #[cfg(not(windows))]
 #[derive(clap::Subcommand)]
 enum YoutubeAction {
-    /// Download yt-dlp, bgutil-pot and a JavaScript runtime
+    /// Download the JavaScript runtime YouTube playback needs
     Install,
     /// Update those tools in place
     Update,

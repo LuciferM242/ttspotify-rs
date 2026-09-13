@@ -110,6 +110,14 @@ pub fn run() {
     // Only gate startup on an update check when there is something to gate:
     // a fresh install has no bots to delay, so it goes straight to the
     // "create a config?" prompt with no network wait.
+    // Ask a Deno on PATH its version now, off the message loop, so the first
+    // menu does not launch it there. The answer is remembered per binary.
+    std::thread::spawn(|| {
+        if let Ok(paths) = crate::youtube::setup::resolve_paths() {
+            let _ = crate::youtube::setup::is_installed(&paths);
+        }
+    });
+
     let has_configs = !crate::config::list_configs().is_empty();
     let update_rx = if has_configs && crate::settings::load().check_updates_on_startup {
         let (tx, rx) = crossbeam_channel::unbounded();

@@ -1,6 +1,5 @@
 //! Where downloaded YouTube tracks are kept between plays.
 
-use std::io;
 use std::path::{Path, PathBuf};
 
 /// Directory holding cached tracks. Matches the `youtube` entry in
@@ -53,18 +52,6 @@ pub fn mark_played(path: &Path) {
     if let Err(e) = crate::audio_cache::touch(path) {
         tracing::debug!("could not mark {} as played: {e}", path.display());
     }
-}
-
-/// Move a completed download into place.
-pub fn publish(partial: &Path, video_id: &str) -> io::Result<PathBuf> {
-    let Some(target) = track_path(video_id) else {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "unusable video id"));
-    };
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(partial, &target)?;
-    Ok(target)
 }
 
 #[cfg(test)]
@@ -131,22 +118,5 @@ mod tests {
         let id = "dQw4w9WgXcQ";
         assert_eq!(track_path(id), track_path(id));
         assert_ne!(partial_path(id), partial_path(id));
-    }
-
-    #[test]
-    fn publishing_moves_the_partial_into_place() {
-        let dir = std::env::temp_dir().join(format!("ttspotify_ytpub_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let partial = dir.join("x.part");
-        std::fs::write(&partial, b"audio").unwrap();
-
-        // publish() targets the real cache dir, so exercise the rename itself.
-        let target = dir.join("dQw4w9WgXcQ.m4a");
-        std::fs::rename(&partial, &target).unwrap();
-        assert!(!partial.exists());
-        assert_eq!(std::fs::read(&target).unwrap(), b"audio");
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

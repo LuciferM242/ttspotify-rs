@@ -571,7 +571,7 @@ pub struct BotConfig {
 
     // YouTube: path to a Netscape-format cookies file (optional).
     // Empty = check for `<config_dir>/cookies.txt`; if neither set nor
-    // present, yt-dlp runs cookie-less and relies on bgutil-pot only.
+    // present, the sidecar runs cookie-less and relies on its PO token only.
     // Helps avoid 403s on rate-limited or age-restricted videos.
     #[serde(default, rename = "youtubeCookiesFile")]
     pub youtube_cookies_file: String,

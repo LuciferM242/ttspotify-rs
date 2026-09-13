@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::config::BotConfig;
 use crate::error::BotError;
-use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
+use crate::youtube::setup::{default_cookies_path, resolve_paths, which};
 use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 
 /// Opaque continuation for a playlist whose first page has been returned but
@@ -30,28 +30,22 @@ pub enum YtResolved {
 /// YouTube Music metadata service.
 ///
 /// Search and track metadata go through rustypipe (fast, native).
-/// Stream URL resolution goes through `yt-dlp` because rustypipe's
-/// signature deobfuscator can't keep up with YouTube's player JS
+/// Audio fetching goes through the Deno sidecar (see `sidecar.rs`), because
+/// rustypipe's signature deobfuscator can't keep up with YouTube's player JS
 /// changes.
 pub struct YouTubeMetadata {
     client: Arc<RustyPipe>,
-    /// Path passed to `yt-dlp --cookies <file>`. Empty = don't pass.
+    /// Cookies file handed to the sidecar. Empty = don't pass one.
     /// Resolved at init: explicit config override → falls back to the
     /// default `<config_dir>/cookies.txt` if it exists → empty.
     cookies_file: String,
-    /// Resolved paths for the bundled binaries + plugin dir.
-    /// `Some` if the bot can find them; `None` falls back to PATH.
-    bundle: Option<YoutubeSetupPaths>,
-    /// Resolved yt-dlp executable path. PATH lookup happens once at
-    /// construction; falls back to the bundled binary or the bare name.
-    yt_dlp_exe: PathBuf,
+    /// Resolved Deno executable. The bundled copy wins so `youtube update`
+    /// stays in control; a new enough Deno already on PATH is used as-is
+    /// rather than downloading a second one.
+    deno_exe: PathBuf,
+    /// Where the sidecar script, its import map and its lockfile are written.
+    lib_dir: PathBuf,
 }
-
-/// The player clients tried in turn until one yields audio bytes.
-pub const PLAYER_CLIENTS: [&str; 3] = ["web_embedded", "tv_simply", "android_vr"];
-
-/// The client tried first. See [`PLAYER_CLIENTS`].
-pub const PRIMARY_CLIENT: &str = PLAYER_CLIENTS[0];
 
 /// `resolve_paths` looks beside the running executable; a test binary runs
 /// from `target/<profile>/deps`, one level below the real `lib/`.
@@ -59,35 +53,28 @@ pub const PRIMARY_CLIENT: &str = PLAYER_CLIENTS[0];
 pub fn find_bundled_tools() -> Option<crate::youtube::setup::YoutubeSetupPaths> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
-    let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
-        ("yt-dlp.exe", "bgutil-pot.exe")
-    } else {
-        ("yt-dlp", "bgutil-pot")
-    };
     for _ in 0..3 {
         let lib_dir = dir.join("lib");
-        if lib_dir.join(yt_dlp_name).is_file() {
-            return Some(crate::youtube::setup::YoutubeSetupPaths {
-                yt_dlp: lib_dir.join(yt_dlp_name),
-                bgutil_pot: lib_dir.join(bgutil_name),
-                plugin_dir: lib_dir.join("yt-dlp-plugins"),
-                deno: lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
-                lib_dir,
-            });
+        let deno = lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" });
+        if deno.is_file() {
+            return Some(crate::youtube::setup::YoutubeSetupPaths { deno, lib_dir });
         }
         dir = dir.parent()?;
     }
     None
 }
 
-/// A metadata client pointed at the bundled tools, for tests that really fetch.
-/// `None` when the tools are not installed.
+/// A metadata client for tests that really fetch: the bundled tools when they
+/// are there, otherwise a Deno on PATH. `None` when there is no Deno at all.
 #[cfg(test)]
 pub fn for_tests() -> Option<YouTubeMetadata> {
-    let bundle = find_bundled_tools()?;
     let mut meta = YouTubeMetadata::new(&crate::config::BotConfig::default()).ok()?;
-    meta.yt_dlp_exe = bundle.yt_dlp.clone();
-    meta.bundle = Some(bundle);
+    if let Some(bundle) = find_bundled_tools() {
+        meta.deno_exe = bundle.deno.clone();
+        meta.lib_dir = bundle.lib_dir.clone();
+    } else if which(if cfg!(windows) { "deno.exe" } else { "deno" }).is_none() {
+        return None;
+    }
     Some(meta)
 }
 
@@ -104,7 +91,10 @@ impl YouTubeMetadata {
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
         // Resolve bundled paths but don't require them — falling back to PATH
         // keeps the manual-install path working.
-        let bundle = resolve_paths().ok().filter(|p| p.yt_dlp.is_file());
+        // Not filtered on any tool being present: this only answers "where do
+        // the tools live", and the answer must not change because one of them
+        // has not been installed yet.
+        let bundle = resolve_paths().ok();
 
         // Cookies: explicit override wins; otherwise look for the default path.
         let cookies_file = if !config.youtube_cookies_file.is_empty() {
@@ -114,8 +104,8 @@ impl YouTubeMetadata {
             } else if default_cookies_path().is_file() {
                 // The layout migration moved <root>/cookies.txt into config/
                 // but configs holding the old absolute path were not rewritten;
-                // without this rescue every yt-dlp spawn died on "unable to
-                // open cookie file" with nothing tying it to the move.
+                // without this rescue every spawn died on "unable to open
+                // cookie file" with nothing tying it to the move.
                 let default = default_cookies_path();
                 tracing::warn!(
                     "YouTube: configured cookies file {} does not exist; using {} instead. Update youtubeCookiesFile in the config.",
@@ -124,11 +114,11 @@ impl YouTubeMetadata {
                 );
                 default.to_string_lossy().into_owned()
             } else {
-                // No fallback available: keep the configured path so yt-dlp's
-                // own loud "unable to open cookie file" error still surfaces a
-                // genuine typo, but say up front why playback is about to fail.
+                // No fallback available: keep the configured path so the
+                // failure still names a genuine typo, but say up front why
+                // playback is about to fail.
                 tracing::warn!(
-                    "YouTube: configured cookies file {} does not exist; yt-dlp will refuse to start until the file is restored or the setting is cleared",
+                    "YouTube: configured cookies file {} does not exist; playback will fail until the file is restored or the setting is cleared",
                     configured.display()
                 );
                 config.youtube_cookies_file.clone()
@@ -143,20 +133,27 @@ impl YouTubeMetadata {
             }
         };
 
-        // Resolve yt-dlp once: prefer the bundled copy under <exe-dir>/lib since
-        // its version is paired with the bundled bgutil plugin and kept current
-        // by --update-tools. Fall back to a PATH install, then a bare `yt-dlp`
-        // (NotFound at spawn time). A stale PATH yt-dlp otherwise wins and 403s
-        // on YouTube's current PO-token requirements.
-        let yt_dlp_exe = bundle.as_ref().map(|b| b.yt_dlp.clone())
-            .or_else(|| which("yt-dlp"))
-            .unwrap_or_else(|| PathBuf::from("yt-dlp"));
+        // Resolve the runtime once. The bundled copy wins so `youtube update`
+        // stays in control of it; otherwise a Deno the user already installed
+        // is used rather than downloading a second one, and a bare name is the
+        // last resort so a missing runtime is a NotFound at spawn time with a
+        // message that names it.
+        let lib_dir = bundle
+            .as_ref()
+            .map(|b| b.lib_dir.clone())
+            .unwrap_or_else(|| PathBuf::from("lib"));
+        let deno_exe = bundle
+            .as_ref()
+            .map(|b| b.deno.clone())
+            .filter(|p| p.is_file())
+            .or_else(|| which(if cfg!(windows) { "deno.exe" } else { "deno" }))
+            .unwrap_or_else(|| PathBuf::from("deno"));
 
         Ok(Self {
             client: Arc::new(client),
             cookies_file,
-            bundle,
-            yt_dlp_exe,
+            deno_exe,
+            lib_dir,
         })
     }
 
@@ -294,118 +291,16 @@ impl YouTubeMetadata {
         }
     }
 
-    /// Spawn yt-dlp as a child process that streams M4A audio bytes to its
-    /// stdout. The caller owns the `Child` — drop or kill it to stop the
-    /// download (and free the pipe). yt-dlp handles all of YouTube's
-    /// header/cookie/fragment requirements.
-    pub fn spawn_ytdlp(&self, video_id: &str) -> Result<std::process::Child, BotError> {
-        self.spawn_ytdlp_with_client(video_id, PRIMARY_CLIENT)
-    }
-
-    /// As `spawn_ytdlp`, asking YouTube through a named player client.
+    /// Spawn the sidecar, which prints where the track's audio is: one JSON
+    /// line read with `sidecar::parse_stream_info`.
     ///
-    /// See [`PLAYER_CLIENTS`] for which clients are tried and why.
-    pub fn spawn_ytdlp_with_client(
-        &self,
-        video_id: &str,
-        client: &str,
-    ) -> Result<std::process::Child, BotError> {
-        use std::process::{Command, Stdio};
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
-
-        let mut cmd = Command::new(&self.yt_dlp_exe);
-        cmd.args([
-            "--no-warnings",
-            "--no-playlist",
-            "-f", "bestaudio[ext=m4a]/bestaudio",
-            "-o", "-",
-        ]);
-
-        // Ask one client rather than letting yt-dlp poll several. Left to
-        // itself it queries the tv and android players and merges the formats,
-        // which is most of the wait before a track starts.
-        //
-        // Deliberately no `player_skip`. It is the usual advice for speed and
-        // it does not work here: skipping the webpage made YouTube answer
-        // "Sign in to confirm you're not a bot" whether or not a PO token was
-        // present.
-        cmd.arg("--extractor-args");
-        cmd.arg(format!("youtube:player_client={client}"));
-
-        // Wire the bgutil-pot plugin and binary if bundled.
-        if let Some(b) = &self.bundle {
-            if b.plugin_dir.is_dir() {
-                // yt-dlp searches <plugin-dir>/*/yt_dlp_plugins, one level down,
-                // so point it at lib_dir (which contains the yt-dlp-plugins
-                // package), not at the package dir itself.
-                cmd.arg("--plugin-dirs");
-                cmd.arg(&b.lib_dir);
-            }
-            if b.bgutil_pot.is_file() {
-                // `bgutilcli:cli_path`, not `bgutilscript:script_path`. Those
-                // are two different providers: the script one runs a .js file
-                // under Node, the CLI one runs the bgutil-pot binary we ship.
-                // Naming the wrong one left the CLI provider with no path, so
-                // it looked for a bare `bgutil-pot` on PATH, found nothing, and
-                // silently carried on without a PO token - which is what YouTube
-                // answers with 403.
-                //
-                // Measured over eight videos: 5 played with the wrong name,
-                // 7 with the right one.
-                cmd.arg("--extractor-args");
-                cmd.arg(format!(
-                    "youtubepot-bgutilcli:cli_path={}",
-                    b.bgutil_pot.display()
-                ));
-            }
-            // Since yt-dlp 2025.11.12, YouTube's player challenges are solved
-            // by running its JavaScript, and without a runtime some formats
-            // are unavailable. A Deno on PATH is found by yt-dlp itself; ours
-            // has to be pointed at.
-            if let crate::youtube::setup::JsRuntime::Bundled(deno) =
-                crate::youtube::setup::find_js_runtime(b)
-            {
-                cmd.arg("--js-runtimes");
-                cmd.arg(format!("deno:{}", deno.display()));
-            }
-        }
-
-        // Cookies (optional, helps with rate-limited / age-restricted videos).
-        if !self.cookies_file.is_empty() {
-            cmd.arg("--cookies");
-            cmd.arg(&self.cookies_file);
-        }
-
-        // Covers yt-dlp itself and no further: the flag denies yt-dlp a
-        // console, so anything yt-dlp starts is given a fresh one by Windows —
-        // which is why deno opens a black window titled with its own path
-        // while a track is playing.
-        //
-        // Not fixable from here. yt-dlp offers no say over how it spawns a
-        // runtime, and deno has no flag for it; the runtimes yt-dlp supports
-        // (deno, node, quickjs, bun) are all console programs. Telling yt-dlp
-        // to skip the runtime does stop the window, and costs far too much:
-        // alternating both settings over three rounds, android_vr played 8/9
-        // tracks with a runtime and 3/9 without, failing with 403. YouTube's
-        // "n" parameter is solved by that JavaScript, and an unsolved one is
-        // refused.
-        //
-        // The only remaining lever is giving this process a console of its own
-        // and hiding it, so the whole tree inherits it.
-        crate::proc::hide_console_window(&mut cmd);
-
-        cmd.arg("--").arg(&url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null())
-            .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => BotError::Playback(format!(
-                    "yt-dlp not found. To install it, {}",
-                    crate::hints::install_youtube_tools()
-                )),
-                _ => BotError::Playback(format!("yt-dlp spawn: {e}")),
-            })
+    /// The caller owns the `Child` - kill it to give up and free the pipes. The
+    /// sidecar walks its own list of InnerTube clients against a session it has
+    /// already built, so a client that cannot serve the track costs
+    /// milliseconds rather than another process spawn.
+    pub fn spawn_sidecar(&self, video_id: &str) -> Result<std::process::Child, BotError> {
+        let script = crate::youtube::sidecar::ensure_script(&self.lib_dir)?;
+        crate::youtube::sidecar::spawn(&script, &self.deno_exe, video_id, &self.cookies_file)
     }
 }
 
@@ -445,90 +340,34 @@ fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_once, PLAYER_CLIENTS, PRIMARY_CLIENT};
+    use super::retry_once;
     use std::cell::Cell;
 
-    /// Which clients still play a gated "- Topic" track. Run by hand when
-    /// playback breaks, before changing the order in [`PLAYER_CLIENTS`].
+    /// The sidecar finds a gated "- Topic" track. Run by hand when playback
+    /// breaks: these uploads are what YouTube Music search returns, and they
+    /// are the first thing to fail when a client is retired.
     #[test]
-    #[ignore = "hits the network and needs the bundled YouTube tools"]
-    fn chain_plays_a_topic_track() {
-        use std::io::Read;
-
+    #[ignore = "hits the network and needs Deno installed"]
+    fn sidecar_finds_a_topic_track() {
         let Some(meta) = super::for_tests() else {
-            println!("skipped: no bundled yt-dlp found; run `--setup-yt` first");
+            println!("skipped: no Deno found; run the YouTube install first");
             return;
         };
-
-        let mut worked = Vec::new();
-        for client in PLAYER_CLIENTS {
-            let mut child = match meta.spawn_ytdlp_with_client("FvHIEK4f1Qc", client) {
-                Ok(c) => c,
-                Err(e) => {
-                    println!("{client}: could not spawn ({e})");
-                    continue;
-                }
-            };
-            let mut buf = [0u8; 16384];
-            let read = child
-                .stdout
-                .as_mut()
-                .map(|o| o.read(&mut buf).unwrap_or(0))
-                .unwrap_or(0);
-            let _ = child.kill();
-            let _ = child.wait();
-            println!("{client}: {read} bytes");
-            if read > 0 {
-                worked.push(client);
-            }
-        }
-        assert!(
-            !worked.is_empty(),
-            "no client in PLAYER_CLIENTS produced audio; YouTube has moved again"
-        );
-        assert_eq!(
-            worked[0], PLAYER_CLIENTS[0],
-            "the first client tried is no longer one that works, so every play pays a wasted              attempt; working clients were {worked:?}"
-        );
-    }
-
-    #[test]
-    fn primary_client_is_the_head_of_the_chain() {
-        assert_eq!(PRIMARY_CLIENT, PLAYER_CLIENTS[0]);
-    }
-
-    #[test]
-    fn player_clients_are_distinct_and_non_empty() {
-        for (i, client) in PLAYER_CLIENTS.iter().enumerate() {
-            assert!(!client.is_empty(), "client {i} is empty");
-            assert!(
-                !PLAYER_CLIENTS[..i].contains(client),
-                "{client} appears more than once"
-            );
-        }
-    }
-
-    #[test]
-    fn player_clients_are_names_yt_dlp_accepts() {
-        for client in PLAYER_CLIENTS {
-            assert!(
-                client
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
-                "{client} is not a bare yt-dlp client name"
-            );
-        }
-    }
-
-    #[test]
-    fn web_embedded_is_tried_before_the_clients_it_covers_for() {
-        let pos = |name: &str| PLAYER_CLIENTS.iter().position(|c| *c == name);
-        let web = pos("web_embedded").expect("web_embedded must stay in the chain");
-        for later in ["tv_simply", "android_vr"] {
-            if let Some(i) = pos(later) {
-                assert!(web < i, "web_embedded must be tried before {later}");
-            }
-        }
+        let child = match meta.spawn_sidecar("5oWyMakvQew") {
+            Ok(c) => c,
+            Err(e) => panic!("could not spawn the sidecar: {e}"),
+        };
+        let out = child.wait_with_output().expect("wait for the sidecar");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let info = crate::youtube::sidecar::parse_stream_info(&String::from_utf8_lossy(&out.stdout))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no stream info ({e}); YouTube has moved again. It said: {}",
+                    crate::youtube::sidecar::complaint(&stderr)
+                )
+            });
+        println!("{} serves {} bytes", info.client, info.content_length);
+        assert!(info.content_length > 1_000_000, "a whole song is more than a megabyte");
     }
 
     #[tokio::test]
