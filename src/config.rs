@@ -569,10 +569,8 @@ pub struct BotConfig {
     #[serde(default, rename = "enabledServices")]
     pub enabled_services: EnabledServices,
 
-    // YouTube: path to a Netscape-format cookies file (optional).
-    // Empty = check for `<config_dir>/cookies.txt`; if neither set nor
-    // present, the sidecar runs cookie-less and relies on its PO token only.
-    // Helps avoid 403s on rate-limited or age-restricted videos.
+    // YouTube: Netscape cookies file, used only to retry a track refused without
+    // a sign-in. Empty = `<config_dir>/cookies.txt` when that exists.
     #[serde(default, rename = "youtubeCookiesFile")]
     pub youtube_cookies_file: String,
 

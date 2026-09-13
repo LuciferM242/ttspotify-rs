@@ -135,10 +135,7 @@ impl YouTubeMetadata {
             if configured.is_file() {
                 config.youtube_cookies_file.clone()
             } else if default_cookies_path().is_file() {
-                // The layout migration moved <root>/cookies.txt into config/
-                // but configs holding the old absolute path were not rewritten;
-                // without this rescue every spawn died on "unable to open
-                // cookie file" with nothing tying it to the move.
+                // Configs from before the layout migration still name <root>/cookies.txt.
                 let default = default_cookies_path();
                 tracing::warn!(
                     "YouTube: configured cookies file {} does not exist; using {} instead. Update youtubeCookiesFile in the config.",
@@ -147,14 +144,11 @@ impl YouTubeMetadata {
                 );
                 default.to_string_lossy().into_owned()
             } else {
-                // No fallback available: keep the configured path so the
-                // failure still names a genuine typo, but say up front why
-                // playback is about to fail.
                 tracing::warn!(
-                    "YouTube: configured cookies file {} does not exist; playback will fail until the file is restored or the setting is cleared",
+                    "YouTube: configured cookies file {} does not exist; tracks that need a sign-in will fail until it is restored or the setting is cleared",
                     configured.display()
                 );
-                config.youtube_cookies_file.clone()
+                String::new()
             }
         } else {
             let default = default_cookies_path();
@@ -165,6 +159,15 @@ impl YouTubeMetadata {
                 String::new()
             }
         };
+        if !cookies_file.is_empty() {
+            match std::fs::read_to_string(&cookies_file) {
+                Ok(text) if !crate::youtube::sidecar::cookies_have_sign_in(&text) => tracing::warn!(
+                    "YouTube: {cookies_file} holds no YouTube sign-in, so tracks that need one will still fail. Export it from a signed-in browser."
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("YouTube: cannot read cookies file {cookies_file}: {e}"),
+            }
+        }
 
         // Resolve the runtime once. The bundled copy wins so `youtube update`
         // stays in control of it; otherwise a Deno the user already installed
@@ -659,6 +662,17 @@ mod tests {
         let top = meta.search_top_track("konkani").await.expect("top");
         assert_eq!(top.len(), 1, "a bare play must always get exactly one track");
         assert!(!top[0].id.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn an_age_restricted_video_is_found_without_a_sign_in() {
+        // Only playback falls back to the cookies file, so the track itself must resolve.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        for id in ["HtVdAasjOgU", "Tq92D6wQ1mg"] {
+            let track = meta.fetch_video(id).await.unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(track.id, id);
+        }
     }
 
     #[tokio::test]

@@ -329,6 +329,9 @@ async fn play_track(
         info.content_length,
         info.client
     );
+    if info.signed_in {
+        tracing::info!("YouTube: {video_id} was refused without a sign-in and is played with the cookies file");
+    }
 
     let part = crate::youtube::cache::partial_path(&video_id)
         .ok_or_else(|| format!("unusable video id {video_id}"))?;

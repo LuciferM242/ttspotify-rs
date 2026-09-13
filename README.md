@@ -18,10 +18,14 @@ Tracks, albums, playlists, search, and radio recommendations.
 
 ### YouTube
 
-Videos, Shorts, playlists, albums, and search, played through
-[yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Videos, Shorts, playlists, albums, and search. Audio is fetched by a small
+helper built on [youtubei.js](https://github.com/LuanRT/YouTube.js), which the
+YouTube tools install sets up.
 
-YouTube requires **cookies** to play reliably. Export them with a browser extension:
+**Cookies** are optional. Most tracks play without an account. When YouTube
+refuses one without a sign-in, such as an age-restricted video, the bot tries it
+again signed in with your cookies; nothing else uses them. Export them with a
+browser extension:
 
 1. Install a cookies-export extension — **Get cookies.txt LOCALLY** ([Chrome / Edge](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc), or the equivalent for Firefox).
 2. Open a **private / incognito** window and sign in to YouTube.

@@ -154,13 +154,33 @@ pub fn complaint(stderr: &str) -> String {
 }
 
 /// What the sidecar found: the client that serves the track, the direct url
-/// (carrying its token when one was needed), and the file's size in bytes.
+/// (carrying its token when one was needed), the file's size in bytes, and
+/// whether it took the cookies file's sign-in.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StreamInfo {
     pub client: String,
     pub url: String,
     pub content_length: u64,
+    #[serde(default)]
+    pub signed_in: bool,
+}
+
+/// Whether a Netscape cookies file holds a YouTube sign-in the sidecar can use.
+pub fn cookies_have_sign_in(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim();
+        let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+        let fields: Vec<&str> = line.split('\t').collect();
+        !line.starts_with('#')
+            && fields.len() >= 7
+            && ["youtube.com", "google.com"].iter().any(|site| {
+                let domain = fields[0].trim_start_matches('.').to_ascii_lowercase();
+                domain == *site || domain.ends_with(&format!(".{site}"))
+            })
+            && matches!(fields[5], "SAPISID" | "__Secure-3PAPISID")
+            && !fields[6].is_empty()
+    })
 }
 
 /// Read the stream info from the sidecar's stdout.
@@ -302,8 +322,35 @@ mod tests {
                 client: "VISIONOS".to_string(),
                 url: "https://rr1---sn.googlevideo.com/videoplayback?id=1".to_string(),
                 content_length: 4175364,
+                signed_in: false,
             }
         );
+    }
+
+    #[test]
+    fn stream_info_says_when_it_was_signed_in() {
+        let out = GOOD.replace("}", r#","signedIn":true}"#);
+        assert!(parse_stream_info(&out).unwrap().signed_in);
+    }
+
+    fn cookie_row(domain: &str, name: &str, value: &str) -> String {
+        format!("{domain}\tTRUE\t/\tTRUE\t0\t{name}\t{value}")
+    }
+
+    #[test]
+    fn a_signed_in_export_is_recognised() {
+        assert!(cookies_have_sign_in(&cookie_row(".youtube.com", "SAPISID", "x")));
+        let secure = format!("# Netscape HTTP Cookie File\r\n#HttpOnly_{}\r\n", cookie_row(".google.com", "__Secure-3PAPISID", "x"));
+        assert!(cookies_have_sign_in(&secure));
+    }
+
+    #[test]
+    fn a_signed_out_or_foreign_export_is_not_a_sign_in() {
+        assert!(!cookies_have_sign_in(&cookie_row(".youtube.com", "YSC", "x")));
+        assert!(!cookies_have_sign_in(&cookie_row("notyoutube.com", "SAPISID", "x")));
+        assert!(!cookies_have_sign_in(&format!("# {}", cookie_row(".youtube.com", "SAPISID", "x"))));
+        assert!(!cookies_have_sign_in(&cookie_row(".youtube.com", "SAPISID", "")));
+        assert!(!cookies_have_sign_in(""));
     }
 
     #[test]

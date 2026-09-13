@@ -1,5 +1,6 @@
-// Argument: one video id. Prints one JSON line to stdout, diagnostics to stderr:
-//   {"client":"VISIONOS","url":"https://...","contentLength":4175364}
+// Arguments: a video id, then optionally a cookies file. Prints one JSON line to
+// stdout, diagnostics to stderr:
+//   {"client":"VISIONOS","url":"https://...","contentLength":4175364,"signedIn":false}
 // Exit 0 found, 1 failed, 2 usage.
 import { Innertube, Platform, UniversalCache } from "youtubei.js";
 // Types only; bgutils-js is loaded at runtime only when a token is needed.
@@ -29,8 +30,41 @@ const DEFAULT_ORDER = ["VISIONOS", "TV_SIMPLY", "YTMUSIC"];
 // Test-only: reliably refused past the first megabyte.
 const TEST_ONLY: Record<string, TokenKind> = { IOS: "none" };
 
-/** Overrides the client order. For tests; unset in production. */
+// With a cookies file, tried signed in once every client above is refused.
+// Order measured; TV, TV_SIMPLY, WEB and the embedded clients all fail signed in.
+const SIGNED_IN_PLAN: Record<string, TokenKind> = {
+  MWEB: "content",
+  WEB_CREATOR: "content",
+  YTMUSIC: "content",
+};
+const SIGNED_IN_ORDER = ["MWEB", "WEB_CREATOR", "YTMUSIC"];
+
+/** Overrides the client order; "-" skips them. For tests; unset in production. */
 const CLIENTS_ENV = "TTSPOTIFY_SIDECAR_CLIENTS";
+const SIGNED_IN_CLIENTS_ENV = "TTSPOTIFY_SIDECAR_SIGNED_IN_CLIENTS";
+
+// Login cookies; the rest of a browser export is not needed.
+const WANTED_COOKIES = new Set([
+  "SID",
+  "HSID",
+  "SSID",
+  "APISID",
+  "SAPISID",
+  "__Secure-1PSID",
+  "__Secure-3PSID",
+  "__Secure-1PAPISID",
+  "__Secure-3PAPISID",
+  "__Secure-1PSIDTS",
+  "__Secure-3PSIDTS",
+  "__Secure-1PSIDCC",
+  "__Secure-3PSIDCC",
+  "LOGIN_INFO",
+  "PREF",
+  "VISITOR_INFO1_LIVE",
+  "VISITOR_PRIVACY_METADATA",
+  "SIDCC",
+  "YSC",
+]);
 
 // Refused clients serve the start of a file, so probe its tail.
 const PROBE_BYTES = 1024;
@@ -54,6 +88,64 @@ function log(msg: string): void {
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function domainIs(domain: string, site: string): boolean {
+  return domain === site || domain.endsWith(`.${site}`);
+}
+
+/** A Netscape cookies file as one Cookie header; YouTube's copy beats Google's. */
+export function parseCookieFile(text: string): string {
+  const jar = new Map<string, { value: string; youtube: boolean }>();
+  for (const raw of text.split(/\r?\n/)) {
+    let line = raw.trim();
+    if (line.startsWith("#HttpOnly_")) line = line.slice("#HttpOnly_".length);
+    else if (!line || line.startsWith("#")) continue;
+    const parts = line.split("\t");
+    if (parts.length < 7) continue;
+    const domain = parts[0].replace(/^\./, "").toLowerCase();
+    const [name, value] = [parts[5], parts[6]];
+    const youtube = domainIs(domain, "youtube.com");
+    if (!name || !value || !WANTED_COOKIES.has(name)) continue;
+    if (!youtube && !domainIs(domain, "google.com")) continue;
+    const existing = jar.get(name);
+    if (!existing || (youtube && !existing.youtube)) jar.set(name, { value, youtube });
+  }
+  // youtubei.js signs with SAPISID; some exports carry only the secure copy.
+  const secure = jar.get("__Secure-3PAPISID");
+  if (!jar.has("SAPISID") && secure) jar.set("SAPISID", secure);
+  return [...jar].map(([name, { value }]) => `${name}=${value}`).join("; ");
+}
+
+export function isSignedIn(header: string): boolean {
+  return /(^|;\s*)SAPISID=/.test(header);
+}
+
+/** The file's login cookies, or "" with the reason logged. */
+async function loadCookies(path: string): Promise<string> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(path);
+  } catch (err) {
+    log(`cookies file unreadable: ${message(err)}`);
+    return "";
+  }
+  const header = parseCookieFile(text);
+  if (!isSignedIn(header)) {
+    log("cookies file has no YouTube sign-in; export it while signed in");
+    return "";
+  }
+  return header;
+}
+
+/** Whether YouTube still accepts the session's sign-in. */
+async function accountAnswers(yt: Innertube): Promise<boolean> {
+  try {
+    await yt.account.getInfo();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** A 4xx: retrying will not change it. */
@@ -192,7 +284,8 @@ async function findStream(
 
   const status = info.playability_status?.status;
   if (status && status !== "OK") {
-    throw new Error(`playability ${status}`);
+    const reason = info.playability_status?.reason;
+    throw new Error(reason ? `playability ${status}: ${reason}` : `playability ${status}`);
   }
 
   const audio = (info.streaming_data?.adaptive_formats ?? []).filter(
@@ -218,7 +311,7 @@ async function findStream(
 }
 
 /** A pipe may take a write in parts. */
-async function writeAnswer(stream: StreamInfo): Promise<void> {
+async function writeAnswer(stream: StreamInfo & { signedIn: boolean }): Promise<void> {
   const bytes = new TextEncoder().encode(`${JSON.stringify(stream)}\n`);
   let written = 0;
   while (written < bytes.length) {
@@ -226,26 +319,33 @@ async function writeAnswer(stream: StreamInfo): Promise<void> {
   }
 }
 
-function clientOrder(): [ClientName, TokenKind][] {
-  const override = Deno.env.get(CLIENTS_ENV)?.trim();
-  const names = override ? override.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_ORDER;
+function clientOrder(
+  env: string,
+  defaults: string[],
+  plan: Record<string, TokenKind>,
+): [ClientName, TokenKind][] {
+  const override = Deno.env.get(env)?.trim();
+  if (override === "-") return [];
+  const names = override ? override.split(",").map((s) => s.trim()).filter(Boolean) : defaults;
   return names.map((name) => {
-    const kind = PLAN[name] ?? TEST_ONLY[name];
-    if (!kind) throw new Error(`${CLIENTS_ENV} names an unknown client: ${name}`);
+    const kind = plan[name] ?? TEST_ONLY[name];
+    if (!kind) throw new Error(`${env} names an unknown client: ${name}`);
     return [name as ClientName, kind];
   });
 }
 
 async function main(): Promise<number> {
-  const videoId = Deno.args[0];
+  const [videoId, cookiesPath] = Deno.args;
   if (!videoId) {
     log("usage: sidecar <video_id> [cookies_file]");
     return 2;
   }
 
   let order: [ClientName, TokenKind][];
+  let signedInOrder: [ClientName, TokenKind][];
   try {
-    order = clientOrder();
+    order = clientOrder(CLIENTS_ENV, DEFAULT_ORDER, PLAN);
+    signedInOrder = clientOrder(SIGNED_IN_CLIENTS_ENV, SIGNED_IN_ORDER, SIGNED_IN_PLAN);
   } catch (err) {
     log(message(err));
     return 2;
@@ -265,15 +365,42 @@ async function main(): Promise<number> {
     try {
       const stream = await findStream(yt, videoId, client, kind, visitorData);
       log(`client=${client} contentLength=${stream.contentLength}`);
-      await writeAnswer(stream);
+      await writeAnswer({ ...stream, signedIn: false });
       return 0;
     } catch (err) {
       last = `${client}: ${message(err)}`;
       log(last);
     }
   }
+
+  const cookie = cookiesPath ? await loadCookies(cookiesPath) : "";
+  if (cookie) {
+    try {
+      const signedIn = await Innertube.create({ cache: new UniversalCache(false), cookie });
+      for (const [client, kind] of signedInOrder) {
+        try {
+          const stream = await findStream(signedIn, videoId, client, kind, visitorData);
+          log(`client=${client} signed in, contentLength=${stream.contentLength}`);
+          await writeAnswer({ ...stream, signedIn: true });
+          return 0;
+        } catch (err) {
+          last = `${client} signed in: ${message(err)}`;
+          log(last);
+        }
+      }
+      // Expired cookies look like every client refusing; the account page tells them apart.
+      if (!(await accountAnswers(signedIn))) {
+        last = "the cookies file's sign-in was not accepted; export it again";
+        log(last);
+      }
+    } catch (err) {
+      last = `signed-in session setup failed: ${message(err)}`;
+      log(last);
+    }
+  }
+
   log(`all clients failed; last: ${last}`);
   return 1;
 }
 
-Deno.exit(await main());
+if (import.meta.main) Deno.exit(await main());

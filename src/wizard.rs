@@ -351,8 +351,8 @@ pub fn run_wizard(
     if config.enabled_services.youtube {
         println!();
         println!("YouTube");
-        println!("  Cookies help with rate-limited or age-restricted videos.");
-        println!("  Playback works without them in most cases.");
+        println!("  A track YouTube refuses without an account, such as an age-restricted");
+        println!("  video, is tried again signed in with a cookies file. Most never need it.");
         if or_cancel!(ask_bool("Use a cookies file", false)) {
             let default = setup::default_cookies_path().to_string_lossy().into_owned();
             let path = or_cancel!(ask("Cookies file path", &default, false));

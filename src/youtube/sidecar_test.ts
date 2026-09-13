@@ -17,17 +17,22 @@ const STREAM_HEADERS = {
   referer: "https://www.youtube.com",
 };
 
-type StreamInfo = { client: string; url: string; contentLength: number };
+// A signed-in cookies file, for the one test that needs a real account.
+const COOKIES = Deno.env.get("TTSPOTIFY_TEST_COOKIES");
+
+type StreamInfo = { client: string; url: string; contentLength: number; signedIn: boolean };
 
 async function run(
   videoId?: string,
   clients?: string,
+  cookies?: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const args = [
     "run", "--allow-net", "--allow-read", "--allow-write", "--allow-env",
     "--config", CONFIG, "--lock", LOCK, "--frozen", SCRIPT,
   ];
   if (videoId !== undefined) args.push(videoId);
+  if (cookies !== undefined) args.push(cookies);
   const env: Record<string, string> = {};
   if (clients !== undefined) env.TTSPOTIFY_SIDECAR_CLIENTS = clients;
   const out = await new Deno.Command("deno", { args, env, stdout: "piped", stderr: "piped" }).output();
@@ -104,6 +109,77 @@ Deno.test("a refused client falls through to the next", async () => {
   assertEquals(r.code, 0, r.stderr);
   assert(r.stderr.includes("[sidecar] IOS:"), r.stderr);
   assertEquals(streamInfo(r.stdout).client, "VISIONOS");
+});
+
+Deno.test("without cookies a refused track is not retried signed in", async () => {
+  const r = await run(TOPIC, "-");
+  assertEquals(r.code, 1, r.stderr);
+  assert(!r.stderr.includes("signed in"), r.stderr);
+  assert(r.stderr.includes("[sidecar] all clients failed"), r.stderr);
+});
+
+Deno.test("a cookies file without a sign-in is not used", async () => {
+  const file = await Deno.makeTempFile({ suffix: ".txt" });
+  try {
+    await Deno.writeTextFile(file, ".youtube.com\tTRUE\t/\tTRUE\t0\tYSC\tabc\n");
+    const r = await run(TOPIC, "-", file);
+    assertEquals(r.code, 1, r.stderr);
+    assert(r.stderr.includes("cookies file has no YouTube sign-in"), r.stderr);
+    assert(!r.stderr.includes("signed in:"), r.stderr);
+  } finally {
+    await Deno.remove(file);
+  }
+});
+
+Deno.test("a sign-in YouTube no longer accepts is named as the reason", async () => {
+  const file = await Deno.makeTempFile({ suffix: ".txt" });
+  try {
+    const row = (name: string) => `.youtube.com\tTRUE\t/\tTRUE\t0\t${name}\tnotreal`;
+    await Deno.writeTextFile(file, ["SID", "HSID", "SSID", "APISID", "SAPISID"].map(row).join("\n"));
+    const r = await run("HtVdAasjOgU", "-", file);
+    assertEquals(r.code, 1, r.stderr);
+    assert(
+      r.stderr.includes("all clients failed; last: the cookies file's sign-in was not accepted"),
+      r.stderr,
+    );
+  } finally {
+    await Deno.remove(file);
+  }
+});
+
+Deno.test("an unreadable cookies file is reported, not fatal", async () => {
+  const r = await run(TOPIC, "-", `${HERE}no-such-cookies.txt`);
+  assertEquals(r.code, 1, r.stderr);
+  assert(r.stderr.includes("cookies file unreadable"), r.stderr);
+  assert(r.stderr.includes("[sidecar] all clients failed"), r.stderr);
+});
+
+Deno.test("anonymous answers say they were not signed in", async () => {
+  const r = await run(TOPIC);
+  assertEquals(r.code, 0, r.stderr);
+  assertEquals(streamInfo(r.stdout).signedIn, false);
+});
+
+Deno.test({
+  name: "a track refused anonymously is served signed in",
+  ignore: !COOKIES,
+  fn: async () => {
+    const r = await run(TOPIC, "-", COOKIES);
+    assertEquals(r.code, 0, r.stderr);
+    const info = streamInfo(r.stdout);
+    assertEquals(info.signedIn, true, r.stderr);
+    assert(r.stderr.includes("signed in, contentLength="), r.stderr);
+  },
+});
+
+Deno.test({
+  name: "an age-restricted video refused anonymously plays signed in",
+  ignore: !COOKIES,
+  fn: async () => {
+    const r = await run("HtVdAasjOgU", undefined, COOKIES);
+    assertEquals(r.code, 0, r.stderr);
+    assertEquals(streamInfo(r.stdout).signedIn, true, r.stderr);
+  },
 });
 
 Deno.test("reports failure for a bogus id", async () => {
