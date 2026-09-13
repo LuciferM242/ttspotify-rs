@@ -196,7 +196,7 @@ fn radio_skip_reason(
         return Some("radio is off");
     }
     if !allow_recommend {
-        return Some("the current track came from a playlist or album");
+        return Some("the current track came from a YouTube playlist");
     }
     if repeat_active {
         return Some("a repeat mode is on");
@@ -904,7 +904,7 @@ async fn fetch_radio_for_seed(
 
 fn schedule_radio_prefetch(
     tx: &tokio::sync::mpsc::UnboundedSender<BotCommand>,
-    seed_uri: String,
+    track_uri: String,
     seed_service: crate::services::Service,
     delay_secs: f32,
     slot: &Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -912,7 +912,7 @@ fn schedule_radio_prefetch(
     let tx = tx.clone();
     let handle = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
-        let _ = tx.send(BotCommand::RadioPreFetch { seed_uri, seed_service });
+        let _ = tx.send(BotCommand::RadioPreFetch { track_uri, seed_service });
     });
     // Replace (and cancel) any previously-scheduled prefetch so stale timers
     // for tracks the user has already moved past don't pile up.
@@ -987,6 +987,7 @@ fn spawn_bulk_loader(
     metadata: crate::spotify::metadata::SpotifyMetadata,
     state: crate::bot::state::SharedState,
     uris: Vec<librespot_core::spotify_uri::SpotifyUri>,
+    context: Option<String>,
     requester: String,
     generation: u64,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
@@ -1007,7 +1008,7 @@ fn spawn_bulk_loader(
                 // A repeated bulk source may overlap what's queued already.
                 let fresh = s.filter_unqueued(batch);
                 if !fresh.is_empty() {
-                    s.enqueue_source(fresh, requester.clone(), false);
+                    s.enqueue_source_from(fresh, requester.clone(), true, context.clone());
                 }
                 // The queue revived itself; ask the command loop for audio.
                 if was_idle && s.current().is_some() {
@@ -1616,7 +1617,7 @@ async fn command_processor(
             BotCommand::SearchAndPlay { request, user_id, user_name } => {
                 use crate::bot::commands::PlayRequest;
                 let active = state.lock().active_service;
-                type ResolveOk = (Vec<crate::track::Track>, Option<BulkRest>, bool);
+                type ResolveOk = (Vec<crate::track::Track>, Option<BulkRest>, bool, Option<String>);
                 let result: Result<ResolveOk, BotError> = match active {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
@@ -1633,7 +1634,7 @@ async fn command_processor(
                         })
                             .map(|r| {
                                 let rest = (!r.remaining.is_empty()).then_some(BulkRest::Spotify(r.remaining));
-                                (r.tracks.into_iter().map(Into::into).collect(), rest, r.bulk)
+                                (r.tracks.into_iter().map(Into::into).collect(), rest, r.bulk, r.context)
                             })
                     }
                     crate::services::Service::YouTube => {
@@ -1645,18 +1646,19 @@ async fn command_processor(
                         resolved
                             .map(|resolved| match resolved {
                                 YtResolved::Tracks(v) => {
-                                    (v.into_iter().map(Into::into).collect(), None, false)
+                                    (v.into_iter().map(Into::into).collect(), None, false, None)
                                 }
                                 YtResolved::PlaylistFirstPage { tracks, rest } => (
                                     tracks.into_iter().map(Into::into).collect(),
                                     rest.map(BulkRest::YouTube),
                                     true,
+                                    None,
                                 ),
                             })
                     }
                 };
                 match result {
-                    Ok((tracks, bulk_rest, is_bulk)) => {
+                    Ok((tracks, bulk_rest, is_bulk, context)) => {
                         if tracks.is_empty() {
                             reply_t(user_id, Key::NoResults, &[]);
                             continue;
@@ -1664,8 +1666,10 @@ async fn command_processor(
 
                         // Multi entries and bulk sources (playlist/liked, even
                         // with a single track) get collection semantics:
-                        // dedup against the queue, no radio seeding.
+                        // dedup against the queue. Radio continues Spotify
+                        // sources from their album or playlist.
                         let is_multi = tracks.len() > 1 || is_bulk;
+                        let source_radio = active == crate::services::Service::Spotify;
                         let tracks_to_add = tracks;
 
                         // Hold lock across idle check + enqueue to prevent race.
@@ -1688,7 +1692,7 @@ async fn command_processor(
                             let count = fresh.len();
                             let added_name = fresh.first().map(|t| t.display_name());
                             if is_multi {
-                                s.enqueue_source(fresh, user_name.clone(), false);
+                                s.enqueue_source_from(fresh, user_name.clone(), source_radio, context.clone());
                             } else {
                                 // An explicit request plays before whatever
                                 // playlist or radio is being worked through.
@@ -1725,6 +1729,7 @@ async fn command_processor(
                                     metadata.clone(),
                                     state.clone(),
                                     uris,
+                                    context,
                                     user_name.clone(),
                                     generation,
                                     radio_cmd_tx.clone(),
@@ -1764,11 +1769,9 @@ async fn command_processor(
                                 }
                                 announce_playing_status(&first_name);
 
-                                if !is_multi {
-                                    let radio_on = state.lock().radio_enabled;
-                                    if radio_on {
-                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), first_service, radio_delay, &radio_prefetch_slot);
-                                    }
+                                let radio_on = state.lock().radio_enabled;
+                                if radio_on {
+                                    schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), first_service, radio_delay, &radio_prefetch_slot);
                                 }
                             }
                         } else {
@@ -1882,15 +1885,16 @@ async fn command_processor(
                 }
 
                 // Capture current track info before advance() clears current_index
-                let (pre_seed, pre_allow_rec, pre_played_ids) = {
+                let (pre_seed, pre_context, pre_allow_rec, pre_played_ids) = {
                     let s = state.lock();
                     // The service comes along with the uri: radio is no longer
                     // Spotify-only, so "which service does this seed belong to"
                     // can no longer be inferred by trying to parse it.
-                    let seed = s.current().map(|e| (e.track.service(), e.track.uri().to_string()));
+                    let seed = s.current().map(|e| (e.track.service(), e.radio_seed()));
+                    let context = s.current().and_then(|e| e.context.clone());
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     let played: Vec<String> = s.queue.all_entries().map(|e| e.track.id().to_string()).collect();
-                    (seed, allow, played)
+                    (seed, context, allow, played)
                 };
 
                 let next = {
@@ -1965,7 +1969,7 @@ async fn command_processor(
                                         let mut s = state.lock();
                                         let fresh = s.filter_unqueued_similar(tracks);
                                         let added = fresh.len();
-                                        s.enqueue_source(fresh, "Radio".to_string(), true);
+                                        s.enqueue_source_from(fresh, "Radio".to_string(), true, pre_context);
                                         // Adding to an idle queue starts the
                                         // first track, so this is what is
                                         // now playing.
@@ -2367,10 +2371,11 @@ async fn command_processor(
                 }
             }
 
-            BotCommand::RadioPreFetch { seed_uri, seed_service } => {
-                let (should_extend, is_active, current_uri) = {
+            BotCommand::RadioPreFetch { track_uri, seed_service } => {
+                let (should_extend, is_active, current_uri, seed) = {
                     let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
+                    let seed = s.current().map(|e| (e.radio_seed(), e.context.clone()));
                     let at_end = s.upcoming_len() == 0;
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     let extend = match radio_skip_reason(s.radio_enabled, allow, at_end, s.repeat_active()) {
@@ -2380,12 +2385,14 @@ async fn command_processor(
                         }
                         None => true,
                     };
-                    (extend, s.status != PlaybackStatus::Idle, cur_uri)
+                    (extend, s.status != PlaybackStatus::Idle, cur_uri, seed)
                 };
 
-                // The seed must still be the track playing: a prefetch queued
-                // for a track the user has since skipped is stale.
-                if should_extend && is_active && current_uri.as_deref() == Some(&seed_uri) {
+                // The track must still be playing: a prefetch queued for a
+                // track the user has since skipped is stale.
+                if let (true, true, true, Some((seed_uri, context))) =
+                    (should_extend, is_active, current_uri.as_deref() == Some(&track_uri), seed)
+                {
                     let played_ids: Vec<String> = {
                         let s = state.lock();
                         s.queue.all_entries().map(|e| e.track.id().to_string()).collect()
@@ -2406,7 +2413,7 @@ async fn command_processor(
                                 let mut s = state.lock();
                                 let fresh = s.filter_unqueued_similar(tracks);
                                 let count = fresh.len();
-                                s.enqueue_source(fresh, "Radio".to_string(), true);
+                                s.enqueue_source_from(fresh, "Radio".to_string(), true, context);
                                 count
                             };
                             tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
@@ -2613,7 +2620,7 @@ mod tests {
     #[case(true, true, true, true, false)]
     // Mid-queue there is nothing to extend yet.
     #[case(true, true, false, false, false)]
-    // Radio off, or a track from a playlist/album (no recommendations seeded).
+    // Radio off, or a track from a YouTube playlist (no recommendations seeded).
     #[case(false, true, true, false, false)]
     #[case(true, false, true, false, false)]
     fn radio_extends_only_at_the_end_of_a_queue_that_is_not_repeating(
@@ -2632,7 +2639,7 @@ mod tests {
     // Each reason is reported specifically: "radio did nothing" was previously
     // indistinguishable from "radio is off" when reading a log back.
     #[case(false, true, true, false, Some("radio is off"))]
-    #[case(true, false, true, false, Some("the current track came from a playlist or album"))]
+    #[case(true, false, true, false, Some("the current track came from a YouTube playlist"))]
     #[case(true, true, true, true, Some("a repeat mode is on"))]
     #[case(true, true, false, false, Some("there are still tracks queued"))]
     #[case(true, true, true, false, None)]

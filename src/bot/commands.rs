@@ -58,8 +58,8 @@ pub enum BotCommand {
     SetService { service: Service, user_id: i32 },
     /// Admin: set the server-wide default language (glang). Persisted to config.
     SetDefaultLanguage { code: String, user_id: i32 },
-    /// Internal: pre-fetch radio recommendations for the given seed track
-    RadioPreFetch { seed_uri: String, seed_service: crate::services::Service },
+    /// Internal: pre-fetch radio recommendations while `track_uri` is playing
+    RadioPreFetch { track_uri: String, seed_service: crate::services::Service },
     /// Internal: preload next track for gapless playback
     PreloadNext,
     /// Internal: start whatever the queue says is current. Sent when a

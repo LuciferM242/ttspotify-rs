@@ -156,7 +156,7 @@ help_seek = sf / sb [segundos]\n  sf         Avancar 10 segundos (padrao)\n  sb 
 
 help_search = search <consulta>\n  Buscar e mostrar resultados. Depois:\n  <numero>   Escolher um resultado para tocar ou enfileirar\n  a / cancel Descartar os resultados\nExemplo:\n  search photograph\n  2          Tocar o segundo resultado
 
-help_radio = radio [on|off]\n  radio on   Ligar o radio. Quando uma faixa avulsa termina\n             e nao sobra nada, busca recomendacoes\n             com base na ultima faixa.\n             Nao vale para playlists ou albuns.\n  radio off  Desligar o radio.\n  radio      Ver o estado do radio.
+help_radio = radio [on|off]\n  radio on   Ligar o radio. Quando a fila acaba,\n             busca recomendacoes com base no album\n             ou na playlist do Spotify de origem, ou\n             na ultima faixa.\n             Nao vale para playlists do YouTube.\n  radio off  Desligar o radio.\n  radio      Ver o estado do radio.
 
 help_liked = liked / fav\nTocar suas musicas curtidas do servico ativo.\n  Spotify: suas musicas curtidas.\n  YouTube: suas musicas curtidas do YouTube Music. Precisa de um arquivo de cookies com login feito.
 

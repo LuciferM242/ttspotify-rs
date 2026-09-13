@@ -288,7 +288,7 @@ help_seek = sf / sb [seconds]\n  sf         Seek forward 10 seconds (default)\n 
 
 help_search = search <query>\n  Search and show results. Then:\n  <number>   Pick a result to play/queue\n  a / cancel Dismiss search results\nExample:\n  search photograph\n  2          Play the 2nd result
 
-help_radio = radio [on|off]\n  radio on   Enable radio mode. When a single track finishes\n             and nothing is left, automatically fetches\n             recommendations based on the last track.\n             Does not trigger for playlists or albums.\n  radio off  Disable radio mode.\n  radio      Show current radio status.
+help_radio = radio [on|off]\n  radio on   Enable radio mode. When the queue runs out,\n             automatically fetches recommendations based\n             on the Spotify album or playlist it came from,\n             or on the last track.\n             Does not trigger for YouTube playlists.\n  radio off  Disable radio mode.\n  radio      Show current radio status.
 
 help_liked = liked / fav\nPlay your liked songs from the active service.\n  Spotify: your Liked Songs.\n  YouTube: your YouTube Music liked songs. Needs a cookies file with a sign-in.
 

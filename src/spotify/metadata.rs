@@ -10,12 +10,14 @@ use crate::spotify::types::{SpotifyRef, SpotifyTrack, parse_spotify_ref};
 
 /// Metadata for the tracks to enqueue now, plus URIs still to be fetched by a
 /// background loader (empty when the resolve was complete). `bulk` marks
-/// collection sources (playlist / liked songs) so the runner applies bulk
-/// semantics (dedup against the queue, no radio seed) even for a single track.
+/// collection sources (playlist / liked songs) so the runner deduplicates
+/// against the queue even for a single track. `context` is the album or
+/// playlist uri the tracks came from.
 pub struct ResolvedTracks {
     pub tracks: Vec<SpotifyTrack>,
     pub remaining: Vec<SpotifyUri>,
     pub bulk: bool,
+    pub context: Option<String>,
 }
 
 /// How many tracks a bulk source (playlist / liked songs) fetches up front
@@ -156,7 +158,11 @@ impl SpotifyMetadata {
 
     /// Fetch metadata for the first `BULK_FIRST_BATCH` URIs now; the rest are
     /// returned for a background loader.
-    async fn split_and_fetch_first(&self, mut uris: Vec<SpotifyUri>) -> Result<ResolvedTracks, BotError> {
+    async fn split_and_fetch_first(
+        &self,
+        mut uris: Vec<SpotifyUri>,
+        context: Option<String>,
+    ) -> Result<ResolvedTracks, BotError> {
         let remaining = if uris.len() > BULK_FIRST_BATCH {
             uris.split_off(BULK_FIRST_BATCH)
         } else {
@@ -166,7 +172,7 @@ impl SpotifyMetadata {
         if tracks.is_empty() {
             return Err(BotError::NoResults);
         }
-        Ok(ResolvedTracks { tracks, remaining, bulk: true })
+        Ok(ResolvedTracks { tracks, remaining, bulk: true, context })
     }
 
     /// Fetch radio recommendations using Spotify's radio-apollo endpoint.
@@ -260,9 +266,11 @@ impl SpotifyMetadata {
             tracks,
             remaining: Vec::new(),
             bulk: false,
+            context: None,
         };
 
         if let Some(spotify_ref) = parse_spotify_ref(query) {
+            let context = radio_context(&spotify_ref);
             return match spotify_ref {
                 SpotifyRef::Track(id) => {
                     let uri_str = format!("spotify:track:{id}");
@@ -277,7 +285,10 @@ impl SpotifyMetadata {
                 SpotifyRef::Album(id) => {
                     let uri_str = format!("spotify:album:{id}");
                     match SpotifyUri::from_uri(&uri_str) {
-                        Ok(uri) => self.get_album_tracks_meta(&uri).await.map(complete),
+                        Ok(uri) => self.get_album_tracks_meta(&uri).await.map(|tracks| ResolvedTracks {
+                            context,
+                            ..complete(tracks)
+                        }),
                         Err(_) => Err(BotError::Playback(format!("Invalid album ID: {id}"))),
                     }
                 }
@@ -286,7 +297,7 @@ impl SpotifyMetadata {
                     match SpotifyUri::from_uri(&uri_str) {
                         Ok(uri) => {
                             let uris = self.get_playlist_track_uris(&uri).await?;
-                            self.split_and_fetch_first(uris).await
+                            self.split_and_fetch_first(uris, context).await
                         }
                         Err(_) => Err(BotError::Playback(format!("Invalid playlist ID: {id}"))),
                     }
@@ -303,10 +314,21 @@ impl SpotifyMetadata {
     /// The account's Liked Songs: the first batch now, the rest as `remaining`.
     pub async fn liked(&self) -> Result<ResolvedTracks, BotError> {
         let uris = self.get_liked_track_uris().await?;
-        self.split_and_fetch_first(uris).await
+        // No radio context: Spotify answers a Liked Songs seed with 400.
+        self.split_and_fetch_first(uris, None).await
     }
 }
 
+
+/// The uri radio should seed from for tracks loaded through `spotify_ref`.
+/// Liked Songs has none: Spotify answers a collection seed with 400.
+fn radio_context(spotify_ref: &SpotifyRef) -> Option<String> {
+    match spotify_ref {
+        SpotifyRef::Album(id) => Some(format!("spotify:album:{id}")),
+        SpotifyRef::Playlist(id) => Some(format!("spotify:playlist:{id}")),
+        SpotifyRef::Track(_) | SpotifyRef::Liked => None,
+    }
+}
 
 /// The track uris a station or autoplay reply carries.
 ///
@@ -490,6 +512,21 @@ mod tests {
             super::station_track_uris(&json),
             vec!["spotify:playlist:37i9dQZF1E8PVA1jdbapzL".to_string()]
         );
+    }
+
+    #[test]
+    fn albums_and_playlists_are_radio_contexts_tracks_and_liked_are_not() {
+        use crate::spotify::types::SpotifyRef;
+        assert_eq!(
+            super::radio_context(&SpotifyRef::Album("a".into())).as_deref(),
+            Some("spotify:album:a")
+        );
+        assert_eq!(
+            super::radio_context(&SpotifyRef::Playlist("p".into())).as_deref(),
+            Some("spotify:playlist:p")
+        );
+        assert_eq!(super::radio_context(&SpotifyRef::Track("t".into())), None);
+        assert_eq!(super::radio_context(&SpotifyRef::Liked), None);
     }
 
     #[test]

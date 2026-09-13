@@ -33,9 +33,18 @@ pub struct QueueEntry {
     pub track: Track,
     #[allow(dead_code)] // stored for future "who queued this" display
     pub requester: String,
-    /// Only allow radio recommendations for single-track plays (not
-    /// playlists/albums).
+    /// Whether radio may continue from this entry.
     pub allow_recommend: bool,
+    /// The album or playlist uri this entry was loaded from, if any.
+    pub context: Option<String>,
+}
+
+impl QueueEntry {
+    /// What radio grows from: the entry's album or playlist when it has one,
+    /// otherwise the track itself.
+    pub fn radio_seed(&self) -> String {
+        self.context.clone().unwrap_or_else(|| self.track.uri().to_string())
+    }
 }
 
 /// What `go_prev` did, so the caller knows whether to restart or load a track.
@@ -335,7 +344,16 @@ mod tests {
             }),
             requester: "tester".to_string(),
             allow_recommend: true,
+            context: None,
         }
+    }
+
+    #[test]
+    fn radio_seeds_from_the_context_when_there_is_one() {
+        let mut e = entry("a");
+        assert_eq!(e.radio_seed(), "spotify:track:a");
+        e.context = Some("spotify:playlist:p".to_string());
+        assert_eq!(e.radio_seed(), "spotify:playlist:p");
     }
 
     /// A queue playing `a` with `b`, `c` queued from a source.

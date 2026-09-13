@@ -243,16 +243,28 @@ impl PlayerState {
     /// source is being worked through, the way "next in queue" sits ahead of
     /// "next from" in Spotify.
     pub fn enqueue_next(&mut self, track: Track, requester: String, allow_recommend: bool) {
-        self.queue.push_next(QueueEntry { track, requester, allow_recommend });
+        self.queue.push_next(QueueEntry { track, requester, allow_recommend, context: None });
     }
 
     /// Queue tracks from a source being played through: a playlist, an album,
     /// or radio.
     pub fn enqueue_source(&mut self, tracks: Vec<Track>, requester: String, allow_recommend: bool) {
+        self.enqueue_source_from(tracks, requester, allow_recommend, None);
+    }
+
+    /// `enqueue_source`, recording the album or playlist the tracks belong to.
+    pub fn enqueue_source_from(
+        &mut self,
+        tracks: Vec<Track>,
+        requester: String,
+        allow_recommend: bool,
+        context: Option<String>,
+    ) {
         self.queue.push_source(tracks.into_iter().map(|track| QueueEntry {
             track,
             requester: requester.clone(),
             allow_recommend,
+            context: context.clone(),
         }));
         // With shuffle on, a playlist added now must land shuffled too —
         // otherwise it plays in order and shuffle looks broken.
