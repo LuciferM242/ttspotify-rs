@@ -2,6 +2,7 @@ pub mod account;
 pub mod audio_key;
 pub mod auth;
 pub mod batch;
+pub mod collection;
 pub mod metadata;
 pub mod player;
 pub mod recovery;

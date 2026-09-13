@@ -24,6 +24,7 @@ librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1
 # directly. Both are already in the tree as librespot dependencies.
 librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false }
 protobuf = "3"
+http = "1"
 
 # YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
 # whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.
