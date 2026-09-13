@@ -1,14 +1,15 @@
-//! Interactive config setup wizard.
-//!
-//! Walks the user through creating a config file with prompted inputs.
-//! Validates each field and writes valid JSON.
+//! Interactive setup wizard for a new bot config, and the prompts it shares
+//! with the Linux config editor.
 
 use std::io::{self, Write};
 
-use crate::config::{config_dir, BotConfig};
+use crate::config::{config_dir, kick_delay_label, kick_delay_options, AdminMode, BotConfig, EnabledServices};
 use crate::error::BotError;
 use crate::services::Service;
+use crate::youtube::locale::{self, LocaleOption};
 use crate::youtube::setup;
+
+pub const GENDERS: [&str; 3] = ["neutral", "male", "female"];
 
 pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String> {
     let mut refused = 0;
@@ -49,12 +50,8 @@ pub(crate) fn ask(prompt: &str, default: &str, required: bool) -> Option<String>
     }
 }
 
-/// Read a numbered-menu answer, re-asking until it is one of the choices.
-///
-/// Anything outside the range used to fall through to the default silently, so
-/// a mistyped 9 saved choice 4 with nothing said about it — while the port
-/// prompts next to it validated properly. Empty keeps the default, as with
-/// every other prompt.
+/// Read a numbered-menu answer. Empty keeps the default; anything outside the
+/// range is refused rather than silently becoming the default.
 pub(crate) fn menu_choice(input: &str, choices: u8, default: &str) -> Option<u8> {
     let input = input.trim();
     let text = if input.is_empty() { default } else { input };
@@ -84,9 +81,145 @@ fn ask_int(prompt: &str, default: i32) -> Option<i32> {
     }
 }
 
-/// Unwrap a wizard prompt, or cancel the whole wizard: `ask`/`ask_int` return
-/// `None` on EOF or interrupt, and every question treats that as "user backed
-/// out" — `Ok(None)` from `run_wizard`.
+/// Read a yes/no answer, where empty means "leave it as it is".
+pub fn answer_bool(input: &str, current: bool) -> Option<bool> {
+    match input.trim().to_lowercase().as_str() {
+        "" => Some(current),
+        "y" | "yes" | "on" | "true" => Some(true),
+        "n" | "no" | "off" | "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Read a choice from a fixed list, by number or by name. Empty keeps the
+/// current value; an answer that matches nothing is refused rather than
+/// written into the config as a setting nothing understands.
+pub fn answer_choice(input: &str, options: &[&str], current: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Some(current.to_string());
+    }
+    if let Ok(number) = input.parse::<usize>() {
+        return number
+            .checked_sub(1)
+            .and_then(|i| options.get(i))
+            .map(|s| s.to_string());
+    }
+    options
+        .iter()
+        .find(|o| o.eq_ignore_ascii_case(input))
+        .map(|s| s.to_string())
+}
+
+pub(crate) fn ask_bool(prompt: &str, current: bool) -> Option<bool> {
+    loop {
+        let raw = ask(&format!("{prompt}? (y/n)"), if current { "y" } else { "n" }, false)?;
+        match answer_bool(&raw, current) {
+            Some(value) => return Some(value),
+            None => println!("    Answer y or n."),
+        }
+    }
+}
+
+pub(crate) fn ask_choice(prompt: &str, options: &[&str], current: &str) -> Option<String> {
+    println!("  {prompt}:");
+    for (i, option) in options.iter().enumerate() {
+        println!("    {}. {option}", i + 1);
+    }
+    loop {
+        let raw = ask("Number or name", current, false)?;
+        match answer_choice(&raw, options, current) {
+            Some(value) => return Some(value),
+            None => println!("    Not one of the choices."),
+        }
+    }
+}
+
+/// Whether to rejoin after a server kick, and how long to wait first.
+/// `Some(None)` means stay out.
+pub(crate) fn ask_kick_delay(current: Option<u32>) -> Option<Option<u32>> {
+    if !ask_bool("Rejoin the server after being kicked", current.is_some())? {
+        return Some(None);
+    }
+    let seconds = current.unwrap_or(0);
+    let delays = kick_delay_options(seconds);
+    let labels: Vec<String> = delays.iter().map(|&s| kick_delay_label(s)).collect();
+    let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let picked = ask_choice("Wait before rejoining", &options, &kick_delay_label(seconds))?;
+    let index = options.iter().position(|o| *o == picked).unwrap_or(0);
+    Some(Some(delays[index]))
+}
+
+/// What a typed YouTube location or language asks for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LocaleAnswer {
+    Code(String),
+    ListAll,
+    Several(Vec<LocaleOption>),
+    Unknown,
+}
+
+/// Empty keeps the current code, `-` is YouTube's default, `?` lists
+/// everything, and anything else is searched for by name or code.
+pub fn answer_locale(input: &str, current: &str, search: fn(&str) -> Vec<LocaleOption>) -> LocaleAnswer {
+    match input.trim() {
+        "" => LocaleAnswer::Code(current.to_string()),
+        "-" => LocaleAnswer::Code(String::new()),
+        "?" => LocaleAnswer::ListAll,
+        typed => {
+            let mut found = search(typed);
+            match found.len() {
+                0 => LocaleAnswer::Unknown,
+                1 => LocaleAnswer::Code(found.remove(0).code),
+                _ => LocaleAnswer::Several(found),
+            }
+        }
+    }
+}
+
+/// Most matches read out before asking for more of the name instead.
+const MATCHES_SHOWN: usize = 10;
+
+pub(crate) fn ask_locale(
+    prompt: &str,
+    current: &str,
+    options: &[LocaleOption],
+    search: fn(&str) -> Vec<LocaleOption>,
+) -> Option<String> {
+    let label = |code: &str| {
+        options
+            .iter()
+            .find(|o| o.code.eq_ignore_ascii_case(code))
+            .map_or_else(|| code.to_string(), |o| o.label.clone())
+    };
+    println!("  {prompt}: {}", label(current));
+    println!("  Type a name or code to change it, - for YouTube's default, ? to list them all.");
+    loop {
+        let raw = ask("Name or code, Enter keeps it", "", false)?;
+        match answer_locale(&raw, current, search) {
+            LocaleAnswer::Code(code) => {
+                if code != current {
+                    println!("    Chosen: {}", label(&code));
+                }
+                return Some(code);
+            }
+            LocaleAnswer::ListAll => options.iter().for_each(|o| println!("    {}", o.label)),
+            LocaleAnswer::Several(found) if found.len() > MATCHES_SHOWN => {
+                println!("    {} match \"{}\". Type more of the name.", found.len(), raw.trim());
+            }
+            LocaleAnswer::Several(found) => {
+                println!("    {} match. Type one of them by name or code:", found.len());
+                found.iter().for_each(|o| println!("    {}", o.label));
+            }
+            LocaleAnswer::Unknown => {
+                println!("    Nothing matches \"{}\". Type ? to list them all.", raw.trim());
+            }
+        }
+    }
+}
+
+/// Unwrap a wizard prompt, or cancel the whole wizard: prompts return `None`
+/// on EOF or interrupt, which means the user backed out.
 macro_rules! or_cancel {
     ($e:expr) => {
         match $e {
@@ -99,7 +232,7 @@ macro_rules! or_cancel {
 #[allow(clippy::field_reassign_with_default)] // building config field-by-field from wizard input reads clearer
 /// Run the interactive setup wizard.
 ///
-/// `offer_service` should be true only for the standalone `--setup` flow.
+/// `offer_service` should be true only for the standalone `add` flow.
 /// The first-run wizard inside `BotConfig::load` must pass false: that path
 /// continues into running the bot in the foreground, and starting a systemd
 /// instance there too would run the same config twice.
@@ -114,8 +247,7 @@ pub fn run_wizard(
     println!();
 
     // The name becomes a file path, so it goes through the same sanitiser the
-    // GUI's name prompt uses — path separators dropped, `.json` stripped —
-    // whether it was typed here or passed as `--setup <name>`.
+    // GUI's name prompt uses, whether typed here or passed on the command line.
     let name = if let Some(n) = config_name {
         match crate::config::sanitise_config_name(n) {
             Some(n) => n,
@@ -139,42 +271,41 @@ pub fn run_wizard(
         }
     };
 
-    // Configs live in <root>/config/ — the directory list_configs(), the CLI
-    // auto-detect and the systemd unit all read. Writing to the data root put
-    // every post-first-run setup where nothing would ever find it.
+    // Configs live in <root>/config/, the directory list_configs(), the CLI
+    // and the systemd unit all read.
     std::fs::create_dir_all(crate::paths::configs_dir())?;
     let config_path = crate::paths::config_file(&name);
 
-    if config_path.exists() {
-        let overwrite = ask(
-            &format!("{} already exists. Overwrite? (y/N)", config_path.display()),
-            "n",
-            false,
-        );
-        match overwrite {
-            Some(ref v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes") => {}
-            _ => {
-                println!("Setup cancelled.");
-                return Ok(None);
-            }
-        }
+    if config_path.exists()
+        && ask_bool(&format!("{} already exists. Overwrite it", config_path.display()), false) != Some(true)
+    {
+        println!("Setup cancelled.");
+        return Ok(None);
     }
 
-    println!("TeamTalk Server Settings");
-    let host = or_cancel!(ask("Server address", "", true));
-    let tcp_port = or_cancel!(ask_int("TCP port", 10333));
-    let udp_port = or_cancel!(ask_int("UDP port", tcp_port));
+    let mut config = BotConfig::default();
+
+    println!("TeamTalk Server");
+    config.host = or_cancel!(ask("Server address", "", true));
+    config.tcp_port = or_cancel!(ask_int("TCP port", 10333));
+    config.udp_port = or_cancel!(ask_int("UDP port", config.tcp_port));
+    config.encrypted = or_cancel!(ask_bool("Encrypted connection", false));
 
     println!();
-    println!("Bot Credentials");
-    let username = or_cancel!(ask("Bot username", "", true));
-    let password = or_cancel!(ask("Bot password", "", false));
+    println!("Bot Login");
+    config.username = or_cancel!(ask("Bot username", "", true));
+    config.password = or_cancel!(ask("Bot password", "", false));
 
     println!();
     println!("Bot Settings");
-    let bot_name = or_cancel!(ask("Bot nickname", "Spotify", true));
-    let channel = or_cancel!(ask("Channel to join (path or leave blank for root)", "/", false));
-    let channel_password = or_cancel!(ask("Channel password (if any)", "", false));
+    config.bot_name = or_cancel!(ask("Bot nickname", &config.bot_name, true));
+    config.bot_gender = or_cancel!(ask_choice("Bot gender", &GENDERS, &config.bot_gender));
+    let channel = or_cancel!(ask("Channel to join (/ is the root channel)", "/", false));
+    config.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
+    config.channel_password = or_cancel!(ask("Channel password (if any)", "", false));
+    let languages = crate::i18n::installed_language_codes(&config_dir());
+    let language_refs: Vec<&str> = languages.iter().map(String::as_str).collect();
+    config.default_language = or_cancel!(ask_choice("Language the bot answers in", &language_refs, "en"));
 
     println!();
     println!("Admin Permissions");
@@ -183,50 +314,18 @@ pub fn run_wizard(
     println!("  2. TeamTalk server admins - admins from the server's user accounts");
     println!("  3. Username list - only the usernames you enter next");
     println!("  4. Both - TeamTalk server admins or the username list");
-    let admin_mode = match or_cancel!(ask_menu("Which admin mode should this bot use? (1-4)", 4, "4")) {
-        1 => crate::config::AdminMode::Everyone,
-        2 => crate::config::AdminMode::TtRights,
-        3 => crate::config::AdminMode::List,
-        // Anything else lands on the restrictive choice, same as the GUI:
-        // a misread must not hand out access.
-        _ => crate::config::AdminMode::Both,
+    config.admin_mode = match or_cancel!(ask_menu("Which admin mode should this bot use? (1-4)", 4, "4")) {
+        1 => AdminMode::Everyone,
+        2 => AdminMode::TtRights,
+        3 => AdminMode::List,
+        // A misread must not hand out access, so anything else is the
+        // restrictive choice, same as the GUI.
+        _ => AdminMode::Both,
     };
-    let admins = if matches!(
-        admin_mode,
-        crate::config::AdminMode::List | crate::config::AdminMode::Both
-    ) {
-        crate::bot::auth::parse_admin_list(&or_cancel!(ask("Admin usernames (comma separated)", "", false)))
-    } else {
-        Vec::new()
-    };
-
-    println!();
-    println!("Language");
-    let lang_codes = crate::i18n::installed_language_codes(&config_dir());
-    let default_language = loop {
-        let code = or_cancel!(ask(
-            &format!("Default language [{}]", lang_codes.join("/")),
-            "en",
-            false,
-        ))
-        .trim()
-        .to_lowercase();
-        if code.is_empty() {
-            break "en".to_string();
-        }
-        // A language nobody has installed leaves the bot answering in English
-        // anyway, but silently — better to say so while the answer can still
-        // be corrected.
-        if lang_codes.iter().any(|c| c.eq_ignore_ascii_case(&code)) {
-            break code;
-        }
-        println!("    No translation installed for \"{code}\". Choose one of: {}", lang_codes.join(", "));
-    };
-
-    println!();
-    println!("License (optional)");
-    let license_name = or_cancel!(ask("License name", "", false));
-    let license_key = or_cancel!(ask("License key", "", false));
+    if matches!(config.admin_mode, AdminMode::List | AdminMode::Both) {
+        config.admins =
+            crate::bot::auth::parse_admin_list(&or_cancel!(ask("Admin usernames (comma separated)", "", false)));
+    }
 
     println!();
     println!("Services");
@@ -235,190 +334,97 @@ pub fn run_wizard(
     println!("  1. Both Spotify and YouTube");
     println!("  2. Spotify only");
     println!("  3. YouTube only");
-    let enabled_services = match or_cancel!(ask_menu("Which services should this bot offer? (1-3)", 3, "1")) {
-        2 => crate::config::EnabledServices { spotify: true, youtube: false },
-        3 => crate::config::EnabledServices { spotify: false, youtube: true },
-        _ => crate::config::EnabledServices::default(),
+    config.enabled_services = match or_cancel!(ask_menu("Which services should this bot offer? (1-3)", 3, "1")) {
+        2 => EnabledServices { spotify: true, youtube: false },
+        3 => EnabledServices { spotify: false, youtube: true },
+        _ => EnabledServices::default(),
     };
-    // With one service the default is that service — nothing to ask.
-    let default_service = match enabled_services.only() {
+    config.default_service = match config.enabled_services.only() {
         Some(only) => only,
-        None => Service::parse_or_default(&or_cancel!(ask(
-            "Which service should bare commands target? (spotify/youtube)",
-            "spotify",
-            true
+        None => Service::parse_or_default(&or_cancel!(ask_choice(
+            "Service that commands use unless told otherwise",
+            &["spotify", "youtube"],
+            "spotify"
         ))),
     };
 
-    // Cookies only matter for YouTube; a Spotify-only bot skips the question.
-    let cookies_file = if !enabled_services.youtube {
-        String::new()
-    } else {
+    if config.enabled_services.youtube {
         println!();
-        println!("YouTube Cookies (optional)");
+        println!("YouTube");
         println!("  Cookies help with rate-limited or age-restricted videos.");
         println!("  Playback works without them in most cases.");
-        let want_cookies = ask("Configure a cookies file path? (y/N)", "n", false);
-        if matches!(
-            want_cookies.as_deref(),
-            Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
-        ) {
+        if or_cancel!(ask_bool("Use a cookies file", false)) {
             let default = setup::default_cookies_path().to_string_lossy().into_owned();
-            let p = or_cancel!(ask("Cookies file path", &default, false));
-            if !p.is_empty() && !std::path::Path::new(&p).is_file() {
-                println!("  Warning: {p} doesn't exist yet. Saving anyway — drop the file there later.");
+            let path = or_cancel!(ask("Cookies file path", &default, false));
+            if !path.is_empty() && !std::path::Path::new(&path).is_file() {
+                println!("  Warning: {path} doesn't exist yet. Saving anyway - drop the file there later.");
             }
-            p
-        } else {
-            String::new()
+            config.youtube_cookies_file = path;
         }
-    };
+        println!();
+        println!("  YouTube Music ranks songs by where the search comes from.");
+        config.youtube_country = or_cancel!(ask_locale(
+            "Search location",
+            "",
+            &locale::country_options(),
+            locale::search_countries
+        ));
+        config.youtube_language =
+            or_cancel!(ask_locale("Language", "", &locale::language_options(), locale::search_languages));
+    }
 
-    // Build config from defaults + user input
-    let mut config = BotConfig::default();
-    config.host = host;
-    config.tcp_port = tcp_port;
-    config.udp_port = udp_port;
-    config.username = username;
-    config.password = password;
-    config.bot_name = bot_name;
-    config.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
-    config.channel_password = channel_password;
-    config.admin_mode = admin_mode;
-    config.admins = admins;
-    config.default_language = default_language;
-    if !license_name.is_empty() {
-        config.license_name = Some(license_name);
-    }
-    if !license_key.is_empty() {
-        config.license_key = Some(license_key);
-    }
-    config.default_service = default_service;
-    config.enabled_services = enabled_services;
-    config.youtube_cookies_file = cookies_file;
+    println!();
+    println!("Kicks");
+    config.rejoin_after_kick_seconds = or_cancel!(ask_kick_delay(None));
+
+    println!();
+    println!("License (optional)");
+    let license_name = or_cancel!(ask("License name", "", false));
+    let license_key = or_cancel!(ask("License key", "", false));
+    config.license_name = Some(license_name).filter(|s| !s.is_empty());
+    config.license_key = Some(license_key).filter(|s| !s.is_empty());
 
     config.save(&config_path)?;
 
     println!();
     println!("  Config saved to: {}", config_path.display());
 
-    // Offer Spotify authentication — skipped when this bot cannot use it.
-    if enabled_services.spotify {
-        println!();
-        println!("Spotify Authentication");
-        let do_auth = ask("Authenticate with Spotify now? (Y/n)", "y", false);
-        match do_auth {
-            Some(ref v) if v.eq_ignore_ascii_case("n") || v.eq_ignore_ascii_case("no") => {
-                println!("  Skipping Spotify authentication.");
-                println!(
-                    "  To sign in later, {}",
-                    crate::hints::sign_in_spotify()
-                );
-            }
-            _ => {
-                println!("  Starting Spotify authentication...");
-                // Spawn a new thread with its own tokio runtime to avoid
-                // nested-runtime panic (wizard is sync, may be called from async main)
-                let auth_result = std::thread::spawn(|| {
-                    let rt = match tokio::runtime::Runtime::new() {
-                        Ok(rt) => rt,
-                        Err(e) => {
-                            eprintln!("  Failed to create async runtime: {e}");
-                            return None;
-                        }
-                    };
-                    let mut auth = crate::spotify::auth::SpotifyAuth::new();
-                    Some(rt.block_on(auth.connect()))
-                }).join().ok().flatten();
-
-                match auth_result {
-                    Some(Ok(_)) => {
-                        println!("  Spotify authentication successful! Credentials cached.");
-                    }
-                    Some(Err(e)) => {
-                        println!("  Spotify authentication failed: {e}");
-                        println!(
-                            "  To try again, {}",
-                            crate::hints::sign_in_spotify()
-                        );
-                    }
-                    None => {
-                        println!("  Could not initialize authentication.");
-                        println!(
-                    "  To sign in later, {}",
-                    crate::hints::sign_in_spotify()
-                );
-                    }
-                }
-            }
-        }
+    if config.enabled_services.spotify {
+        offer_spotify_sign_in();
     }
 
-    // Skip the YouTube prompt entirely if the binaries are already installed
-    // (e.g. from a previous run or a release zip that ships with them).
     let yt_already_installed = setup::resolve_paths()
         .map(|p| setup::is_installed(&p))
         .unwrap_or(false);
-
-    if enabled_services.youtube && !yt_already_installed {
+    if config.enabled_services.youtube && !yt_already_installed {
         println!();
         println!("YouTube Support");
-        let yt_default = if default_service == Service::YouTube { "y" } else { "n" };
-        let prompt = if default_service == Service::YouTube {
-            "YouTube support requires a JavaScript runtime (Deno, ~40 MB). Download now? (Y/n)"
-        } else {
-            "You can also enable YouTube support. Downloads a JavaScript runtime (Deno, ~40 MB). Skip if you only need Spotify. Install YouTube support? (y/N)"
-        };
-        let do_yt = ask(prompt, yt_default, false);
-        let want_yt = matches!(
-            do_yt.as_deref(),
-            Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
-        );
-        if want_yt {
+        let prompt = "YouTube playback needs Deno, a JavaScript runtime (about 40 MB). Download it now";
+        if ask_bool(prompt, true) == Some(true) {
             if let Err(e) = run_youtube_setup() {
                 println!("  YouTube setup failed: {e}");
-                println!(
-                    "  To retry later, {}",
-                    crate::hints::install_youtube_tools()
-                );
+                println!("  To retry later, {}", crate::hints::install_youtube_tools());
             }
         } else {
-            println!(
-                "  Skipping YouTube setup. To install it later, {}",
-                crate::hints::install_youtube_tools()
-            );
+            println!("  Skipping YouTube setup. To install it later, {}", crate::hints::install_youtube_tools());
         }
     }
 
     // Offer systemd wiring so adding a server doesn't end with a config on
-    // disk but nothing running. Only in the standalone --setup flow (see
-    // `offer_service`), and only when actually booted under systemd — OpenRC/
-    // runit/s6 users just get the run-it-directly hint below.
+    // disk but nothing running. Only in the standalone `add` flow (see
+    // `offer_service`), and only when actually booted under systemd.
     #[cfg(target_os = "linux")]
     if offer_service && crate::service::systemd_booted() {
         println!();
         println!("Systemd Service");
         if crate::service::service_installed() {
             crate::service::offer_enable_instance(&name);
-        } else {
-            let install = ask(
-                "Systemd service not installed. Install it now? (y/N)",
-                "n",
-                false,
-            );
-            if matches!(
-                install.as_deref(),
-                Some(v) if v.eq_ignore_ascii_case("y") || v.eq_ignore_ascii_case("yes")
-            ) {
-                // install_service prints its own guidance and offers to
-                // enable/start every config, including the one just created.
-                if let Err(e) = crate::service::install_service() {
-                    println!("  Service install failed: {e}");
-                    println!(
-                        "  To retry later, {}",
-                        crate::hints::install_service()
-                    );
-                }
+        } else if ask_bool("Systemd service not installed. Install it now", false) == Some(true) {
+            // install_service prints its own guidance and offers to
+            // enable/start every config, including the one just created.
+            if let Err(e) = crate::service::install_service() {
+                println!("  Service install failed: {e}");
+                println!("  To retry later, {}", crate::hints::install_service());
             }
         }
     }
@@ -427,14 +433,62 @@ pub fn run_wizard(
     // By name, not by path: `--config <full path>` is what the systemd unit
     // uses, not what a person should be told to type.
     println!("  To run it in this terminal, {}", crate::hints::run_bot(&name));
+    println!("  To change audio, radio and search settings, {}", crate::hints::edit_bot(&name));
     println!();
 
     Ok(Some(config_path))
 }
 
-/// Public entry point for the standalone `--setup-yt` flag.
-/// Downloads the binaries (skipping if already installed). Cookies are a
-/// separate, optional config-time concern — not part of this flow.
+/// The Spotify login is shared by every bot on the machine, so a second bot
+/// only needs it once.
+fn offer_spotify_sign_in() {
+    println!();
+    println!("Spotify Sign-in");
+    let auth = crate::spotify::auth::SpotifyAuth::new();
+    if auth.has_cached_credentials() {
+        match auth.cached_username() {
+            Some(user) => println!("  Already signed in as {user}."),
+            None => println!("  Already signed in."),
+        }
+        return;
+    }
+    if ask_bool("Sign in to Spotify now", true) != Some(true) {
+        println!("  Skipping Spotify sign-in. To sign in later, {}", crate::hints::sign_in_spotify());
+        return;
+    }
+
+    println!("  Starting Spotify authentication...");
+    // Its own thread and runtime: the wizard is sync but may be called from
+    // async main, and a nested runtime panics.
+    let auth_result = std::thread::spawn(|| {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("  Failed to create async runtime: {e}");
+                return None;
+            }
+        };
+        let mut auth = crate::spotify::auth::SpotifyAuth::new();
+        Some(rt.block_on(auth.connect()))
+    })
+    .join()
+    .ok()
+    .flatten();
+
+    match auth_result {
+        Some(Ok(_)) => println!("  Spotify authentication successful! Credentials cached."),
+        Some(Err(e)) => {
+            println!("  Spotify authentication failed: {e}");
+            println!("  To try again, {}", crate::hints::sign_in_spotify());
+        }
+        None => {
+            println!("  Could not initialize authentication.");
+            println!("  To sign in later, {}", crate::hints::sign_in_spotify());
+        }
+    }
+}
+
+/// `youtube install`: download the runtime and sidecar unless already there.
 pub fn run_youtube_setup() -> Result<(), BotError> {
     let paths = setup::resolve_paths()?;
 
@@ -451,12 +505,10 @@ pub fn run_youtube_setup() -> Result<(), BotError> {
 
     println!();
     println!("  YouTube support installed.");
-    println!("  Tip: cookies are optional. If you want them, edit your config and");
-    println!("  set youtubeCookiesFile, or drop a cookies.txt in the config dir.");
     Ok(())
 }
 
-/// Public entry point for `--update-tools`.
+/// `youtube update`.
 ///
 /// 1. Rewrite the sidecar script from the copy compiled into this binary.
 /// 2. Refresh the JavaScript runtime it needs.
@@ -471,9 +523,8 @@ pub fn run_update_tools() -> Result<(), BotError> {
         return Ok(());
     }
 
-    // The only thing left to update is the runtime. The sidecar and its pinned
-    // dependencies ship inside this binary, so they are already current the
-    // moment the bot itself is.
+    // The sidecar and its pinned dependencies ship inside this binary, so
+    // only the runtime can be out of date.
     println!("Refreshing the sidecar script...");
     match crate::youtube::sidecar::ensure_script(&paths.lib_dir) {
         Ok(_) => println!("  Sidecar up to date."),
@@ -534,12 +585,72 @@ mod menu_tests {
 
     #[test]
     fn out_of_range_and_junk_are_refused_rather_than_silently_defaulted() {
-        // The bug this replaced: typing 9 at a 1-4 menu saved choice 4 with no
-        // message, while the port prompt beside it validated properly.
         assert_eq!(menu_choice("9", 4, "4"), None);
         assert_eq!(menu_choice("0", 4, "4"), None);
         assert_eq!(menu_choice("-1", 4, "4"), None);
         assert_eq!(menu_choice("two", 4, "4"), None);
         assert_eq!(menu_choice("2x", 4, "4"), None);
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    const QUALITIES: [&str; 3] = ["VERY_HIGH", "HIGH", "NORMAL"];
+
+    #[test]
+    fn empty_answers_keep_what_is_already_there() {
+        assert_eq!(answer_bool("", true), Some(true));
+        assert_eq!(answer_bool("  \n", false), Some(false));
+        assert_eq!(answer_choice("", &QUALITIES, "HIGH").as_deref(), Some("HIGH"));
+    }
+
+    #[test]
+    fn yes_and_no_are_read_in_the_forms_people_type() {
+        for yes in ["y", "Y", "yes", "on", "true"] {
+            assert_eq!(answer_bool(yes, false), Some(true), "{yes}");
+        }
+        for no in ["n", "NO", "off", "false"] {
+            assert_eq!(answer_bool(no, true), Some(false), "{no}");
+        }
+        assert_eq!(answer_bool("maybe", true), None);
+    }
+
+    #[test]
+    fn a_choice_can_be_its_number_or_its_name() {
+        assert_eq!(answer_choice("1", &QUALITIES, "HIGH").as_deref(), Some("VERY_HIGH"));
+        assert_eq!(answer_choice("normal", &QUALITIES, "HIGH").as_deref(), Some("NORMAL"));
+        assert_eq!(answer_choice("Female", &GENDERS, "neutral").as_deref(), Some("female"));
+    }
+
+    #[test]
+    fn an_invalid_choice_is_refused_rather_than_written_to_the_config() {
+        assert_eq!(answer_choice("9", &QUALITIES, "HIGH"), None);
+        assert_eq!(answer_choice("0", &QUALITIES, "HIGH"), None);
+        assert_eq!(answer_choice("LOSSLESS", &QUALITIES, "HIGH"), None);
+    }
+
+    #[test]
+    fn a_locale_is_kept_reset_listed_or_searched() {
+        let countries = locale::search_countries;
+        assert_eq!(answer_locale("", "IN", countries), LocaleAnswer::Code("IN".into()));
+        assert_eq!(answer_locale(" - ", "IN", countries), LocaleAnswer::Code(String::new()));
+        assert_eq!(answer_locale("?", "IN", countries), LocaleAnswer::ListAll);
+        assert_eq!(answer_locale("germany", "", countries), LocaleAnswer::Code("DE".into()));
+        assert_eq!(answer_locale("ger", "", countries), LocaleAnswer::Code("DE".into()));
+        assert_eq!(answer_locale("Atlantis", "IN", countries), LocaleAnswer::Unknown);
+        assert_eq!(answer_locale("en-gb", "", locale::search_languages), LocaleAnswer::Code("en-GB".into()));
+    }
+
+    #[test]
+    fn part_of_a_name_shared_by_several_lists_only_those() {
+        match answer_locale("english", "", locale::search_languages) {
+            LocaleAnswer::Several(found) => {
+                let codes: Vec<&str> = found.iter().map(|o| o.code.as_str()).collect();
+                assert_eq!(codes, ["en-IN", "en-GB", "en"]);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
