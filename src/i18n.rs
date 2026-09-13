@@ -99,6 +99,7 @@ keys! {
     // Help text
     HelpOverviewPlayback => "help_overview_playback",
     HelpOverviewSpotify => "help_overview_spotify",
+    HelpOverviewLibrary => "help_overview_library",
     HelpOverviewRest => "help_overview_rest",
     HelpOverviewAdmin => "help_overview_admin",
     HelpOverviewFooter => "help_overview_footer",
@@ -133,6 +134,12 @@ keys! {
     SearchResultsFooter => "search_results_footer",
     PickUsage => "pick_usage",
     PickTooLow => "pick_too_low",
+    // Library
+    LoadingLibrary => "loading_library",
+    LibraryHeader => "library_header",
+    LibraryEntry => "library_entry",
+    LibraryEmpty => "library_empty",
+    LibraryFailed => "library_failed",
     // Radio
     RadioAlreadyOn => "radio_already_on",
     RadioEnabled => "radio_enabled",

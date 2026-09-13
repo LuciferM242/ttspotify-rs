@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 
 use crate::bot::queue::{PrevAction, Queue};
 use crate::services::Service;
+use crate::spotify::types::PlaylistEntry;
 use crate::track::Track;
 
 pub use crate::bot::queue::QueueEntry;
@@ -76,6 +77,10 @@ pub struct PlayerState {
     /// from a user who searched and walked away outlived their TTL until
     /// somebody else happened to search.
     pub search_results: Cache<i32, Vec<Track>>,
+
+    /// Pickable playlist lists from `library`, per user. A user has either
+    /// this or search results waiting, never both.
+    pub library_results: Cache<i32, Vec<PlaylistEntry>>,
 
     // Track position tracking
     pub position_ms: u32,
@@ -193,6 +198,10 @@ impl PlayerState {
                 .max_capacity(SEARCH_RESULT_CAPACITY)
                 .time_to_live(SEARCH_RESULT_TTL)
                 .build(),
+            library_results: Cache::builder()
+                .max_capacity(SEARCH_RESULT_CAPACITY)
+                .time_to_live(SEARCH_RESULT_TTL)
+                .build(),
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
@@ -217,7 +226,33 @@ impl PlayerState {
 
     /// Store a user's pickable search results.
     pub fn insert_search_results(&mut self, user_id: i32, tracks: Vec<Track>) {
+        self.library_results.invalidate(&user_id);
         self.search_results.insert(user_id, tracks);
+    }
+
+    /// Store a user's pickable playlist list.
+    pub fn insert_library_results(&mut self, user_id: i32, playlists: Vec<PlaylistEntry>) {
+        self.search_results.invalidate(&user_id);
+        self.library_results.insert(user_id, playlists);
+    }
+
+    /// Remove a user's playlist list; returns whether one existed.
+    pub fn remove_library_results(&mut self, user_id: i32) -> bool {
+        let existed = self.library_results.get(&user_id).is_some();
+        self.library_results.invalidate(&user_id);
+        existed
+    }
+
+    /// `None` when the user has no playlist list waiting. Otherwise the uri of
+    /// the `pick`-th playlist, which clears the list, or `Some(None)` when the
+    /// number is past its end.
+    pub fn take_library_pick(&mut self, user_id: i32, pick: usize) -> Option<Option<String>> {
+        let playlists = self.library_results.get(&user_id)?;
+        let uri = playlists.get(pick).map(|p| p.uri.clone());
+        if uri.is_some() {
+            self.library_results.invalidate(&user_id);
+        }
+        Some(uri)
     }
 
     /// A user's current search results, if any.
@@ -511,6 +546,34 @@ mod tests {
     }
 
     // -- search results --
+
+    #[test]
+    fn a_library_pick_answers_the_playlist_and_clears_the_list() {
+        let playlist = |id: &str| PlaylistEntry {
+            uri: format!("spotify:playlist:{id}"),
+            name: id.to_string(),
+            tracks: 1,
+        };
+        let mut state = PlayerState::new();
+        assert_eq!(state.take_library_pick(7, 0), None);
+
+        state.insert_library_results(7, vec![playlist("a"), playlist("b")]);
+        assert_eq!(state.take_library_pick(7, 5), Some(None));
+        assert_eq!(state.take_library_pick(7, 1), Some(Some("spotify:playlist:b".to_string())));
+        assert_eq!(state.take_library_pick(7, 0), None);
+    }
+
+    #[test]
+    fn a_library_list_and_search_results_replace_each_other() {
+        let playlist = PlaylistEntry { uri: "spotify:playlist:a".into(), name: "a".into(), tracks: 1 };
+        let mut state = PlayerState::new();
+        state.insert_search_results(7, vec![track("s")]);
+        state.insert_library_results(7, vec![playlist.clone()]);
+        assert!(state.get_search_results(7).is_none());
+
+        state.insert_search_results(7, vec![track("s")]);
+        assert!(!state.remove_library_results(7));
+    }
 
     #[test]
     fn insert_and_pick_search_results() {

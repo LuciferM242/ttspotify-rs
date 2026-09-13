@@ -6,7 +6,7 @@ use librespot_metadata::Metadata;
 use parking_lot::Mutex;
 
 use crate::error::BotError;
-use crate::spotify::types::{SpotifyRef, SpotifyTrack, parse_spotify_ref};
+use crate::spotify::types::{PlaylistEntry, SpotifyRef, SpotifyTrack, parse_spotify_ref};
 
 /// Metadata for the tracks to enqueue now, plus URIs still to be fetched by a
 /// background loader (empty when the resolve was complete). `bulk` marks
@@ -154,6 +154,27 @@ impl SpotifyMetadata {
             return Err(BotError::NoResults);
         }
         Ok(uris)
+    }
+
+    /// Every playlist in the user's library, in library order.
+    pub async fn get_user_playlists(&self) -> Result<Vec<PlaylistEntry>, BotError> {
+        const PAGE: usize = 120;
+        const MAX_PAGES: usize = 100;
+
+        let session = self.session();
+        let mut entries = Vec::new();
+        let mut from = 0usize;
+        for _ in 0..MAX_PAGES {
+            let payload = session.spclient().get_rootlist(from, Some(PAGE)).await
+                .map_err(|e| BotError::Playback(format!("Playlist library fetch failed: {e}")))?;
+            let page = rootlist_page(&payload)?;
+            entries.extend(page.entries);
+            if !page.truncated || page.items == 0 {
+                break;
+            }
+            from += page.items;
+        }
+        Ok(entries)
     }
 
     /// Fetch metadata for the first `BULK_FIRST_BATCH` URIs now; the rest are
@@ -328,6 +349,41 @@ fn radio_context(spotify_ref: &SpotifyRef) -> Option<String> {
         SpotifyRef::Playlist(id) => Some(format!("spotify:playlist:{id}")),
         SpotifyRef::Track(_) | SpotifyRef::Liked => None,
     }
+}
+
+/// The playlists one rootlist page carries.
+struct RootlistPage {
+    entries: Vec<PlaylistEntry>,
+    truncated: bool,
+    /// Every row on the page, folder markers included; paging advances by this.
+    items: usize,
+}
+
+/// A rootlist page asked for with `decorate=attributes,length`: `meta_items`
+/// run parallel to `items` and carry each playlist's name and track count.
+fn rootlist_page(payload: &[u8]) -> Result<RootlistPage, BotError> {
+    use protobuf::Message;
+    let root = librespot_protocol::playlist4_external::SelectedListContent::parse_from_bytes(payload)
+        .map_err(|e| BotError::Playback(format!("Unreadable playlist library: {e}")))?;
+    let contents = root.contents;
+
+    let entries = contents
+        .items
+        .iter()
+        .zip(contents.meta_items.iter())
+        .filter(|(item, _)| item.uri().starts_with("spotify:playlist:"))
+        .map(|(item, meta)| PlaylistEntry {
+            uri: item.uri().to_string(),
+            name: meta.attributes.name().to_string(),
+            tracks: meta.length().max(0) as u32,
+        })
+        .collect();
+
+    Ok(RootlistPage {
+        entries,
+        truncated: contents.truncated(),
+        items: contents.items.len(),
+    })
 }
 
 /// The track uris a station or autoplay reply carries.
@@ -512,6 +568,70 @@ mod tests {
             super::station_track_uris(&json),
             vec!["spotify:playlist:37i9dQZF1E8PVA1jdbapzL".to_string()]
         );
+    }
+
+    fn rootlist(rows: &[(&str, &str, i32)], truncated: bool) -> Vec<u8> {
+        use librespot_protocol::playlist4_external::{
+            Item, ListAttributes, ListItems, MetaItem, SelectedListContent,
+        };
+        use protobuf::{Message, MessageField};
+        let mut contents = ListItems::new();
+        contents.set_pos(0);
+        contents.set_truncated(truncated);
+        for (uri, name, length) in rows {
+            let mut item = Item::new();
+            item.set_uri(uri.to_string());
+            contents.items.push(item);
+            let mut attributes = ListAttributes::new();
+            attributes.set_name(name.to_string());
+            let mut meta = MetaItem::new();
+            meta.attributes = MessageField::some(attributes);
+            meta.set_length(*length);
+            contents.meta_items.push(meta);
+        }
+        let mut root = SelectedListContent::new();
+        root.contents = MessageField::some(contents);
+        root.write_to_bytes().expect("serialise")
+    }
+
+    #[test]
+    fn a_rootlist_page_names_its_playlists_and_counts() {
+        let page = super::rootlist_page(&rootlist(
+            &[
+                ("spotify:playlist:652TD735fW0JesE9VgHhzS", "First", 12),
+                ("spotify:playlist:5VA50pzLrODqcPjuTLK7YK", "Second", 300),
+            ],
+            false,
+        ))
+        .expect("parses");
+        let names: Vec<(&str, u32)> = page.entries.iter().map(|e| (e.name.as_str(), e.tracks)).collect();
+        assert_eq!(names, vec![("First", 12), ("Second", 300)]);
+        assert_eq!(page.entries[0].uri, "spotify:playlist:652TD735fW0JesE9VgHhzS");
+        assert!(!page.truncated);
+    }
+
+    #[test]
+    fn folder_markers_are_not_playlists_but_count_for_paging() {
+        let page = super::rootlist_page(&rootlist(
+            &[
+                ("spotify:start-group:abc:Rock", "", 0),
+                ("spotify:playlist:652TD735fW0JesE9VgHhzS", "Inside", 7),
+                ("spotify:end-group:abc", "", 0),
+            ],
+            true,
+        ))
+        .expect("parses");
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].name, "Inside");
+        assert!(page.truncated);
+        assert_eq!(page.items, 3);
+    }
+
+    #[test]
+    fn an_empty_rootlist_is_an_empty_library() {
+        let page = super::rootlist_page(&rootlist(&[], false)).expect("parses");
+        assert!(page.entries.is_empty());
+        assert_eq!(page.items, 0);
     }
 
     #[test]

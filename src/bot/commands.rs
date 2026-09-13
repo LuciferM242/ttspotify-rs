@@ -16,6 +16,19 @@ pub enum PlayRequest {
     Query(String),
     /// The liked songs of the account signed in to the active service.
     Liked,
+    /// A playlist uri from the library list. Always Spotify, even after a
+    /// switch to another service.
+    SpotifyPlaylist(String),
+}
+
+impl PlayRequest {
+    /// The service that resolves this request, given the active one.
+    pub fn service(&self, active: Service) -> Service {
+        match self {
+            Self::SpotifyPlaylist(_) => Service::Spotify,
+            Self::Query(_) | Self::Liked => active,
+        }
+    }
 }
 
 /// Commands sent from the bot thread to the async command processor.
@@ -50,6 +63,8 @@ pub enum BotCommand {
     QueueRemove { index: usize, expected_uri: String, user_id: i32 },
     SearchOnly { query: String, user_id: i32 },
     SearchPick { user_id: i32, pick: usize, user_name: String },
+    /// List the Spotify account's playlists to pick from.
+    Library { user_id: i32 },
     JoinChannel { path: String, user_id: i32 },
     ChangeNick { name: String, user_id: i32 },
     SetGender { gender: String, user_id: i32 },
@@ -326,6 +341,22 @@ pub fn format_search_results(
     msg
 }
 
+/// Render the numbered playlist list. `line` renders one playlist (translated
+/// by the caller).
+pub fn format_library(
+    playlists: &[crate::spotify::types::PlaylistEntry],
+    header: &str,
+    line: impl Fn(&crate::spotify::types::PlaylistEntry) -> String,
+    footer: &str,
+) -> String {
+    let mut msg = format!("{header}\n");
+    for (i, playlist) in playlists.iter().enumerate() {
+        let _ = writeln!(msg, "  {}: {}", i + 1, line(playlist));
+    }
+    msg.push_str(footer);
+    msg
+}
+
 /// Shared resources for command dispatch.
 pub struct CommandDispatcher {
     pub state: SharedState,
@@ -366,6 +397,22 @@ impl CommandDispatcher {
         self.auth.is_admin(username, user_type)
     }
 
+    /// Act on a 1-based pick: a waiting playlist list takes it, otherwise the
+    /// search results do.
+    fn pick(&self, client: &Client, sender_id: i32, n: usize) {
+        let user_name = format!("User#{sender_id}");
+        let playlist = self.state.lock().take_library_pick(sender_id, n - 1);
+        match playlist {
+            Some(Some(uri)) => self.send(BotCommand::SearchAndPlay {
+                request: PlayRequest::SpotifyPlaylist(uri),
+                user_id: sender_id,
+                user_name,
+            }),
+            Some(None) => self.reply_t(client, sender_id, Key::InvalidPick, &[]),
+            None => self.send(BotCommand::SearchPick { user_id: sender_id, pick: n - 1, user_name }),
+        }
+    }
+
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
     pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32, username: &str) -> bool {
         // Resolve and cache the sender's language first: every reply in this
@@ -376,7 +423,9 @@ impl CommandDispatcher {
             Input::Empty => return true,
             Input::Cancel => {
                 let mut state = self.state.lock();
-                let removed = state.remove_search_results(sender_id);
+                let removed_search = state.remove_search_results(sender_id);
+                let removed_library = state.remove_library_results(sender_id);
+                let removed = removed_search || removed_library;
                 drop(state);
                 if removed {
                     self.reply_t(client, sender_id, Key::SearchCancelled, &[]);
@@ -385,11 +434,7 @@ impl CommandDispatcher {
             }
             Input::Number(n) => {
                 if n > 0 {
-                    self.send(BotCommand::SearchPick {
-                        user_id: sender_id,
-                        pick: n - 1,
-                        user_name: format!("User#{sender_id}"),
-                    });
+                    self.pick(client, sender_id, n);
                 }
                 return true;
             }
@@ -509,6 +554,13 @@ impl CommandDispatcher {
                     user_name: format!("User#{sender_id}"),
                 });
                 self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
+            }
+            // Spotify-only: list the account's playlists to pick one by number.
+            "library" | "lib" => {
+                if self.state.lock().active_service == Service::Spotify {
+                    self.send(BotCommand::Library { user_id: sender_id });
+                    self.reply_t(client, sender_id, Key::LoadingLibrary, &[]);
+                }
             }
 
             // -- Info --
@@ -650,11 +702,7 @@ impl CommandDispatcher {
                     self.reply_t(client, sender_id, Key::PickUsage, &[]);
                 } else if let Ok(n) = trimmed.parse::<usize>() {
                     if n > 0 {
-                        self.send(BotCommand::SearchPick {
-                            user_id: sender_id,
-                            pick: n - 1,
-                            user_name: format!("User#{sender_id}"),
-                        });
+                        self.pick(client, sender_id, n);
                     } else {
                         self.reply_t(client, sender_id, Key::PickTooLow, &[]);
                     }
@@ -942,6 +990,11 @@ fn help_text(i18n: &I18n, user_id: i32, active: Service, is_admin: bool) -> Stri
     out.push('\n');
     out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
     out.push('\n');
+    // Spotify-only commands stay out of another service's help.
+    if active == Service::Spotify {
+        out.push_str(&i18n.tr(user_id, Key::HelpOverviewLibrary, &[]));
+        out.push('\n');
+    }
     out.push_str(&i18n.tr(user_id, Key::HelpOverviewRest, &[]));
     if is_admin {
         out.push('\n');
@@ -970,6 +1023,37 @@ mod tests {
             let help = help_text(&i18n, 0, service, false);
             assert!(help.contains("radio [on|off]") && help.contains("liked"), "{service:?}");
         }
+    }
+
+    #[test]
+    fn a_library_pick_resolves_on_spotify_after_a_switch() {
+        let pick = PlayRequest::SpotifyPlaylist("spotify:playlist:a".into());
+        assert_eq!(pick.service(Service::YouTube), Service::Spotify);
+        assert_eq!(PlayRequest::Query("x".into()).service(Service::YouTube), Service::YouTube);
+        assert_eq!(PlayRequest::Liked.service(Service::YouTube), Service::YouTube);
+    }
+
+    #[test]
+    fn help_lists_library_only_on_spotify() {
+        let i18n = test_i18n("en");
+        assert!(help_text(&i18n, 0, Service::Spotify, false).contains("library"));
+        assert!(!help_text(&i18n, 0, Service::YouTube, false).contains("library"));
+    }
+
+    #[test]
+    fn the_library_lists_playlists_numbered_from_one() {
+        use crate::spotify::types::PlaylistEntry;
+        let playlists = vec![
+            PlaylistEntry { uri: "spotify:playlist:a".into(), name: "Road".into(), tracks: 12 },
+            PlaylistEntry { uri: "spotify:playlist:b".into(), name: "Sleep".into(), tracks: 3 },
+        ];
+        let text = format_library(
+            &playlists,
+            "Your playlists:",
+            |p| format!("{} ({})", p.name, p.tracks),
+            "Type a number",
+        );
+        assert_eq!(text, "Your playlists:\n  1: Road (12)\n  2: Sleep (3)\nType a number");
     }
 
     // -- help_text admin gating --

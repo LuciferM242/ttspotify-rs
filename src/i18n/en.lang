@@ -120,6 +120,23 @@ search_results_header = Search results:
 # Last line under the numbered search results.
 search_results_footer = Type a number to play, or a to cancel
 
+# Library
+
+# Shown while the user's Spotify playlists are being listed.
+loading_library = Loading your playlists...
+
+# First line above the numbered playlist list.
+library_header = Your playlists:
+
+# One line of the playlist list. {name} = playlist name, {count} = how many tracks it has.
+library_entry = {name} ({count} tracks)
+
+# Shown when the Spotify account has no playlists.
+library_empty = No playlists found in your library
+
+# Shown when the playlist list could not be loaded. {error} = a short error description.
+library_failed = Could not load your playlists: {error}
+
 # Shown when pick is used incorrectly.
 pick_usage = Usage: pick <number>
 
@@ -251,6 +268,9 @@ help_overview_playback = Playback:\n  p <query>      Search and play a track, pl
 
 # Help lines for radio and liked songs, on both services.
 help_overview_spotify =   radio [on|off]      Toggle radio (auto-recommendations)\n  liked               Play your liked songs (also: fav)
+
+# Help line shown only when Spotify is the active service.
+help_overview_library =   library             List your playlists to pick one
 
 # The rest of the main help listing: audio, search, service, bot.
 help_overview_rest = \nAudio:\n  v [0-100]       Get or set volume\n  sf/sb [N]       Seek forward/backward N seconds\n\nSearch:\n  search <query>  Search and pick from results\n  <number>        Pick a search result\n  a / cancel      Cancel search\n\nService:\n  /sp             Switch to Spotify\n  /yt             Switch to YouTube\n\nBot:\n  link         Get URL for current track\n  stats        Show bot uptime and session stats\n  lang         Show or set your language\n  cn <name>    Change nickname\n  gender       Set bot gender\n  info         Bot info

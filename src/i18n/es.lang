@@ -60,6 +60,11 @@ mode_usage = {modes}\nUso: mode [r|rq|s|off]
 search_usage = Uso: search <búsqueda>
 search_results_header = Resultados de la búsqueda:
 search_results_footer = Escribe un número para reproducir, o a para cancelar
+loading_library = Cargando tus listas...
+library_header = Tus listas:
+library_entry = {name} ({count} canciones)
+library_empty = No hay listas en tu biblioteca
+library_failed = No se pudieron cargar tus listas: {error}
 pick_usage = Uso: pick <número>
 pick_too_low = El número debe ser 1 o mayor
 
@@ -119,6 +124,7 @@ help_overview_playback = Reproduccion:\n  p <consulta>   Buscar y reproducir una
 
 # Help lines for radio and liked songs, on both services.
 help_overview_spotify =   radio [on|off]      Activar radio (recomendaciones automaticas)\n  liked               Reproducir tus canciones guardadas (tambien: fav)
+help_overview_library =   library             Ver tus listas para elegir una
 
 # The rest of the main help listing: audio, search, service, bot.
 help_overview_rest = \nAudio:\n  v [0-100]       Ver o ajustar el volumen\n  sf/sb [N]       Avanzar/retroceder N segundos\n\nBusqueda:\n  search <consulta>  Buscar y elegir de los resultados\n  <numero>        Elegir un resultado\n  a / cancel      Cancelar la busqueda\n\nServicio:\n  /sp             Cambiar a Spotify\n  /yt             Cambiar a YouTube\n\nBot:\n  link         URL de la pista actual\n  stats        Tiempo activo y estadisticas de la sesion\n  lang         Ver o elegir tu idioma\n  cn <nombre>  Cambiar el apodo\n  gender       Genero del bot\n  info         Informacion del bot

@@ -1616,9 +1616,9 @@ async fn command_processor(
         match cmd {
             BotCommand::SearchAndPlay { request, user_id, user_name } => {
                 use crate::bot::commands::PlayRequest;
-                let active = state.lock().active_service;
+                let service = request.service(state.lock().active_service);
                 type ResolveOk = (Vec<crate::track::Track>, Option<BulkRest>, bool, Option<String>);
-                let result: Result<ResolveOk, BotError> = match active {
+                let result: Result<ResolveOk, BotError> = match service {
                     crate::services::Service::Spotify => {
                         if let Err(e) = ensure_spotify!() {
                             reply_t(user_id, Key::SpotifyUnavailable, &[
@@ -1628,7 +1628,9 @@ async fn command_processor(
                         }
                         with_reconnect!(async {
                             match &request {
-                                PlayRequest::Query(query) => metadata.resolve(query, search_limit).await,
+                                PlayRequest::Query(query) | PlayRequest::SpotifyPlaylist(query) => {
+                                    metadata.resolve(query, search_limit).await
+                                }
                                 PlayRequest::Liked => metadata.liked().await,
                             }
                         })
@@ -1642,6 +1644,7 @@ async fn command_processor(
                         let resolved = match &request {
                             PlayRequest::Query(query) => youtube_metadata.resolve_paged(query, search_limit).await,
                             PlayRequest::Liked => youtube_metadata.liked().await,
+                            PlayRequest::SpotifyPlaylist(_) => unreachable!("resolved on Spotify"),
                         };
                         resolved
                             .map(|resolved| match resolved {
@@ -1669,7 +1672,7 @@ async fn command_processor(
                         // dedup against the queue. Radio continues Spotify
                         // sources from their album or playlist.
                         let is_multi = tracks.len() > 1 || is_bulk;
-                        let source_radio = active == crate::services::Service::Spotify;
+                        let source_radio = service == crate::services::Service::Spotify;
                         let tracks_to_add = tracks;
 
                         // Hold lock across idle check + enqueue to prevent race.
@@ -2215,6 +2218,37 @@ async fn command_processor(
                     }
                     Err(e) => {
                         reply_t(user_id, search_error_key(&e), &[
+                            ("error", crate::bot::commands::user_error(&e)),
+                        ]);
+                    }
+                }
+            }
+
+            BotCommand::Library { user_id } => {
+                if let Err(e) = ensure_spotify!() {
+                    reply_t(user_id, Key::SpotifyUnavailable, &[
+                        ("error", crate::bot::commands::user_error(&e)),
+                    ]);
+                    continue;
+                }
+                match with_reconnect!(metadata.get_user_playlists()) {
+                    Ok(playlists) if playlists.is_empty() => {
+                        reply_t(user_id, Key::LibraryEmpty, &[]);
+                    }
+                    Ok(playlists) => {
+                        reply(user_id, &crate::bot::commands::format_library(
+                            &playlists,
+                            &i18n.tr(user_id, Key::LibraryHeader, &[]),
+                            |p| i18n.tr(user_id, Key::LibraryEntry, &[
+                                ("name", p.name.clone()),
+                                ("count", p.tracks.to_string()),
+                            ]),
+                            &i18n.tr(user_id, Key::SearchResultsFooter, &[]),
+                        ));
+                        state.lock().insert_library_results(user_id, playlists);
+                    }
+                    Err(e) => {
+                        reply_t(user_id, Key::LibraryFailed, &[
                             ("error", crate::bot::commands::user_error(&e)),
                         ]);
                     }
