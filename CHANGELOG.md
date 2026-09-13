@@ -1,5 +1,112 @@
 # Changelog
 
+## [Unreleased]
+
+**Upgrading: run the YouTube install once after updating, so Deno and the
+sidecar's dependencies are in place before the first track.**
+
+### Added
+- `library` (also `lib`) lists the playlists in the Spotify library, numbered,
+  and playing one is a matter of typing its number. `library <words>` lists
+  only the playlists whose names match, forgiving a typo, and plays the
+  playlist straight away when only one matches.
+- Autoplay on YouTube. The `radio` command now works there as well as on
+  Spotify, continuing from the current track through YouTube Music's own
+  autoplay queue.
+- Setting up a bot on Linux asks whether the server is encrypted, the bot's
+  gender, whether to rejoin after a kick, and for a bot that plays YouTube its
+  search location and language.
+- `edit` can change the TeamTalk license name and key.
+- `liked` works on YouTube, playing your YouTube Music liked songs when the bot
+  has a signed-in cookies file, and `h liked` explains it in every language.
+  Without a cookies file it says one is needed instead of doing nothing.
+
+### Changed
+- A YouTube request on a machine without the YouTube tools now says so, and
+  how to install them, instead of announcing a track that never plays. After an
+  update that left only the old yt-dlp tools, the Windows tray offers to install
+  the new ones.
+- A YouTube location or language is found by typing part of its name, and only
+  the matches are read out rather than the whole list. Languages go by their
+  English name as well as their own, in `edit` and in the tray config editor.
+- Setting up a second bot no longer offers Spotify sign-in when this machine is
+  already signed in, and the YouTube tools download defaults to yes for a bot
+  that plays YouTube. The license question comes last.
+- The YouTube cookies file is used only for a track YouTube refuses without an
+  account, such as an age-restricted video, which is then tried again signed
+  in. Every other track plays without it, and a file exported while signed out
+  is reported when the bot starts.
+- `edit` skips Spotify's audio settings for a bot without Spotify, asks before
+  quitting with unsaved changes, and after saving offers the YouTube tools or
+  points to Spotify sign-in when the bot needs them.
+- YouTube audio is fetched by a bundled sidecar instead of yt-dlp. A track
+  starts in about a second where resolving it alone used to take several, and
+  installing the YouTube tools now downloads only a JavaScript runtime. A Deno
+  already on the system is used as it is.
+- Spotify playlists, albums, liked songs and searches load in a handful of
+  requests instead of one request per track, so a big playlist queues in a
+  couple of seconds and stops running into Spotify's rate limits.
+- Spotify radio tells Spotify what has already played, so its picks stop
+  circling back to the same songs batch after batch.
+- Spotify radio continues from the album or playlist that was playing instead
+  of from its last track, so it stays close to what was asked for, and it now
+  starts when a Spotify album or playlist runs out.
+- Liked Songs are read from Spotify's library sync, a few hundred songs per
+  request, in the order they were liked, and a large library arrives whole.
+- A long YouTube video starts playing within a couple of seconds instead of
+  after all of it has downloaded, and seeking jumps straight to any point,
+  including parts that have not downloaded yet. For very long videos only a
+  stretch ahead of what is playing is fetched.
+- The Spotify library is pinned to a specific upstream revision rather than its
+  last release, which is ten months old and missing the fixes below.
+
+### Removed
+- yt-dlp, bgutil-pot and the yt-dlp PO-token plugin are no longer downloaded or
+  used, and are deleted from the tools folder when it is upgraded. There is no
+  longer a fallback to yt-dlp if YouTube playback fails.
+
+### Fixed
+- A bot kicked off the server no longer logs straight back in for a moment
+  before leaving again.
+- A nickname changed with `cn` is kept after a restart or a reconnect, and a
+  gender changed with `gender` no longer switches back at the next track or
+  after a reconnect.
+- A song no longer fails to play when the first address Spotify hands out for
+  it answers with something other than the range of audio that was asked for.
+  The next address is tried instead of the whole track being given up on.
+- The saved Spotify login is no longer written readable by every account on the
+  machine, and one already written that way is now warned about.
+- Signing in to Spotify no longer gives up when the first address it resolves
+  cannot be reached, which is what a broken IPv6 route looks like from here.
+- `ttspotify auth` no longer crashes before it signs in.
+- On Linux, a service file updated from 0.7.0 or older gave the bot only its
+  `config` folder to write to, instead of its whole data folder. It is repaired
+  the next time a bot starts or `ttspotify update` runs, and the old file is
+  kept as `ttspotify@.service.bak`.
+- A bot set up from a downloaded copy now runs as a service from the installed
+  `ttspotify`, not from the download, so deleting the download no longer stops
+  it and `update` reaches it. `install` offers to restart running bots after
+  replacing the program they run.
+- The first run no longer starts the new bot twice when it is enabled as a
+  service during setup.
+- `status` says when a bot starts at login, and `doctor` no longer warns that
+  an enabled bot will not come back after a reboot. `doctor` also reports a bot
+  whose name has a hyphen or a space in it correctly.
+- The TeamTalk SDK needs ALSA's library as well as libpulse. `doctor` checks
+  for both and names the package to install, and a bot that cannot start for
+  want of either says so. On Ubuntu 24.04 the package is `libasound2t64`.
+- Enabling a bot during setup says so when it could not be started, instead of
+  claiming it was, and `service install` explains when the shell has no
+  systemd user session.
+- Running with `--config` pointing at a missing file no longer asks for the
+  setup wizard a second time after it has made the bot.
+- On Windows, right click or Enter on the tray icon while a window is open,
+  such as the update prompt, brings that window to the front instead of doing
+  nothing. The first-run prompt no longer lets the menu open a second
+  configuration editor over it.
+- On Windows, `--setup` on a config that cannot be read says so instead of
+  opening the editor on default settings, which saving wrote over the file.
+
 ## [1.1.0] - 2026-08-31
 
 ### Added
