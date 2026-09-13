@@ -836,16 +836,83 @@ fn log_startup_versions() {
     tracing::info!("Versions — app: v{app}, TeamTalk SDK: {sdk}, JS runtime: {js}");
 }
 
+/// Fetch the autoplay continuation for a seed, whichever service it came from.
+///
+/// Both radio paths - the background pre-fetch and the interactive "the queue
+/// ran out" branch - go through here, so the two can never drift apart on
+/// which services support radio.
+async fn fetch_radio_for_seed(
+    service: crate::services::Service,
+    seed_uri: &str,
+    batch: usize,
+    played_ids: &[String],
+    metadata: &crate::spotify::metadata::SpotifyMetadata,
+    youtube_metadata: &Arc<crate::youtube::metadata::YouTubeMetadata>,
+    station: &mut Option<crate::youtube::metadata::YtRadioStation>,
+) -> Result<Vec<crate::track::Track>, String> {
+    match service {
+        crate::services::Service::Spotify => {
+            let parsed = SpotifyUri::from_uri(seed_uri)
+                .map_err(|e| format!("unparseable Spotify seed: {e}"))?;
+            metadata
+                .get_radio_tracks(&parsed, batch, played_ids)
+                .await
+                .map(|v| v.into_iter().map(Into::into).collect())
+                .map_err(|e| e.to_string())
+        }
+        crate::services::Service::YouTube => {
+            // Keep paging the station we are already inside. Starting a fresh
+            // one from whatever is playing drifts away from what the user
+            // asked for, because by the second batch the seed is itself a
+            // radio pick.
+            let still_ours = station.as_ref().is_some_and(|st| st.covers(seed_uri));
+            if !still_ours {
+                *station = Some(
+                    youtube_metadata
+                        .start_radio(seed_uri)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+
+            let st = station.as_mut().expect("station was just set");
+            let mut tracks = youtube_metadata
+                .next_radio_tracks(st, batch, played_ids)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // The station ran dry. Reseed once from the current track so
+            // autoplay keeps going rather than stopping without explanation
+            // after a few dozen songs.
+            if tracks.is_empty() {
+                tracing::info!("Radio: station exhausted, reseeding from {seed_uri}");
+                let mut fresh = youtube_metadata
+                    .start_radio(seed_uri)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tracks = youtube_metadata
+                    .next_radio_tracks(&mut fresh, batch, played_ids)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                *station = Some(fresh);
+            }
+
+            Ok(tracks.into_iter().map(Into::into).collect())
+        }
+    }
+}
+
 fn schedule_radio_prefetch(
     tx: &tokio::sync::mpsc::UnboundedSender<BotCommand>,
     seed_uri: String,
+    seed_service: crate::services::Service,
     delay_secs: f32,
     slot: &Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 ) {
     let tx = tx.clone();
     let handle = tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs_f32(delay_secs)).await;
-        let _ = tx.send(BotCommand::RadioPreFetch { seed_uri });
+        let _ = tx.send(BotCommand::RadioPreFetch { seed_uri, seed_service });
     });
     // Replace (and cancel) any previously-scheduled prefetch so stale timers
     // for tracks the user has already moved past don't pile up.
@@ -1304,6 +1371,9 @@ async fn command_processor(
     let pending_volume_save = Arc::new(AtomicBool::new(false));
     // Holds the most-recently-scheduled radio prefetch timer so a new schedule
     // cancels the previous one instead of leaking sleeping tasks.
+    // The YouTube radio station currently being paged, if any. Lives for as
+    // long as the bot keeps playing tracks that came out of it.
+    let mut youtube_radio: Option<crate::youtube::metadata::YtRadioStation> = None;
     let radio_prefetch_slot: Arc<parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>> =
         Arc::new(parking_lot::Mutex::new(None));
 
@@ -1677,7 +1747,7 @@ async fn command_processor(
                                 if !is_multi {
                                     let radio_on = state.lock().radio_enabled;
                                     if radio_on {
-                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), radio_delay, &radio_prefetch_slot);
+                                        schedule_radio_prefetch(&radio_cmd_tx, first_uri.clone(), first_service, radio_delay, &radio_prefetch_slot);
                                     }
                                 }
                             }
@@ -1792,9 +1862,12 @@ async fn command_processor(
                 }
 
                 // Capture current track info before advance() clears current_index
-                let (pre_seed_uri, pre_allow_rec, pre_played_ids) = {
+                let (pre_seed, pre_allow_rec, pre_played_ids) = {
                     let s = state.lock();
-                    let seed = s.current().map(|e| e.track.uri().to_string());
+                    // The service comes along with the uri: radio is no longer
+                    // Spotify-only, so "which service does this seed belong to"
+                    // can no longer be inferred by trying to parse it.
+                    let seed = s.current().map(|e| (e.track.service(), e.track.uri().to_string()));
                     let allow = s.current().map(|e| e.allow_recommend).unwrap_or(false);
                     let played: Vec<String> = s.queue.all_entries().map(|e| e.track.id().to_string()).collect();
                     (seed, allow, played)
@@ -1836,83 +1909,84 @@ async fn command_processor(
                             tracing::info!(
                                 "Radio: nothing queued after this track; recommendations in {radio_delay}s"
                             );
-                            schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
+                            schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), service, radio_delay, &radio_prefetch_slot);
                         }
                     }
                 } else {
                     let radio_on = state.lock().radio_enabled;
 
-                    // Radio is Spotify-only: the seed must be a Spotify URI.
-                    // Parsed up front so a YouTube seed falls through to the
-                    // end-of-queue reply below — it used to enter this branch,
-                    // fail the parse silently, and skip BOTH the radio fetch
-                    // and the message, leaving `n` at the end of a YouTube
-                    // queue with radio on answering nothing at all.
-                    let seed_parsed = pre_seed_uri
-                        .as_ref()
-                        .and_then(|s| SpotifyUri::from_uri(s).ok());
-
-                    // Track whether a radio track was successfully started; if not,
-                    // fall through to a clean idle state below.
+                    // Radio works on both services now, so the seed carries
+                    // its own service rather than being probed by trying to
+                    // parse it as a Spotify URI. A YouTube seed used to enter
+                    // this branch, fail that parse silently, and skip BOTH the
+                    // fetch and the message - leaving `n` at the end of a
+                    // YouTube queue with radio on answering nothing at all.
                     let mut resumed = false;
-                    if radio_on && pre_allow_rec && seed_parsed.is_some() {
-                        if let Some(seed) = pre_seed_uri {
-                            if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed) {
-                                reply_t(user_id, Key::RadioFetching, &[]);
-                                tracing::info!("Radio: queue ran out, fetching recommendations from seed {seed}");
-                                match with_reconnect!(metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &pre_played_ids)) {
-                                    Ok(tracks) if !tracks.is_empty() => {
-                                        let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
-                                        // A station reseeded from the same song
-                                        // hands back re-releases of it under
-                                        // fresh ids; drop those before playing.
-                                        let (added, started) = {
-                                            let mut s = state.lock();
-                                            let fresh = s.filter_unqueued_similar(tracks);
-                                            let added = fresh.len();
-                                            s.enqueue_source(fresh, "Radio".to_string(), true);
-                                            // Adding to an idle queue starts the
-                                            // first track, so this is what is
-                                            // now playing.
-                                            (
-                                                added,
-                                                s.current().map(|e| (e.track.uri().to_string(), e.track.display_name())),
-                                            )
-                                        };
-                                        match started {
-                                            Some((first_uri, first_name)) => {
-                                                tracing::info!(
-                                                    "Radio: added {} track(s), now playing {first_name}",
-                                                    added
-                                                );
-                                                if start_or_skip!(crate::services::Service::Spotify, &first_uri, user_id, &first_name) {
-                                                    resumed = true;
-                                                    reply_t(user_id, Key::RadioPlaying, &[
-                                                        ("track", first_name.clone()),
-                                                    ]);
-                                                    announce_playing_status(&first_name);
-                                                }
-                                            }
-                                            // Every recommendation was a song
-                                            // already played this session.
-                                            None => {
-                                                tracing::info!(
-                                                    "Radio: every recommendation was already played this session"
-                                                );
-                                                reply_t(user_id, Key::RadioNoRecs, &[]);
+                    if radio_on && pre_allow_rec && pre_seed.is_some() {
+                        if let Some((seed_service, seed)) = pre_seed {
+                            reply_t(user_id, Key::RadioFetching, &[]);
+                            tracing::info!("Radio: queue ran out, fetching recommendations from seed {seed}");
+                            let fetched = fetch_radio_for_seed(
+                                seed_service,
+                                &seed,
+                                radio_batch_size as usize,
+                                &pre_played_ids,
+                                &metadata,
+                                &youtube_metadata,
+                                &mut youtube_radio,
+                            )
+                            .await;
+                            match fetched {
+                                Ok(tracks) if !tracks.is_empty() => {
+                                    // A station reseeded from the same song
+                                    // hands back re-releases of it under
+                                    // fresh ids; drop those before playing.
+                                    let (added, started) = {
+                                        let mut s = state.lock();
+                                        let fresh = s.filter_unqueued_similar(tracks);
+                                        let added = fresh.len();
+                                        s.enqueue_source(fresh, "Radio".to_string(), true);
+                                        // Adding to an idle queue starts the
+                                        // first track, so this is what is
+                                        // now playing.
+                                        (
+                                            added,
+                                            s.current().map(|e| {
+                                                (e.track.service(), e.track.uri().to_string(), e.track.display_name())
+                                            }),
+                                        )
+                                    };
+                                    match started {
+                                        Some((first_service, first_uri, first_name)) => {
+                                            tracing::info!(
+                                                "Radio: added {} track(s), now playing {first_name}",
+                                                added
+                                            );
+                                            if start_or_skip!(first_service, &first_uri, user_id, &first_name) {
+                                                resumed = true;
+                                                reply_t(user_id, Key::RadioPlaying, &[
+                                                    ("track", first_name.clone()),
+                                                ]);
+                                                announce_playing_status(&first_name);
                                             }
                                         }
+                                        // Every recommendation was a song
+                                        // already played this session.
+                                        None => {
+                                            tracing::info!(
+                                                "Radio: every recommendation was already played this session"
+                                            );
+                                            reply_t(user_id, Key::RadioNoRecs, &[]);
+                                        }
                                     }
-                                    Ok(_) => {
-                                        tracing::info!("Radio: no recommendations came back for this seed");
-                                        reply_t(user_id, Key::RadioNoRecs, &[]);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Radio: recommendation fetch failed: {e}");
-                                        reply_t(user_id, Key::RadioFailed, &[
-                                            ("error", crate::bot::commands::user_error(&e)),
-                                        ]);
-                                    }
+                                }
+                                Ok(_) => {
+                                    tracing::info!("Radio: no recommendations came back for this seed");
+                                    reply_t(user_id, Key::RadioNoRecs, &[]);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Radio: recommendation fetch failed: {e}");
+                                    reply_t(user_id, Key::RadioFailed, &[("error", e)]);
                                 }
                             }
                         }
@@ -2148,7 +2222,7 @@ async fn command_processor(
 
                             let radio_on = state.lock().radio_enabled;
                             if radio_on {
-                                schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), radio_delay, &radio_prefetch_slot);
+                                schedule_radio_prefetch(&radio_cmd_tx, uri_str.clone(), service, radio_delay, &radio_prefetch_slot);
                             }
                         }
                     } else {
@@ -2273,7 +2347,7 @@ async fn command_processor(
                 }
             }
 
-            BotCommand::RadioPreFetch { seed_uri } => {
+            BotCommand::RadioPreFetch { seed_uri, seed_service } => {
                 let (should_extend, is_active, current_uri) = {
                     let s = state.lock();
                     let cur_uri = s.current().map(|e| e.track.uri().to_string());
@@ -2292,30 +2366,33 @@ async fn command_processor(
                 // The seed must still be the track playing: a prefetch queued
                 // for a track the user has since skipped is stale.
                 if should_extend && is_active && current_uri.as_deref() == Some(&seed_uri) {
-                    if let Ok(seed_parsed) = SpotifyUri::from_uri(&seed_uri) {
-                        let played_ids: Vec<String> = {
-                            let s = state.lock();
-                            s.queue.all_entries().map(|e| e.track.id().to_string()).collect()
-                        };
-                        match metadata.get_radio_tracks(&seed_parsed, radio_batch_size as usize, &played_ids).await {
-                            Ok(tracks) if !tracks.is_empty() => {
-                                let tracks: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
-                                let count = {
-                                    let mut s = state.lock();
-                                    let fresh = s.filter_unqueued_similar(tracks);
-                                    let count = fresh.len();
-                                    s.enqueue_source(fresh, "Radio".to_string(), true);
-                                    count
-                                };
-                                tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
-                            }
-                            Ok(_) => {
-                                tracing::info!("Radio: no recommendations found for {seed_uri}");
-                            }
-                            Err(e) => {
-                                tracing::warn!("Radio pre-fetch failed: {e}");
-                            }
+                    let played_ids: Vec<String> = {
+                        let s = state.lock();
+                        s.queue.all_entries().map(|e| e.track.id().to_string()).collect()
+                    };
+                    match fetch_radio_for_seed(
+                        seed_service,
+                        &seed_uri,
+                        radio_batch_size as usize,
+                        &played_ids,
+                        &metadata,
+                        &youtube_metadata,
+                        &mut youtube_radio,
+                    )
+                    .await
+                    {
+                        Ok(tracks) if !tracks.is_empty() => {
+                            let count = {
+                                let mut s = state.lock();
+                                let fresh = s.filter_unqueued_similar(tracks);
+                                let count = fresh.len();
+                                s.enqueue_source(fresh, "Radio".to_string(), true);
+                                count
+                            };
+                            tracing::info!("Radio: pre-fetched {count} tracks from seed {seed_uri}");
                         }
+                        Ok(_) => tracing::info!("Radio: no recommendations found for {seed_uri}"),
+                        Err(e) => tracing::warn!("Radio pre-fetch failed: {e}"),
                     }
                 }
             }

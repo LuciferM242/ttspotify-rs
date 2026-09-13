@@ -16,6 +16,34 @@ pub struct YtPlaylistRest {
     paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
 }
 
+/// A live YouTube Music radio station: the paginator YouTube handed back, plus
+/// enough memory to know whether we are still inside it.
+///
+/// Held across top-ups so autoplay pages one station the way the YouTube Music
+/// app does, instead of starting a fresh station from whatever happens to be
+/// playing. Reseeding per batch drifts: measured from one seed, a station
+/// reseeded from its own fifth track shared only 11 of 50 tracks with the
+/// original.
+pub struct YtRadioStation {
+    paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    /// Fetched but not yet handed out.
+    buffer: std::collections::VecDeque<YouTubeTrack>,
+    /// The seed, plus every id this station has produced. Used to tell "still
+    /// playing our own station" from "the user has put on something else".
+    known: std::collections::HashSet<String>,
+    /// YouTube has no more pages. Stop asking.
+    exhausted: bool,
+}
+
+impl YtRadioStation {
+    /// Whether `video_id` is this station's seed or something it handed out.
+    /// A seed from anywhere else means the user moved on and the station
+    /// should be replaced rather than continued.
+    pub fn covers(&self, video_id: &str) -> bool {
+        self.known.contains(video_id)
+    }
+}
+
 /// Result of `resolve_paged`.
 pub enum YtResolved {
     /// Fully resolved (single track, album, search hit).
@@ -291,6 +319,84 @@ impl YouTubeMetadata {
         }
     }
 
+    /// Open a YouTube Music radio station for a track.
+    ///
+    /// `music_radio_track` is YouTube Music's autoplay, not a separate radio
+    /// feature: it asks the same endpoint the app does, with automix on. The
+    /// first page excludes the seed and starts at what plays next.
+    ///
+    /// `music_related` is deliberately not used - that is a browse shelf, it
+    /// includes the seed track itself, and feeding it to a queue would replay
+    /// the song that is currently playing.
+    pub async fn start_radio(&self, video_id: &str) -> Result<YtRadioStation, BotError> {
+        let q = self.client.query();
+        let mut paginator = retry_once(|| q.music_radio_track(video_id))
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube radio fetch failed: {e}")))?;
+
+        // Drain the first page out of the paginator: extend() appends, so
+        // leaving it in place would hand the same tracks back on every later
+        // page. The playlist loader takes the same precaution.
+        let mut known = std::collections::HashSet::new();
+        known.insert(video_id.to_string());
+        let buffer: std::collections::VecDeque<YouTubeTrack> = std::mem::take(&mut paginator.items)
+            .into_iter()
+            .map(track_item_to_track)
+            .collect();
+
+        Ok(YtRadioStation { paginator, buffer, known, exhausted: false })
+    }
+
+    /// Take up to `limit` more tracks from a station, paging YouTube as needed.
+    ///
+    /// Returns fewer than `limit` - possibly none - once the station runs out.
+    /// An empty result is the caller's cue to seed a new station rather than a
+    /// failure.
+    pub async fn next_radio_tracks(
+        &self,
+        station: &mut YtRadioStation,
+        limit: usize,
+        exclude: &[String],
+    ) -> Result<Vec<YouTubeTrack>, BotError> {
+        let mut out = Vec::with_capacity(limit);
+        while out.len() < limit {
+            while let Some(track) = station.buffer.pop_front() {
+                let seen = station.known.contains(&track.id) || exclude.contains(&track.id);
+                station.known.insert(track.id.clone());
+                if !seen {
+                    out.push(track);
+                    if out.len() == limit {
+                        return Ok(out);
+                    }
+                }
+            }
+            if station.exhausted {
+                break;
+            }
+            // Buffer empty: ask for the next page. extend() appends to
+            // `items`, which is empty here precisely because the previous page
+            // was drained, so what lands is only the new tracks.
+            let more = station
+                .paginator
+                .extend(self.client.query())
+                .await
+                .map_err(|e| BotError::Playback(format!("YouTube radio page fetch failed: {e}")))?;
+            if !more {
+                station.exhausted = true;
+                break;
+            }
+            station.buffer = std::mem::take(&mut station.paginator.items)
+                .into_iter()
+                .map(track_item_to_track)
+                .collect();
+            if station.buffer.is_empty() {
+                station.exhausted = true;
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Spawn the sidecar, which prints where the track's audio is: one JSON
     /// line read with `sidecar::parse_stream_info`.
     ///
@@ -368,6 +474,88 @@ mod tests {
             });
         println!("{} serves {} bytes", info.client, info.content_length);
         assert!(info.content_length > 1_000_000, "a whole song is more than a megabyte");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn radio_returns_a_queue_that_excludes_the_seed() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        // A YouTube Music "- Topic" upload: the normal case for this bot.
+        let seed = "5oWyMakvQew";
+        let mut station = meta.start_radio(seed).await.expect("station");
+        let tracks = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("tracks");
+        assert_eq!(tracks.len(), 5, "should honour the limit");
+        assert!(
+            !tracks.iter().any(|t| t.id == seed),
+            "autoplay must not replay the track it was seeded from"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_keeps_handing_out_fresh_tracks() {
+        // The failure this guards: extend() APPENDS to the paginator, so a
+        // page that is not drained first comes back again and autoplay
+        // re-queues the same songs. Pull more than one page's worth.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let mut station = meta.start_radio("5oWyMakvQew").await.expect("station");
+
+        let mut seen: Vec<String> = Vec::new();
+        for round in 0..12 {
+            let batch = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("batch");
+            if batch.is_empty() {
+                break;
+            }
+            for t in batch {
+                assert!(
+                    !seen.contains(&t.id),
+                    "round {round}: {} came back a second time",
+                    t.name
+                );
+                seen.push(t.id);
+            }
+        }
+        assert!(
+            seen.len() > 50,
+            "a paged station should outlast one page; got {}",
+            seen.len()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_knows_which_tracks_are_its_own() {
+        // This is what stops autoplay reseeding every batch: the station is
+        // continued while the bot is still playing tracks it produced.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let seed = "5oWyMakvQew";
+        let mut station = meta.start_radio(seed).await.expect("station");
+        let tracks = meta.next_radio_tracks(&mut station, 3, &[]).await.expect("tracks");
+
+        assert!(station.covers(seed), "the seed itself belongs to the station");
+        for t in &tracks {
+            assert!(station.covers(&t.id), "{} should be recognised as ours", t.name);
+        }
+        assert!(
+            !station.covers("dQw4w9WgXcQ"),
+            "an unrelated track must not look like part of this station"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn radio_skips_tracks_already_queued() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let mut a = meta.start_radio("5oWyMakvQew").await.unwrap();
+        let first = meta.next_radio_tracks(&mut a, 3, &[]).await.unwrap();
+        let exclude: Vec<String> = first.iter().map(|t| t.id.clone()).collect();
+
+        let mut b = meta.start_radio("5oWyMakvQew").await.unwrap();
+        let second = meta.next_radio_tracks(&mut b, 3, &exclude).await.unwrap();
+        assert!(
+            !second.iter().any(|t| exclude.contains(&t.id)),
+            "excluded ids came back anyway"
+        );
     }
 
     #[tokio::test]

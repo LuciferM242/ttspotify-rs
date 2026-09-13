@@ -50,7 +50,7 @@ pub enum BotCommand {
     /// Admin: set the server-wide default language (glang). Persisted to config.
     SetDefaultLanguage { code: String, user_id: i32 },
     /// Internal: pre-fetch radio recommendations for the given seed track
-    RadioPreFetch { seed_uri: String },
+    RadioPreFetch { seed_uri: String, seed_service: crate::services::Service },
     /// Internal: preload next track for gapless playback
     PreloadNext,
     /// Internal: start whatever the queue says is current. Sent when a
@@ -658,11 +658,8 @@ impl CommandDispatcher {
                 }
             }
 
-            // -- Radio (Spotify-only; silently ignored on other services) --
+            // -- Radio / autoplay (both services) --
             "radio" => {
-                if self.state.lock().active_service != Service::Spotify {
-                    return true;
-                }
                 let arg = args.trim().to_lowercase();
                 if arg.starts_with("on") {
                     if self.state.lock().radio_enabled {
@@ -906,8 +903,9 @@ impl CommandDispatcher {
                         "v" | "volume" => Key::HelpVolume,
                         "sf" | "sb" | "seek" => Key::HelpSeek,
                         "search" => Key::HelpSearch,
-                        "radio" if active == Service::Spotify => Key::HelpRadio,
-                        "radio" => return true, // silent on non-Spotify
+                        // Autoplay works on both services now, so the topic
+                        // is no longer hidden from YouTube users.
+                        "radio" => Key::HelpRadio,
                         "link" | "url" => Key::HelpLink,
                         "stats" => Key::HelpStats,
                         "jc" => Key::HelpJc,
