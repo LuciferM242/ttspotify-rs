@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod locale;
 pub mod metadata;
 pub mod mp4;
 pub mod player;

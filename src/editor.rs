@@ -14,6 +14,7 @@ use crate::config::{kick_delay_label, kick_delay_options, AdminMode, BotConfig, 
 use crate::error::BotError;
 use crate::services::Service;
 use crate::wizard::ask;
+use crate::youtube::locale::{self, LocaleOption};
 
 const GENDERS: [&str; 3] = ["neutral", "male", "female"];
 const QUALITIES: [&str; 3] = ["VERY_HIGH", "HIGH", "NORMAL"];
@@ -354,6 +355,58 @@ fn edit_services(config: &mut BotConfig) {
             println!("  Warning: {cookies} does not exist yet.");
         }
         config.youtube_cookies_file = cookies;
+
+        let Some(country) =
+            ask_locale("YouTube search location", &config.youtube_country, locale::country_options(), locale::country_code)
+        else {
+            return;
+        };
+        config.youtube_country = country;
+        let Some(language) =
+            ask_locale("YouTube language", &config.youtube_language, locale::language_options(), locale::language_code)
+        else {
+            return;
+        };
+        config.youtube_language = language;
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LocaleAnswer {
+    Code(String),
+    List,
+    Unknown,
+}
+
+/// Read a location or language by code or name. Empty keeps the current one,
+/// `-` goes back to YouTube's default and `?` asks for the list.
+pub fn answer_locale(input: &str, current: &str, find: fn(&str) -> Option<String>) -> LocaleAnswer {
+    match input.trim() {
+        "" => LocaleAnswer::Code(current.to_string()),
+        "-" => LocaleAnswer::Code(String::new()),
+        "?" => LocaleAnswer::List,
+        typed => find(typed).map_or(LocaleAnswer::Unknown, LocaleAnswer::Code),
+    }
+}
+
+fn ask_locale(
+    prompt: &str,
+    current: &str,
+    options: Vec<LocaleOption>,
+    find: fn(&str) -> Option<String>,
+) -> Option<String> {
+    let shown = options
+        .iter()
+        .find(|o| o.code == current)
+        .map_or(current, |o| o.label.as_str())
+        .to_string();
+    loop {
+        let raw = ask(&format!("{prompt} is {shown}. Enter keeps it, - for the default, ? lists them"), "", false)?;
+        match answer_locale(&raw, current, find) {
+            LocaleAnswer::Code(code) => return Some(code),
+            LocaleAnswer::List => options.iter().for_each(|o| println!("    {}", o.label)),
+            LocaleAnswer::Unknown => println!("    YouTube does not offer that. Type ? to list them."),
+        }
     }
 }
 
@@ -452,6 +505,17 @@ mod tests {
         assert_eq!(answer_choice("9", &QUALITIES, "HIGH"), None);
         assert_eq!(answer_choice("0", &QUALITIES, "HIGH"), None);
         assert_eq!(answer_choice("LOSSLESS", &QUALITIES, "HIGH"), None);
+    }
+
+    #[test]
+    fn a_locale_is_kept_reset_listed_or_looked_up() {
+        let find = locale::country_code;
+        assert_eq!(answer_locale("", "IN", find), LocaleAnswer::Code("IN".into()));
+        assert_eq!(answer_locale(" - ", "IN", find), LocaleAnswer::Code(String::new()));
+        assert_eq!(answer_locale("?", "IN", find), LocaleAnswer::List);
+        assert_eq!(answer_locale("germany", "IN", find), LocaleAnswer::Code("DE".into()));
+        assert_eq!(answer_locale("Atlantis", "IN", find), LocaleAnswer::Unknown);
+        assert_eq!(answer_locale("en-gb", "", locale::language_code), LocaleAnswer::Code("en-GB".into()));
     }
 
     #[test]

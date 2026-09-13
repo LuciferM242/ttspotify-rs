@@ -22,6 +22,7 @@ use crate::config::{kick_delay_label, kick_delay_options};
 use crate::gui_native::config_form::{
     mode_uses_username_list, ConfigForm, ADMIN_MODE_LABELS,
 };
+use crate::youtube::locale::{self, LocaleOption};
 use super::resource_ids::*;
 
 const GENDERS: [&str; 3] = ["neutral", "male", "female"];
@@ -54,6 +55,11 @@ struct ServerPage {
     kick_delay: gui::ComboBox,
     /// Seconds behind each dropdown entry after the leading "Never".
     kick_delays: Vec<u32>,
+    yt_country: gui::ComboBox,
+    yt_language: gui::ComboBox,
+    /// The entries behind each dropdown, in the same order.
+    countries: Vec<LocaleOption>,
+    languages: Vec<LocaleOption>,
 }
 
 /// Controls on the Audio page.
@@ -116,6 +122,10 @@ pub fn show(
         admin_users: gui::Edit::new_dlg(&server_pg, IDC_ADMIN_USERS, (gui::Horz::Resize, gui::Vert::Resize)),
         kick_delay: gui::ComboBox::new_dlg(&server_pg, IDC_KICK_SECS, (gui::Horz::Resize, gui::Vert::None)),
         kick_delays: kick_delay_options(config.rejoin_after_kick_seconds.unwrap_or(0)),
+        yt_country: gui::ComboBox::new_dlg(&server_pg, IDC_YT_COUNTRY, (gui::Horz::Resize, gui::Vert::None)),
+        yt_language: gui::ComboBox::new_dlg(&server_pg, IDC_YT_LANGUAGE, (gui::Horz::Resize, gui::Vert::None)),
+        countries: locale::country_options(),
+        languages: locale::language_options(),
     });
 
     let audio = Rc::new(AudioPage {
@@ -199,6 +209,9 @@ pub fn show(
 
             let _ = server.license_key.set_text(&form.license_key);
             let _ = server.cookies.set_text(&form.youtube_cookies_file);
+            fill_locale(&server.yt_country, &server.countries, &form.youtube_country);
+            fill_locale(&server.yt_language, &server.languages, &form.youtube_language);
+            update_youtube_rows(&server_pg2, &server);
             select_or_first(&audio.quality, &QUALITIES, &form.spotify_quality);
             audio.normalize.set_check(form.spotify_enable_normalization);
             let _ = audio.norm_gain.set_text(&form.normalisation_gain_db);
@@ -271,6 +284,7 @@ pub fn show(
         let server_pg2 = server_pg.clone();
         checkbox.on().bn_clicked(move || {
             update_service_row(&server_pg2, &server2);
+            update_youtube_rows(&server_pg2, &server2);
             Ok(())
         });
     }
@@ -409,6 +423,38 @@ fn update_service_row(server_pg: &gui::TabPage, server: &ServerPage) {
     }
 }
 
+/// Show the YouTube rows only for a bot that offers YouTube.
+fn update_youtube_rows(server_pg: &gui::TabPage, server: &ServerPage) {
+    let mode = if server.youtube_enabled.is_checked() { co::SW::SHOW } else { co::SW::HIDE };
+    for id in [IDC_COOKIES_LABEL, IDC_COOKIES_BROWSE, IDC_YT_COUNTRY_LABEL, IDC_YT_LANGUAGE_LABEL] {
+        if let Ok(control) = server_pg.hwnd().GetDlgItem(id) {
+            control.ShowWindow(mode);
+        }
+    }
+    server.cookies.hwnd().ShowWindow(mode);
+    server.yt_country.hwnd().ShowWindow(mode);
+    server.yt_language.hwnd().ShowWindow(mode);
+}
+
+/// Fill a location or language dropdown and select the saved code, or the
+/// default when the code is not one YouTube offers.
+fn fill_locale(combo: &gui::ComboBox, options: &[LocaleOption], code: &str) {
+    let labels: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+    let _ = combo.items().add(&labels);
+    let index = options.iter().position(|o| o.code.eq_ignore_ascii_case(code)).unwrap_or(0);
+    combo.items().select(Some(index as u32));
+}
+
+/// The code behind a location or language dropdown's selection.
+fn selected_code(combo: &gui::ComboBox, options: &[LocaleOption]) -> String {
+    combo
+        .items()
+        .selected_index()
+        .and_then(|i| options.get(i as usize))
+        .map(|o| o.code.clone())
+        .unwrap_or_default()
+}
+
 /// Read every control into a form.
 fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> ConfigForm {
     ConfigForm {
@@ -428,6 +474,8 @@ fn read_form(server: &ServerPage, audio: &AudioPage, radio: &RadioPage) -> Confi
         license_name: text(&server.license_name),
         license_key: text(&server.license_key),
         youtube_cookies_file: text(&server.cookies),
+        youtube_country: selected_code(&server.yt_country, &server.countries),
+        youtube_language: selected_code(&server.yt_language, &server.languages),
         default_language: combo_text(&server.language),
         admin_mode_index: server.admin_mode.items().selected_index().unwrap_or(3),
         admin_users: text(&server.admin_users),

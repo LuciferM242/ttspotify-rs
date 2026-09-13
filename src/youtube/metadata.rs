@@ -108,14 +108,8 @@ pub fn for_tests() -> Option<YouTubeMetadata> {
 
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
-        // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
-        // The default is the process working directory, which under systemd
-        // may be unwritable (silently losing the cache) and during development
-        // litters the repo root.
-        // Locale matters more than it looks: YouTube Music ranks by it, and
-        // the library defaults to US/en, so an unset bot searches as an
-        // American wherever it actually runs. Regional music ranked badly for
-        // exactly this reason.
+        // The cache goes in the data root: the working directory may be unwritable under systemd.
+        // YouTube Music ranks results by locale, so the configured one is applied.
         let mut builder = RustyPipe::builder()
             .no_botguard()
             .storage_dir(crate::paths::cache_dir());
@@ -455,36 +449,23 @@ impl YouTubeMetadata {
     }
 }
 
-/// Parse a two-letter country code from config. An unset or unrecognised value
-/// yields `None`, which leaves the library's own default in place rather than
-/// failing to start over a typo.
+/// The configured location. Unset or unrecognised leaves the library default,
+/// so a typo never stops the bot starting.
 fn parse_country(code: &str) -> Option<rustypipe::param::Country> {
-    let code = code.trim();
-    if code.is_empty() {
-        return None;
+    let parsed = crate::youtube::locale::parse_country(code);
+    if parsed.is_none() && !code.trim().is_empty() {
+        tracing::warn!("YouTube: ignoring unrecognised youtubeCountry {code:?}");
     }
-    match code.to_uppercase().parse::<rustypipe::param::Country>() {
-        Ok(c) => Some(c),
-        Err(_) => {
-            tracing::warn!("YouTube: ignoring unrecognised youtubeCountry {code:?}");
-            None
-        }
-    }
+    parsed
 }
 
-/// As `parse_country`, for the language code.
+/// As `parse_country`, for the language.
 fn parse_language(code: &str) -> Option<rustypipe::param::Language> {
-    let code = code.trim();
-    if code.is_empty() {
-        return None;
+    let parsed = crate::youtube::locale::parse_language(code);
+    if parsed.is_none() && !code.trim().is_empty() {
+        tracing::warn!("YouTube: ignoring unrecognised youtubeLanguage {code:?}");
     }
-    match code.to_lowercase().parse::<rustypipe::param::Language>() {
-        Ok(l) => Some(l),
-        Err(_) => {
-            tracing::warn!("YouTube: ignoring unrecognised youtubeLanguage {code:?}");
-            None
-        }
-    }
+    parsed
 }
 
 /// Run a rustypipe query, retrying once on error.

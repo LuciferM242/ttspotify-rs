@@ -232,6 +232,8 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 | `defaultService` | `Spotify` or `YouTube` on startup (capitalisation does not matter) |
 | `enabledServices` | which services this bot may use at all, e.g. `["youtube"]`. Missing means both |
 | `youtubeCookiesFile` | path to your YouTube `cookies.txt` (optional) |
+| `youtubeCountry` | location YouTube searches are made from, e.g. `"IN"`. Empty is YouTube's default, the United States |
+| `youtubeLanguage` | language YouTube answers in, e.g. `"en-GB"`. Empty is YouTube's default, English (US) |
 | `adminMode` | who may use admin commands: `Everyone`, `TtRights`, `List`, or `Both` (default) |
 | `admins` | usernames treated as admins (used by `List` / `Both`) |
 | `defaultLanguage` | language code for bot replies, e.g. `en` (default) or `pt` |
