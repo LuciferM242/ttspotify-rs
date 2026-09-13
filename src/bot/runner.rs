@@ -530,7 +530,10 @@ pub async fn run_bot(
     tokio::spawn(spotify_supervisor(recovery, recovery_suspended.clone()));
 
     // Spawn command processor
-    let bot_gender = crate::config::parse_gender(&config.bot_gender);
+    let identity = Arc::new(parking_lot::Mutex::new(BotIdentity {
+        nickname: config.bot_name.clone(),
+        gender: crate::config::parse_gender(&config.bot_gender),
+    }));
     let cmd_ctx = CmdContext {
         player,
         metadata,
@@ -547,7 +550,7 @@ pub async fn run_bot(
         radio_batch_size: config.radio_batch_size,
         radio_delay: config.radio_delay,
         radio_cmd_tx: cmd_tx.clone(),
-        bot_gender,
+        identity: identity.clone(),
         config_store: config_store.clone(),
         audio_reset: audio_reset.clone(),
         timing_reset: timing_reset.clone(),
@@ -604,7 +607,7 @@ pub async fn run_bot(
 
     {
         let mut status = ::teamtalk::types::UserStatus::default();
-        status.gender = bot_gender;
+        status.gender = identity.lock().gender;
         let _ = client.set_status(status, "Idle");
     }
     send_event(RunnerEvent::Idle);
@@ -622,6 +625,7 @@ pub async fn run_bot(
     let event_event_tx = event_tx.clone();
     let event_last_channel = last_channel.clone();
     let event_stream_flush = stream_flush.clone();
+    let event_identity = identity.clone();
     let kick_rejoin = config.rejoin_after_kick_seconds;
     // If the SDK's auto-reconnect can't restore the session within this window,
     // stop spinning and return an error so the supervisor (tray restart /
@@ -681,6 +685,15 @@ pub async fn run_bot(
                         tracing::info!("Re-logged in after reconnect");
                         // Session restored: reset the disconnect watchdog.
                         disconnected_since = None;
+                        // The SDK logs back in with the startup nickname and no status.
+                        let (nickname, gender) = {
+                            let id = event_identity.lock();
+                            (id.nickname.clone(), id.gender)
+                        };
+                        let _ = event_client.change_nickname(&nickname);
+                        let mut status = ::teamtalk::types::UserStatus::default();
+                        status.gender = gender;
+                        let _ = event_client.set_status(status, "");
                         // Rejoin our last channel whenever the reconnect didn't
                         // land us back in it (root, a different channel, or 0).
                         // Admin moves during a live session are still respected
@@ -1075,6 +1088,12 @@ fn search_error_key(error: &BotError) -> Key {
     }
 }
 
+/// The nickname and gender the bot shows, as last set by `cn` and `gender`.
+struct BotIdentity {
+    nickname: String,
+    gender: ::teamtalk::types::UserGender,
+}
+
 /// All shared context needed by the command processor, bundled to avoid parameter explosion.
 struct CmdContext {
     player: SpotifyPlayer,
@@ -1094,7 +1113,7 @@ struct CmdContext {
     radio_batch_size: u8,
     radio_delay: f32,
     radio_cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
-    bot_gender: ::teamtalk::types::UserGender,
+    identity: Arc<parking_lot::Mutex<BotIdentity>>,
     config_store: Arc<crate::config::ConfigStore>,
     audio_reset: Arc<AtomicBool>,
     timing_reset: Arc<AtomicBool>,
@@ -1347,7 +1366,7 @@ async fn command_processor(
         player, metadata, youtube_metadata, youtube_player, session, auth,
         spotify_connected, recovery_notify, recovery_suspended, state, client,
         search_limit, radio_batch_size, radio_delay, radio_cmd_tx,
-        bot_gender, config_store, audio_reset, timing_reset, pause_flag,
+        identity, config_store, audio_reset, timing_reset, pause_flag,
         pipeline_drained, volume_for_save, exit_reason, shutdown, event_tx, i18n,
         search_cache,
     } = ctx;
@@ -1434,7 +1453,7 @@ async fn command_processor(
 
     let set_status = |text: &str| {
         let mut status = ::teamtalk::types::UserStatus::default();
-        status.gender = bot_gender;
+        status.gender = identity.lock().gender;
         let _ = client.set_status(status, text);
     };
 
@@ -2328,10 +2347,15 @@ async fn command_processor(
 
             BotCommand::ChangeNick { name, user_id: _ } => {
                 let _ = client.change_nickname(&name);
+                identity.lock().nickname = name.clone();
+                config_store.update(|cfg| {
+                    cfg.bot_name = name;
+                });
             }
 
             BotCommand::SetGender { gender, user_id: _ } => {
                 let new_gender = crate::config::parse_gender(&gender);
+                identity.lock().gender = new_gender;
                 let current_name = state.lock().current().map(|e| e.track.display_name());
                 let status_text = current_name
                     .map(|name| now_playing_status(&name, &state))
