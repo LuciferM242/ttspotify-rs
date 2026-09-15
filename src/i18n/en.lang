@@ -236,6 +236,10 @@ channel_not_found = Channel not found: {path}
 # Shown when a track could not be started. {track} = the track title.
 failed_to_start = Failed to start track: {track}
 
+# Shown instead of playing when the YouTube tools are not installed on the
+# machine the bot runs on. {fix} = how the owner installs them.
+youtube_not_set_up = YouTube cannot play here yet: its tools are not installed on this machine. To fix it, {fix}
+
 # Help text
 #
 # One entry per help topic. Long lines: \n marks a line break in the

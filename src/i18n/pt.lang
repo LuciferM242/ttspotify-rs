@@ -106,6 +106,7 @@ end_of_queue = Fim da fila
 invalid_pick = Escolha inválida ou sem resultados de busca
 channel_not_found = Canal não encontrado: {path}
 failed_to_start = Falha ao iniciar a faixa: {track}
+youtube_not_set_up = O YouTube ainda não pode tocar aqui: as ferramentas dele não estão instaladas nesta máquina. Para corrigir, {fix}
 
 # Help text
 #

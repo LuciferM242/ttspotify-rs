@@ -169,6 +169,7 @@ keys! {
     InvalidPick => "invalid_pick",
     ChannelNotFound => "channel_not_found",
     FailedToStart => "failed_to_start",
+    YoutubeNotSetUp => "youtube_not_set_up",
 }
 
 /// Parse `.lang` file text into a key -> template map.

@@ -1578,7 +1578,15 @@ async fn command_processor(
     // track would reset it every cycle and skip-storm forever.
     macro_rules! start_or_skip {
         ($service:expr, $uri:expr, $user_id:expr, $name:expr) => {{
-            if start_track($service, $uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
+            if $service == crate::services::Service::YouTube && !crate::youtube::setup::runtime_available() {
+                // Without Deno a YouTube load dispatches, "Now playing" goes out,
+                // and the failure only reaches the log. Say what is missing, and
+                // stop rather than skip through a queue none of which can play.
+                tracing::warn!("Not starting {}: the YouTube tools are not installed", $name);
+                reply_t($user_id, Key::YoutubeNotSetUp, &[("fix", crate::hints::install_youtube_tools())]);
+                brake_stop!();
+                false
+            } else if start_track($service, $uri, &player, &youtube_player, &client, &state, &audio_reset, &pause_flag) {
                 // NOTE: a successful *dispatch* no longer resets the brake.
                 // For an unavailable track the load dispatches fine and the
                 // failure only comes back later as PlayerEvent::Unavailable,

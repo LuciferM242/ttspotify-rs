@@ -223,6 +223,15 @@ pub fn tools_installed(script_present: bool, runtime: &JsRuntime) -> bool {
     script_present && !matches!(runtime, JsRuntime::Missing)
 }
 
+/// Whether a Deno the sidecar can run on is here, bundled or on PATH. The
+/// sidecar script is rewritten from this binary before every track, so the
+/// runtime is the one thing a track cannot start without.
+pub fn runtime_available() -> bool {
+    resolve_paths()
+        .map(|p| !matches!(find_js_runtime(&p), JsRuntime::Missing))
+        .unwrap_or(false)
+}
+
 /// Tools an older version installed for yt-dlp. They cannot play anything now,
 /// so their presence without the sidecar means the tools need installing.
 pub fn has_legacy_tools(paths: &YoutubeSetupPaths) -> bool {
