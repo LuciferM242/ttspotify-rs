@@ -154,6 +154,15 @@ fn instance_state(
     }
 }
 
+/// The fix for a binary not on PATH. An installed copy only needs its folder
+/// added; telling it to install again names a command the shell cannot find.
+fn path_fix(installed_dir: Option<&Path>) -> String {
+    match installed_dir {
+        Some(dir) => format!("Add {} to your PATH - {}", dir.display(), crate::hints::add_to_path(dir)),
+        None => format!("Put the binary on your PATH - {}", crate::hints::install_binary()),
+    }
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -185,7 +194,9 @@ pub fn report() {
     );
     println!("  on PATH: {}", yes_no(on_path));
     if !on_path {
-        fixes.push(format!("Put the binary on your PATH - {}", crate::hints::install_binary()));
+        let installed = crate::install::installed_binary();
+        let installed_dir = exe.as_deref().filter(|e| installed.as_deref() == Some(*e)).and_then(Path::parent);
+        fixes.push(path_fix(installed_dir));
     }
 
     println!();
@@ -412,6 +423,14 @@ fn describe_services(spotify: bool, youtube: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::youtube_tools_status;
+
+    #[test]
+    fn an_installed_copy_off_path_is_told_to_add_its_folder_not_to_install() {
+        let fix = super::path_fix(Some(std::path::Path::new("/home/u/.local/bin")));
+        assert!(fix.contains("/home/u/.local/bin:$PATH"), "{fix}");
+        assert!(!fix.contains(" install"), "{fix}");
+        assert!(super::path_fix(None).contains(" install"));
+    }
 
     #[test]
     fn nothing_to_say_when_both_halves_are_present() {

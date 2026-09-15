@@ -81,6 +81,16 @@ pub fn install_binary() -> String {
     }
 }
 
+/// How to reach an installed binary whose folder is not on PATH yet, as with a
+/// `~/.local/bin` created after this login.
+#[cfg(target_os = "linux")]
+pub fn add_to_path(dir: &std::path::Path) -> String {
+    format!(
+        "open a new shell; if it is still missing, run: echo 'export PATH=\"{}:$PATH\"' >> ~/.profile",
+        dir.display()
+    )
+}
+
 /// How to run one bot in this terminal.
 pub fn run_bot(name: &str) -> String {
     #[cfg(windows)]
