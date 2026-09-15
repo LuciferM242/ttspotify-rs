@@ -61,6 +61,10 @@ struct Tray {
     /// Set once shutdown begins, so a dialog dismissed during exit cannot
     /// start bots into a closing app.
     exiting: Cell<bool>,
+    /// Whether an update left only the old YouTube tools, worked out off the
+    /// message loop. The offer is made once.
+    tools_offer_rx: crossbeam_channel::Receiver<bool>,
+    tools_offer_done: Cell<bool>,
 }
 
 /// Run the tray. Blocks until the user exits.
@@ -112,10 +116,10 @@ pub fn run() {
     // "create a config?" prompt with no network wait.
     // Ask a Deno on PATH its version now, off the message loop, so the first
     // menu does not launch it there. The answer is remembered per binary.
-    std::thread::spawn(|| {
-        if let Ok(paths) = crate::youtube::setup::resolve_paths() {
-            let _ = crate::youtube::setup::is_installed(&paths);
-        }
+    // The same check also says whether to offer the new YouTube tools.
+    let (tools_tx, tools_offer_rx) = crossbeam_channel::bounded::<bool>(1);
+    std::thread::spawn(move || {
+        let _ = tools_tx.send(crate::gui_native::youtube_tools::offer_after_upgrade());
     });
 
     let has_configs = !crate::config::list_configs().is_empty();
@@ -140,6 +144,8 @@ pub fn run() {
         update_rx,
         update_done: Cell::new(false),
         exiting: Cell::new(false),
+        tools_offer_rx,
+        tools_offer_done: Cell::new(false),
     });
 
     {
@@ -246,6 +252,7 @@ fn register_events(wnd: &gui::WindowMain, tray: &Rc<Tray>, taskbar_created: u32)
             if let Some(_guard) = ModalGuard::acquire() {
                 poll_startup_update(&wnd2, &tray);
                 report_auth_outcome(wnd2.hwnd(), &tray);
+                poll_tools_offer(&wnd2, &tray);
             }
             Ok(())
         });
@@ -837,6 +844,39 @@ fn poll_startup_update(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
         // through the relaunch hook, declining changes nothing. The return
         // value only mattered when startup was gated on this dialog.
         let _ = crate::gui_native::update_dialog::show_update_available(wnd, info);
+    }
+}
+
+/// Offer the new YouTube tools once, when an update left only the old ones.
+/// The tray relaunches into a new version with no terminal to prompt in, so
+/// this is the only place an upgraded Windows install hears about it.
+fn poll_tools_offer(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    if tray.tools_offer_done.get() || tray.exiting.get() {
+        return;
+    }
+    // After the update offer: accepting an update relaunches the tray anyway.
+    if tray.update_rx.is_some() && !tray.update_done.get() {
+        return;
+    }
+    let offer = match tray.tools_offer_rx.try_recv() {
+        Ok(offer) => offer,
+        Err(crossbeam_channel::TryRecvError::Empty) => return,
+        Err(crossbeam_channel::TryRecvError::Disconnected) => false,
+    };
+    tray.tools_offer_done.set(true);
+    if !offer {
+        return;
+    }
+    let answer = wnd.hwnd().MessageBox(
+        crate::gui_native::youtube_tools::UPGRADE_OFFER,
+        "YouTube tools",
+        co::MB::YESNO | co::MB::ICONQUESTION,
+    );
+    if matches!(answer, Ok(co::DLGID::YES)) {
+        crate::gui_native::progress_dialog::run(wnd, "Install YouTube tools", |p| {
+            crate::gui_native::progress_dialog::youtube_install(p)
+        });
+        tray.facts.borrow().mark_stale();
     }
 }
 

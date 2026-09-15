@@ -4,6 +4,21 @@
 
 use crate::youtube::setup;
 
+/// What the tray asks when an update left only an older version's tools.
+pub const UPGRADE_OFFER: &str = "YouTube playback now runs on Deno. The YouTube tools on this computer are from an older version, so YouTube tracks will not play.\n\nInstall the new tools now? This downloads about 40 MB.";
+
+/// Whether to offer the new tools unprompted: only when an older version's
+/// yt-dlp tools are here and nothing that can play is.
+pub fn offer_after_upgrade() -> bool {
+    setup::resolve_paths()
+        .map(|p| upgrade_offer_needed(setup::has_legacy_tools(&p), setup::is_installed(&p)))
+        .unwrap_or(false)
+}
+
+fn upgrade_offer_needed(legacy: bool, installed: bool) -> bool {
+    legacy && !installed
+}
+
 /// Download and install the YouTube tools. Reports progress via `progress`.
 pub fn youtube_install(progress: &dyn Fn(&str)) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
@@ -45,4 +60,17 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::upgrade_offer_needed;
+
+    #[test]
+    fn the_new_tools_are_offered_only_to_an_old_install() {
+        assert!(upgrade_offer_needed(true, false));
+        // Already installed, or never used YouTube: nothing to nag about.
+        assert!(!upgrade_offer_needed(true, true));
+        assert!(!upgrade_offer_needed(false, false));
+        assert!(!upgrade_offer_needed(false, true));
+    }
+}
 
