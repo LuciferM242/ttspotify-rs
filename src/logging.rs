@@ -329,6 +329,21 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
     guard
 }
 
+/// Logging for the one-shot CLI commands: plain lines on stderr, no file.
+///
+/// A second call is a no-op rather than a panic. `auth` set up its own
+/// subscriber on top of this one with `init()`, which aborts the process when
+/// a global subscriber already exists.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn init_cli_logging(quiet: bool) {
+    let _ = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .with_max_level(if quiet { tracing::Level::ERROR } else { tracing::Level::INFO })
+        .try_init();
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 /// Initialize file-only logging (no stdout) as the global subscriber. Used by tray app.
 /// Logs to {log_dir}/{name}.log with thread names for per-instance identification.
@@ -376,6 +391,12 @@ pub fn create_instance_logging(log_dir: &Path, name: &str) -> (tracing::Dispatch
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_logging_can_be_set_up_twice() {
+        init_cli_logging(false);
+        init_cli_logging(true);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()

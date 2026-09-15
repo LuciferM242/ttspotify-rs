@@ -637,12 +637,7 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
     // about access points either side of the answer is not what somebody asking
     // a yes-or-no question wants to read.
     let quiet = matches!(command, Commands::Auth { action: Some(AuthAction::Status) });
-    let _ = tracing_subscriber::fmt()
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .without_time()
-        .with_max_level(if quiet { tracing::Level::ERROR } else { tracing::Level::INFO })
-        .try_init();
+    tt_spotify_bot::logging::init_cli_logging(quiet);
 
     match command {
         // Intercepted by the caller, which needs the config path rather than
@@ -750,14 +745,6 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
             }
         }
         Commands::Auth { action: None } => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-                )
-                .init();
-
             let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
             match auth.connect().await {
                 Ok(_) => {
