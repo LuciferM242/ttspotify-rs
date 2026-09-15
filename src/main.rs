@@ -477,10 +477,15 @@ async fn main() -> Result<(), BotError> {
     // real bots — and only then report the error. This also means the
     // first-run wizard (which a missing --config triggers when someone is at
     // the keyboard) has created the file before anything logs.
-    if let Err(e) = BotConfig::load(&config_path) {
-        eprintln!("{e}");
-        std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
-    }
+    // The path to carry on with, which is the wizard's file when it just made
+    // one: keeping the missing path asked for the wizard a second time.
+    let config_path = match BotConfig::load_or_setup(&config_path) {
+        Ok((_, path)) => path.to_string_lossy().into_owned(),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
+        }
+    };
 
     // One bot per config: a manual run while the service has the same bot
     // running would put two sessions on one TeamTalk account, each knocking the

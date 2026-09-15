@@ -693,6 +693,13 @@ impl BotConfig {
     /// and fail immediately with a clear error, so a missing config becomes a
     /// clean exit instead of a hung or crash-looping service.
     pub fn load(path: &str) -> Result<Self, BotError> {
+        Self::load_or_setup(path).map(|(config, _)| config)
+    }
+
+    /// `load`, plus the path the config was actually read from. When the
+    /// wizard runs for a missing file it saves under the name typed there, so
+    /// the caller has to carry on with that path rather than the missing one.
+    pub fn load_or_setup(path: &str) -> Result<(Self, PathBuf), BotError> {
         use std::io::IsTerminal;
         let path_ref = Path::new(path);
         if !path_ref.exists() {
@@ -721,7 +728,7 @@ impl BotConfig {
                         for warning in config.validate() {
                             tracing::warn!("Config: {warning}");
                         }
-                        return Ok(config);
+                        return Ok((config, created_path));
                     }
                 }
             }
@@ -731,7 +738,7 @@ impl BotConfig {
                 crate::hints::create_bot()
             )));
         }
-        Self::load_noninteractive(path)
+        Ok((Self::load_noninteractive(path)?, path_ref.to_path_buf()))
     }
 
     /// Clamp out-of-range fields to sane values, returning a list of the
@@ -930,6 +937,18 @@ mod essentials_tests {
         std::fs::write(&path, r#"{"host": "tt.example.org", "username": ""}"#).unwrap();
 
         assert!(BotConfig::parse_file(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_existing_config_is_run_from_its_own_path() {
+        let dir = scratch("ownpath");
+        let path = dir.join("home.json");
+        std::fs::write(&path, r#"{"host": "tt.example.org"}"#).unwrap();
+
+        let (cfg, used) = BotConfig::load_or_setup(&path.to_string_lossy()).unwrap();
+        assert_eq!(cfg.host, "tt.example.org");
+        assert_eq!(used, path);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
