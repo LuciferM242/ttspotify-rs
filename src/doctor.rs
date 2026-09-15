@@ -14,24 +14,25 @@ use std::process::Command;
 
 use crate::config::BotConfig;
 
-/// The shared library the TeamTalk SDK links against. Without it the SDK
+/// Shared libraries the TeamTalk SDK links against. Without either one the SDK
 /// refuses to initialise, and the error it gives says nothing about audio.
 const PULSE_SONAME: &str = "libpulse.so.0";
+const ALSA_SONAME: &str = "libasound.so.2";
 
-/// Pull the resolved path for libpulse out of `ldconfig -p` output.
+/// Pull the resolved path for a library out of `ldconfig -p` output.
 ///
 /// Lines look like `libpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0`.
-fn libpulse_from_ldconfig(output: &str) -> Option<String> {
+fn library_from_ldconfig(output: &str, soname: &str) -> Option<String> {
     output
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with(PULSE_SONAME))
+        .filter(|line| line.split_whitespace().next() == Some(soname))
         .find_map(|line| line.split("=>").nth(1))
         .map(|path| path.trim().to_string())
 }
 
-/// Places a distribution may keep the library when `ldconfig` is unavailable.
-fn fallback_pulse_paths() -> Vec<PathBuf> {
+/// Places a distribution may keep a library when `ldconfig` is unavailable.
+fn fallback_library_paths(soname: &str) -> Vec<PathBuf> {
     [
         "/usr/lib/x86_64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu",
@@ -40,37 +41,78 @@ fn fallback_pulse_paths() -> Vec<PathBuf> {
         "/lib",
     ]
     .iter()
-    .map(|dir| Path::new(dir).join(PULSE_SONAME))
+    .map(|dir| Path::new(dir).join(soname))
     .collect()
 }
 
-/// Where libpulse is, if it is anywhere.
-pub fn libpulse_path() -> Option<String> {
+/// Where a library is, if it is anywhere.
+fn library_path(soname: &str) -> Option<String> {
     let from_ldconfig = Command::new("ldconfig")
         .arg("-p")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| libpulse_from_ldconfig(&String::from_utf8_lossy(&o.stdout)));
+        .and_then(|o| library_from_ldconfig(&String::from_utf8_lossy(&o.stdout), soname));
     if from_ldconfig.is_some() {
         return from_ldconfig;
     }
-    fallback_pulse_paths()
+    fallback_library_paths(soname)
         .into_iter()
         .find(|p| p.exists())
         .map(|p| p.display().to_string())
 }
 
-/// The sentence to add to an SDK startup failure when the library it needs is
-/// missing. `None` when libpulse is present and the failure is something else.
-pub fn libpulse_hint() -> Option<String> {
-    if libpulse_path().is_some() {
-        return None;
+/// The package that provides ALSA's library. Ubuntu 24.04 renamed it
+/// libasound2t64, and there `libasound2` is a virtual name apt refuses to pick.
+fn alsa_package() -> &'static str {
+    let renamed = Command::new("apt-cache")
+        .args(["show", "libasound2t64"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if renamed {
+        "libasound2t64"
+    } else {
+        "libasound2"
     }
+}
+
+/// The SDK's libraries that are missing, each with the package providing it.
+fn missing_libraries() -> Vec<(&'static str, &'static str)> {
+    let mut missing = Vec::new();
+    if library_path(PULSE_SONAME).is_none() {
+        missing.push((PULSE_SONAME, "libpulse0"));
+    }
+    if library_path(ALSA_SONAME).is_none() {
+        missing.push((ALSA_SONAME, alsa_package()));
+    }
+    missing
+}
+
+fn install_command(missing: &[(&str, &str)]) -> String {
+    let packages: Vec<&str> = missing.iter().map(|(_, package)| *package).collect();
+    format!("sudo apt install {}", packages.join(" "))
+}
+
+fn library_hint(missing: &[(&str, &str)]) -> Option<String> {
+    let names: Vec<&str> = missing.iter().map(|(soname, _)| *soname).collect();
+    let verb = match names.len() {
+        0 => return None,
+        1 => "is",
+        _ => "are",
+    };
     Some(format!(
-        "{PULSE_SONAME} is not installed - the TeamTalk SDK needs it. \
-         On Debian, Ubuntu and Raspberry Pi OS: sudo apt install libpulse0"
+        "{} {verb} not installed - the TeamTalk SDK needs it. \
+         On Debian, Ubuntu and Raspberry Pi OS: {}",
+        names.join(" and "),
+        install_command(missing)
     ))
+}
+
+/// The sentence to add to an SDK startup failure when a library it needs is
+/// missing. `None` when both are present and the failure is something else.
+pub fn missing_library_hint() -> Option<String> {
+    library_hint(&missing_libraries())
 }
 
 /// The SDK's shared library, the file whose presence means it was downloaded.
@@ -261,13 +303,15 @@ pub fn report() {
 
     println!();
     println!("System");
-    let pulse = libpulse_path();
-    println!(
-        "  {PULSE_SONAME}: {}",
-        pulse.as_deref().unwrap_or("MISSING - the bot cannot start without it")
-    );
-    if pulse.is_none() {
-        fixes.push("Install the audio library: sudo apt install libpulse0".to_string());
+    for soname in [PULSE_SONAME, ALSA_SONAME] {
+        println!(
+            "  {soname}: {}",
+            library_path(soname).as_deref().unwrap_or("MISSING - the bot cannot start without it")
+        );
+    }
+    let missing = missing_libraries();
+    if !missing.is_empty() {
+        fixes.push(format!("Install the audio libraries: {}", install_command(&missing)));
     }
 
     // `main` pins TEAMTALK_SDK_DIR before anything loads the SDK, so that is
@@ -391,12 +435,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn libpulse_is_read_from_the_ldconfig_line_for_it() {
+    fn a_library_is_read_from_the_ldconfig_line_for_it() {
         let out = "\tlibpulse-simple.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse-simple.so.0\n\
-                   \tlibpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0\n";
+                   \tlibpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0\n\
+                   \tlibasound.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libasound.so.2\n";
         assert_eq!(
-            libpulse_from_ldconfig(out).as_deref(),
+            library_from_ldconfig(out, PULSE_SONAME).as_deref(),
             Some("/lib/x86_64-linux-gnu/libpulse.so.0")
+        );
+        assert_eq!(
+            library_from_ldconfig(out, ALSA_SONAME).as_deref(),
+            Some("/lib/x86_64-linux-gnu/libasound.so.2")
         );
     }
 
@@ -406,8 +455,19 @@ mod tests {
         // dependencies of something else; neither means libpulse.so.0 is.
         let out = "\tlibpulse-simple.so.0 (libc6,x86-64) => /lib/libpulse-simple.so.0\n\
                    \tlibpulsecommon-15.99.so (libc6,x86-64) => /lib/libpulsecommon-15.99.so\n";
-        assert_eq!(libpulse_from_ldconfig(out), None);
-        assert_eq!(libpulse_from_ldconfig(""), None);
+        assert_eq!(library_from_ldconfig(out, PULSE_SONAME), None);
+        assert_eq!(library_from_ldconfig("", PULSE_SONAME), None);
+    }
+
+    #[test]
+    fn the_hint_names_every_missing_library_in_one_install_command() {
+        assert_eq!(library_hint(&[]), None);
+        let alsa = library_hint(&[(ALSA_SONAME, "libasound2t64")]).unwrap();
+        assert!(alsa.starts_with("libasound.so.2 is not installed"), "{alsa}");
+        assert!(alsa.ends_with("sudo apt install libasound2t64"), "{alsa}");
+        let both = library_hint(&[(PULSE_SONAME, "libpulse0"), (ALSA_SONAME, "libasound2")]).unwrap();
+        assert!(both.starts_with("libpulse.so.0 and libasound.so.2 are not installed"), "{both}");
+        assert!(both.ends_with("sudo apt install libpulse0 libasound2"), "{both}");
     }
 
     #[test]

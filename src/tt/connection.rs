@@ -10,19 +10,20 @@ use crate::error::BotError;
 /// Virtual sound device ID (TT_SOUNDDEVICE_ID_TEAMTALK_VIRTUAL = 1978)
 const VIRTUAL_DEVICE_ID: SoundDeviceId = SoundDeviceId(1978);
 
-/// Explain a client-creation failure in terms of what to install.
+/// Explain an SDK startup failure in terms of what to install.
 ///
-/// The SDK links against libpulse and fails with a message about
-/// initialisation when it is absent, which reads like a bug in the bot rather
-/// than one missing package — the single most common first-run stumble on a
-/// fresh Debian or Raspberry Pi.
-fn client_error_hint(error: &str) -> String {
-    let base = format!("Failed to create client: {error}");
+/// The SDK links against libpulse and ALSA and fails with a message about
+/// initialisation when either is absent, which reads like a bug in the bot
+/// rather than a missing package — the most common first-run stumble on a
+/// fresh Debian, Ubuntu or Raspberry Pi. With a license configured, setting it
+/// is the first SDK call, so that failure needs the hint as much as creating
+/// the client does.
+fn with_library_hint(message: String) -> String {
     #[cfg(target_os = "linux")]
-    if let Some(hint) = crate::doctor::libpulse_hint() {
-        return format!("{base}\n{hint}");
+    if let Some(hint) = crate::doctor::missing_library_hint() {
+        return format!("{message}\n{hint}");
     }
-    base
+    message
 }
 
 /// Set up the TeamTalk client: connect, login, init virtual devices, join channel.
@@ -37,11 +38,12 @@ pub fn setup_teamtalk(config: &BotConfig) -> Result<Client, BotError> {
 
     if let (Some(name), Some(key)) = (&license_name, &license_key) {
         teamtalk::set_license(name, key)
-            .map_err(|e| BotError::TeamTalk(format!("Failed to set license: {e}")))?;
+            .map_err(|e| BotError::TeamTalk(with_library_hint(format!("Failed to set license: {e}"))))?;
         tracing::info!("TeamTalk license set for '{name}'");
     }
 
-    let client = Client::new().map_err(|e| BotError::TeamTalk(client_error_hint(&e.to_string())))?;
+    let client = Client::new()
+        .map_err(|e| BotError::TeamTalk(with_library_hint(format!("Failed to create client: {e}"))))?;
 
     tracing::info!("Connecting to TeamTalk server {}:{}...", config.host, config.tcp_port);
     // The SDK's own error for a refused or unroutable server is the bare words

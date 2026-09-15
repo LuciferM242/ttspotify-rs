@@ -57,12 +57,18 @@ Download the latest build from the [**Releases page**](https://github.com/Lucife
 
 ### Linux (x86_64, Ubuntu 22.04+ / glibc)
 
-Install the one runtime dependency — `libpulse0`, a shared library the TeamTalk
-SDK links against (the bot tells you if it is missing, and `ttspotify doctor`
-checks for it):
+Install the two runtime dependencies — the PulseAudio and ALSA libraries the
+TeamTalk SDK links against (the bot tells you if one is missing, and
+`ttspotify doctor` checks for both). On Ubuntu 24.04 and newer:
 
 ```bash
-sudo apt install -y libpulse0
+sudo apt install -y libpulse0 libasound2t64
+```
+
+On Ubuntu 22.04 and Debian 12, the ALSA package is still called `libasound2`:
+
+```bash
+sudo apt install -y libpulse0 libasound2
 ```
 
 Extract the archive:
@@ -120,7 +126,7 @@ Runs on a Raspberry Pi (Pi Zero 2 W through Pi 5) on **64-bit Raspberry Pi OS**
 supported. Same steps as x86_64, using the aarch64 archive:
 
 ```bash
-sudo apt install -y libpulse0
+sudo apt install -y libpulse0 libasound2
 ```
 
 ```bash
