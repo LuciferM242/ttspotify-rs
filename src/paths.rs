@@ -32,7 +32,22 @@ const VERSION_MARKER: &str = ".layout-version";
 /// time is wrong for most installs. Following the file on disk means every
 /// hint can be pasted straight back into the shell.
 pub fn program_name() -> String {
-    program_name_from(std::env::current_exe().ok().as_deref())
+    chosen_name(NAME_OVERRIDE.get(), std::env::current_exe().ok().as_deref())
+}
+
+/// Set once `install` has put a copy on PATH, so the hints for the rest of that
+/// run name the command just installed rather than the downloaded file.
+static NAME_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn set_program_name(name: &str) {
+    let _ = NAME_OVERRIDE.set(name.to_string());
+}
+
+fn chosen_name(installed: Option<&String>, exe: Option<&Path>) -> String {
+    match installed {
+        Some(name) => name.clone(),
+        None => program_name_from(exe),
+    }
 }
 
 fn program_name_from(exe: Option<&Path>) -> String {
@@ -403,6 +418,13 @@ mod tests {
             program_name_from(Some(Path::new("tt-spotify-bot.exe"))),
             "tt-spotify-bot"
         );
+    }
+
+    #[test]
+    fn an_installed_name_wins_over_the_downloaded_file() {
+        let download = Path::new("/home/u/Downloads/tt-spotify-bot");
+        assert_eq!(chosen_name(None, Some(download)), "tt-spotify-bot");
+        assert_eq!(chosen_name(Some(&"ttspotify".to_string()), Some(download)), "ttspotify");
     }
 
     #[test]

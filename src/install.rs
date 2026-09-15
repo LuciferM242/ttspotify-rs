@@ -254,7 +254,8 @@ pub fn offer_first_run_install() {
         );
         return;
     }
-    if let Err(e) = install() {
+    // Without the closing "run add" line: the wizard starts straight after.
+    if let Err(e) = install_binary() {
         println!("Install failed: {e}");
         println!("Carrying on with setup; the bot still runs from here.");
     }
@@ -262,6 +263,17 @@ pub fn offer_first_run_install() {
 
 /// `--install`: put this binary on PATH.
 pub fn install() -> Result<(), BotError> {
+    let dst = install_binary()?;
+    println!();
+    println!(
+        "Run `{} add <name>` to create a bot.",
+        dst.file_name().and_then(|n| n.to_str()).unwrap_or(DEFAULT_NAME)
+    );
+    Ok(())
+}
+
+/// Place the binary and bring the service in line. Returns where it went.
+fn install_binary() -> Result<PathBuf, BotError> {
     let src = std::env::current_exe()
         .map_err(|e| BotError::Usage(format!("Cannot determine executable path: {e}")))?;
     let home = home_dir();
@@ -317,6 +329,11 @@ pub fn install() -> Result<(), BotError> {
         println!("  echo 'export PATH=\"{}:$PATH\"' >> ~/.profile", dir.display());
         println!("Then open a new shell, or run: export PATH=\"{}:$PATH\"", dir.display());
     }
+    // Even when the folder is not on PATH yet: a fresh ~/.local/bin only joins
+    // it at the next login, and the downloaded file's name is no better.
+    if let Some(name) = dst.file_name().and_then(|n| n.to_str()) {
+        crate::paths::set_program_name(name);
+    }
 
     if existing.len() > 1 {
         println!();
@@ -329,13 +346,7 @@ pub fn install() -> Result<(), BotError> {
     }
 
     reconcile_unit(&dst, !same);
-
-    println!();
-    println!(
-        "Run `{} add <name>` to create a bot.",
-        dst.file_name().and_then(|n| n.to_str()).unwrap_or(DEFAULT_NAME)
-    );
-    Ok(())
+    Ok(dst)
 }
 
 /// If an installed unit runs a different file than the one we just installed,
