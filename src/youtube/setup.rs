@@ -183,11 +183,9 @@ pub fn migrate_legacy_tools() {
 /// Where the binaries live.
 /// Windows: `<dir of current_exe>\lib`. Linux: `~/.local/share/ttspotify/lib`.
 ///
-/// No probing. The directory used to be chosen by checking whether yt-dlp sat
-/// beside the executable, which meant the answer changed the moment the set of
-/// installed tools changed - exactly what happened when yt-dlp was removed.
-/// `migrate_legacy_tools()` runs at startup and moves any exe-side install
-/// into place, so there is nothing left to infer.
+/// No probing: `migrate_legacy_tools()` runs at startup and moves any
+/// exe-side install into place, so the answer never depends on which tools
+/// happen to be installed.
 pub fn resolve_paths() -> Result<YoutubeSetupPaths, BotError> {
     let exe = std::env::current_exe()
         .map_err(|e| BotError::Config(format!("current_exe failed: {e}")))?;
@@ -216,9 +214,8 @@ pub fn is_installed(paths: &YoutubeSetupPaths) -> bool {
 
 /// Whether the tools count as installed, given what was found.
 ///
-/// A Deno on PATH counts. Counting only ours in `lib/` meant a machine with its
-/// own Deno played YouTube fine while the tray kept offering Install and never
-/// enabled Update.
+/// A Deno on PATH counts, so a machine with its own Deno shows the tools as
+/// installed and the tray offers Update, not Install.
 pub fn tools_installed(script_present: bool, runtime: &JsRuntime) -> bool {
     script_present && !matches!(runtime, JsRuntime::Missing)
 }
@@ -277,10 +274,9 @@ pub async fn install(
     fs::create_dir_all(&paths.lib_dir)
         .map_err(|e| BotError::Config(format!("create lib dir: {e}")))?;
 
-    // 1. JavaScript runtime. The sidecar is a Deno program, so unlike the old
-    // yt-dlp setup - where a missing runtime merely cost some formats - this
-    // is the thing YouTube playback is. A Deno the user already installed is
-    // used as-is rather than downloading a second copy.
+    // 1. JavaScript runtime. The sidecar is a Deno program, so YouTube cannot
+    // play without it. A Deno the user already installed is used as-is rather
+    // than downloading a second copy.
     match find_js_runtime(paths) {
         JsRuntime::OnPath => {
             progress("  JavaScript runtime: using the Deno already installed on this system.");
@@ -342,7 +338,7 @@ fn parse_deno_version(output: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-/// Whether a Deno is new enough for yt-dlp's solver.
+/// Whether a Deno is new enough to run the sidecar.
 fn deno_is_supported(version: (u32, u32, u32)) -> bool {
     version >= MIN_DENO_VERSION
 }
@@ -472,8 +468,8 @@ pub enum JsRuntime {
     Missing,
 }
 
-/// Find a JavaScript runtime for yt-dlp: ours if installed, else a new enough
-/// one on PATH.
+/// Find a JavaScript runtime for the sidecar: ours if installed, else a new
+/// enough one on PATH.
 pub fn find_js_runtime(paths: &YoutubeSetupPaths) -> JsRuntime {
     if paths.deno.is_file() {
         return JsRuntime::Bundled(paths.deno.clone());
@@ -482,7 +478,7 @@ pub fn find_js_runtime(paths: &YoutubeSetupPaths) -> JsRuntime {
         match deno_version_of(&system) {
             Some(v) if deno_is_supported(v) => return JsRuntime::OnPath,
             Some(v) => tracing::info!(
-                "Ignoring Deno {}.{}.{} on PATH: yt-dlp needs {}.{}.{} or newer",
+                "Ignoring Deno {}.{}.{} on PATH: the YouTube sidecar needs {}.{}.{} or newer",
                 v.0, v.1, v.2, MIN_DENO_VERSION.0, MIN_DENO_VERSION.1, MIN_DENO_VERSION.2
             ),
             None => tracing::debug!("Could not read the version of the Deno on PATH"),
@@ -538,12 +534,11 @@ fn extract_single_file(zip_path: &Path, dest: &Path) -> Result<(), BotError> {
             fs::create_dir_all(parent)
                 .map_err(|e| BotError::Config(format!("mkdir {}: {e}", parent.display())))?;
         }
-        // Extract to a temp file then rename, like download_verified: writing
-        // straight to `dest` truncated the working binary first, so a failed
-        // copy left a corrupt file that find_js_runtime still counted as
-        // installed. The suffix differs from download_verified's so the two
-        // steps never share a temp path (lib/deno.zip's download temp is
-        // lib/deno.download.tmp, which lib/deno would also map to).
+        // Extract to a temp file then rename, like download_verified, so a
+        // failed copy never leaves a truncated binary that find_js_runtime
+        // counts as installed. The suffix differs from download_verified's so
+        // the two steps never share a temp path (lib/deno.zip's download temp
+        // is lib/deno.download.tmp, which lib/deno would also map to).
         let tmp = dest.with_extension("extract.tmp");
         let result = fs::File::create(&tmp)
             .map_err(|e| BotError::Config(format!("create {}: {e}", tmp.display())))
@@ -566,8 +561,7 @@ fn extract_single_file(zip_path: &Path, dest: &Path) -> Result<(), BotError> {
 /// Install or refresh the JavaScript runtime as part of --update-tools.
 ///
 /// Does nothing when the system provides one: that Deno is somebody else's to
-/// update. Ours is replaced with the current release, which is the only way to
-/// keep pace with the player challenges yt-dlp has to solve.
+/// update. Ours is replaced with the current release.
 pub async fn update_js_runtime(
     paths: &YoutubeSetupPaths,
     progress: impl Fn(&str),
@@ -854,9 +848,8 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn tools_dir_is_the_data_dir_with_no_probing() {
-        // The old code returned the exe-side dir when it spotted yt-dlp there,
-        // so removing yt-dlp would have silently relocated every install.
-        // Startup migration means there is one answer.
+        // Startup migration means there is one answer, whatever sits beside
+        // the executable.
         let paths = resolve_paths().expect("resolve");
         if let Some(data) = dirs::data_dir() {
             assert_eq!(paths.lib_dir, data.join("ttspotify").join("lib"));
@@ -928,7 +921,7 @@ mod deno_tests {
     }
 
     #[rstest]
-    // yt-dlp's EJS solver needs 2.3.0 or newer.
+    // The sidecar needs 2.3.0 or newer.
     #[case((2, 3, 0), true)]
     #[case((2, 9, 5), true)]
     #[case((3, 0, 0), true)]

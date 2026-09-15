@@ -234,9 +234,8 @@ pub fn report() {
         if script_present { "installed" } else { "not installed" }
     );
     if wants_youtube {
-        // Both halves are needed, and either one missing stops playback
-        // entirely - the sidecar is a Deno program, so a missing runtime is
-        // not a degraded mode the way it was for yt-dlp.
+        // Both halves are needed: the sidecar is a Deno program, so either
+        // one missing stops playback entirely.
         if let Some(what) = youtube_tools_status(tools.js_runtime.is_some(), script_present) {
             fixes.push(what);
         }

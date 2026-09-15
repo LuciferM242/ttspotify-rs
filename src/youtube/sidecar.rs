@@ -110,8 +110,8 @@ pub fn spawn(
     // ~/.cache writable.
     cmd.env("DENO_DIR", deno_cache_dir());
 
-    // Same reasoning as the old yt-dlp spawn: deny the child a console so a
-    // black window does not appear over the user's desktop while a track plays.
+    // Deny the child a console so a black window does not appear over the
+    // user's desktop while a track plays.
     crate::proc::hide_console_window(&mut cmd);
 
     cmd.stdout(Stdio::piped())

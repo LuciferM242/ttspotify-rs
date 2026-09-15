@@ -285,31 +285,17 @@ impl AudioPipeline {
                 continue;
             }
 
-            // In-place stream restart (channel move): end the stream in the
-            // SDK, then carry on with the SAME stream_id, sample_index and —
-            // unlike pause/play — the same buffered PCM. The garble the flush
-            // cures lives in the SDK's per-channel stream state, not in our
-            // buffered samples; dropping them (the first version of this fix)
-            // skipped the several seconds of read-ahead the decoder had built
-            // up on every move. Only what the SDK itself had queued but not
-            // yet sent is lost.
-            // Checked AFTER the pause branch (which `continue`s) so a move
-            // that happens while paused leaves the flag set and the flush
-            // runs when playback resumes — flushing mid-pause would be
-            // consumed with nothing to restart.
+            // Channel move. Checked AFTER the pause branch (which `continue`s),
+            // so a move while paused keeps the flag set and flushes on resume;
+            // flushing mid-pause would have nothing to restart.
             if self.stream_flush_flag.swap(false, Ordering::Relaxed) {
-                // Start a NEW input session rather than ending the old one in
-                // place. Carrying the previous stream id and sample index
-                // across a move wedged the SDK's audio thread on Windows: the
-                // move restarts the voice stream for the destination channel,
-                // and the old session's numbering no longer belongs to it.
-                // The zero-sample block this used to send is not the culprit
-                // by itself - the new-track reset above sends one on every
-                // track change and that path has always worked.
+                // Start a NEW input session: new stream id, sample index 0.
+                // The move restarts the voice stream for the destination
+                // channel, and carrying the old session's numbering across it
+                // wedges the SDK's audio thread on Windows.
                 //
-                // The buffered PCM is deliberately kept, unlike the new-track
-                // reset: it holds the decoder's read-ahead, and dropping it
-                // skipped several seconds of audio on every move.
+                // The buffered PCM is kept, unlike the new-track reset: it
+                // holds the decoder's read-ahead, several seconds of audio.
                 self.pos_offset_ms = self.position_ms();
                 self.stream_id = new_stream_id();
                 self.sample_index = 0;
