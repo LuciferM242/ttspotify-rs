@@ -1013,9 +1013,22 @@ fn main() {
         let (config, path) = if let Some(name) = name_arg {
             let p = tt_spotify_bot::paths::config_file(name);
             if p.exists() {
-                let cfg = tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or(""))
-                    .unwrap_or_default();
-                (cfg, Some(p))
+                match tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or("")) {
+                    Ok(cfg) => (cfg, Some(p)),
+                    // Opening the editor on defaults over a file it could not
+                    // read, then saving, replaced every setting in that file.
+                    Err(e) => {
+                        let _ = winsafe::HWND::NULL.MessageBox(
+                            &format!(
+                                "Could not read {}: {e}\n\nFix the file, or remove it and add the bot again.",
+                                p.display()
+                            ),
+                            "TT Spotify",
+                            winsafe::co::MB::OK | winsafe::co::MB::ICONERROR,
+                        );
+                        return;
+                    }
+                }
             } else {
                 (tt_spotify_bot::config::BotConfig::default(), None)
             }
