@@ -363,6 +363,9 @@ fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POIN
     // editor over the first, or a second YouTube install racing the same
     // temp paths) was reachable mid-modal.
     let Some(_guard) = ModalGuard::acquire() else {
+        // Doing nothing here read as a dead icon while the update window was
+        // up. Focus the open window instead, so the icon still leads somewhere.
+        focus_open_window(hwnd);
         return;
     };
     let statuses = tray.manager.borrow().statuses();
@@ -727,6 +730,23 @@ fn pump_until_ready<T>(_hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> 
     }
 }
 
+/// Bring the window this thread has open to the front: the topmost visible,
+/// enabled top-level window other than the hidden tray window. While a modal
+/// is up its owner is disabled, so that is the dialog the user must answer.
+fn focus_open_window(tray_hwnd: &w::HWND) {
+    let mut target: Option<w::HWND> = None;
+    let _ = w::EnumThreadWindows(w::GetCurrentThreadId(), |hwnd: w::HWND| {
+        if hwnd.ptr() != tray_hwnd.ptr() && hwnd.IsWindowVisible() && hwnd.IsWindowEnabled() {
+            target = Some(hwnd);
+            return false;
+        }
+        true
+    });
+    if let Some(window) = target {
+        window.SetForegroundWindow();
+    }
+}
+
 thread_local! {
     /// True while a menu action (possibly a modal dialog) is executing on the
     /// GUI thread. The tray menu stays reachable during a modal's message
@@ -800,6 +820,11 @@ fn start_bots(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
     }
     let names = { tray.manager.borrow_mut().load_configs() };
     if names.is_empty() {
+        // Held through the prompt and the editor it opens: without it the icon
+        // opened the menu over them, and Add Server there started a second editor.
+        let Some(_guard) = ModalGuard::acquire() else {
+            return;
+        };
         let answer = hwnd.MessageBox(
             "No config files found.\n\nWould you like to create one now?\n\n\
              You can also create one later from the tray menu (Add Server).",
