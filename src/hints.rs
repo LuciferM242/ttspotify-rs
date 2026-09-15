@@ -117,6 +117,12 @@ pub fn restart_bot(name: &str) -> String {
     }
 }
 
+/// How to see why a bot service is not running.
+#[cfg(target_os = "linux")]
+pub fn follow_log(name: &str) -> String {
+    format!("run: {} watch {name}", crate::paths::program_name())
+}
+
 /// How to change a bot's settings.
 pub fn edit_bot(name: &str) -> String {
     #[cfg(windows)]

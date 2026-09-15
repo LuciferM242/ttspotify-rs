@@ -679,25 +679,55 @@ pub fn reset_failed(unit: &str) {
 pub fn offer_restart_running_bots() {
     let units = running_bot_units();
     if units.is_empty() {
-        println!("If running as a service, restart it: systemctl --user restart ttspotify@<name>");
+        println!("No bot is running as a service, so none needs a restart.");
         return;
     }
     if !prompt_yes_no(&format!("Restart {} running bot(s) now?", units.len())) {
-        println!("Restart later with: systemctl --user restart ttspotify@<name>");
+        for unit in &units {
+            let name = instance_name(unit);
+            println!("To restart {name} later, {}", crate::hints::restart_bot(&name));
+        }
         return;
     }
     for unit in &units {
+        let name = instance_name(unit);
         let ok = Command::new("systemctl")
             .args(["--user", "restart", unit])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            println!("  {unit} restarted.");
+            println!("  {name} restarted.");
         } else {
-            println!("  {unit} failed to restart - check: systemctl --user status {unit}");
+            println!("  {name} failed to restart. To see why, {}", crate::hints::follow_log(&name));
         }
     }
+}
+
+/// The bot name a `ttspotify@<instance>.service` unit runs, undoing
+/// `systemd_escape_instance`.
+fn instance_name(unit: &str) -> String {
+    let instance = unit.strip_prefix("ttspotify@").unwrap_or(unit);
+    let instance = instance.strip_suffix(".service").unwrap_or(instance);
+    let mut bytes = Vec::with_capacity(instance.len());
+    let mut rest = instance.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        let escaped = (b == b'\\' && tail.first() == Some(&b'x'))
+            .then(|| tail.get(1..3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(byte) => {
+                bytes.push(byte);
+                rest = &tail[3..];
+            }
+            None => {
+                bytes.push(if b == b'-' { b'/' } else { b });
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Raw `systemctl --user list-unit-files 'ttspotify@*'` output, or empty when
@@ -1334,6 +1364,14 @@ Result=success
         std::fs::remove_file(&link).unwrap();
         assert!(!super::link_present(&link));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_unit_name_gives_back_the_bot_name() {
+        for name in ["home", "my-server", "two words", "a.b_c"] {
+            let unit = format!("ttspotify@{}.service", super::systemd_escape_instance(name));
+            assert_eq!(super::instance_name(&unit), name, "{unit}");
+        }
     }
 
     #[test]
