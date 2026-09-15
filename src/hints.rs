@@ -24,7 +24,7 @@ pub fn create_bot() -> String {
 pub fn sign_in_spotify() -> String {
     #[cfg(windows)]
     {
-        "use Spotify sign-in in the tray menu".to_string()
+        "use Sign in / re-authenticate under Spotify in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -36,7 +36,7 @@ pub fn sign_in_spotify() -> String {
 pub fn install_youtube_tools() -> String {
     #[cfg(windows)]
     {
-        "use Install YouTube tools in the tray menu".to_string()
+        "use Install tools under YouTube tools in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -48,7 +48,7 @@ pub fn install_youtube_tools() -> String {
 pub fn update_youtube_tools() -> String {
     #[cfg(windows)]
     {
-        "use Update tools in the tray menu".to_string()
+        "use Update tools under YouTube tools in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
