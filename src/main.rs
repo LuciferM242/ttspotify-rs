@@ -793,7 +793,24 @@ fn first_run_or_help() -> Result<Option<String>, BotError> {
     tt_spotify_bot::install::offer_first_run_install();
 
     match tt_spotify_bot::wizard::run_wizard(None, true)? {
-        Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
+        Some(path) => {
+            // The wizard may have started this bot as a service. Running it here
+            // too put two copies on one account, and the one that lost the lock
+            // exited, leaving the service failed.
+            #[cfg(target_os = "linux")]
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                use tt_spotify_bot::service;
+                if service::systemd_booted()
+                    && service::unit_health(&tt_spotify_bot::control::unit_for(name)).is_up()
+                {
+                    let prog = tt_spotify_bot::paths::program_name();
+                    println!("\"{name}\" is running in the background.");
+                    println!("To follow its log: {prog} watch {name}");
+                    return Ok(None);
+                }
+            }
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
         None => Ok(None),
     }
 }

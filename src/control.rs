@@ -37,7 +37,7 @@ fn config_names() -> Vec<String> {
     crate::config::list_configs().into_iter().map(|(name, _)| name).collect()
 }
 
-pub(crate) fn unit_for(name: &str) -> String {
+pub fn unit_for(name: &str) -> String {
     format!("ttspotify@{}.service", service::systemd_escape_instance(name))
 }
 

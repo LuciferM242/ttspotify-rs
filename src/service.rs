@@ -604,6 +604,14 @@ pub enum UnitHealth {
     Stopped,
 }
 
+impl UnitHealth {
+    /// Whether systemd is running the unit or bringing it back, so starting
+    /// the same bot anywhere else would collide with it.
+    pub fn is_up(self) -> bool {
+        matches!(self, UnitHealth::Running | UnitHealth::Restarting)
+    }
+}
+
 /// Ask systemd about one instance. Anything unreadable reads as `Stopped`,
 /// which is what the caller assumed before this existed.
 pub fn unit_health(unit: &str) -> UnitHealth {
@@ -1040,6 +1048,14 @@ SubState=dead
 Result=start-limit-hit
 ";
         assert_eq!(parse_unit_health(limit), UnitHealth::Failed);
+    }
+
+    #[test]
+    fn a_bot_systemd_runs_or_restarts_counts_as_up() {
+        assert!(UnitHealth::Running.is_up());
+        assert!(UnitHealth::Restarting.is_up());
+        assert!(!UnitHealth::Failed.is_up());
+        assert!(!UnitHealth::Stopped.is_up());
     }
 
     #[test]
