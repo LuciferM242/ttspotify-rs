@@ -85,9 +85,25 @@ pub fn installed_unit_version() -> Option<(u32, u32)> {
     installed_unit().map(|u| (unit_version_from_contents(&u), UNIT_FILE_VERSION))
 }
 
-/// The `ttspotify@` instances systemd has enabled.
+/// The `ttspotify@` instances enabled to start at login, read from their
+/// `default.target.wants` links. `list-unit-files` lists only the template,
+/// never an enabled instance, so every bot read as not enabled.
 pub fn enabled_instance_units() -> Vec<String> {
-    known_instances(&list_unit_files_output(), &[], &[])
+    let names = std::fs::read_dir(systemd_dir().join("default.target.wants"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string));
+    instances_in(names)
+}
+
+/// Our instance unit names out of a list of file names, sorted.
+fn instances_in(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut units: Vec<String> = names
+        .filter(|n| n.starts_with("ttspotify@") && n.ends_with(".service") && n != SERVICE_NAME)
+        .collect();
+    units.sort();
+    units
 }
 
 /// Whether user services survive logout. `None` when the answer cannot be
@@ -704,7 +720,9 @@ fn known_instances(unit_files: &str, running: &[String], config_names: &[String]
 fn stop_and_disable_instances() {
     let config_names: Vec<String> = list_configs().into_iter().map(|(name, _)| name).collect();
     let running = running_bot_units();
-    let units = known_instances(&list_unit_files_output(), &running, &config_names);
+    let mut live = running.clone();
+    live.extend(enabled_instance_units());
+    let units = known_instances(&list_unit_files_output(), &live, &config_names);
 
     for unit in units {
         let was_running = running.contains(&unit);
@@ -1269,6 +1287,25 @@ Result=success
         std::fs::remove_file(&link).unwrap();
         assert!(!super::link_present(&link));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enabled_instances_come_from_the_wants_links() {
+        let names = [
+            "ttspotify@work.service",
+            "ttspotify@.service",
+            "other@x.service",
+            r"ttspotify@my\x2dserver.service",
+            "ttspotify@home.service",
+        ];
+        assert_eq!(
+            super::instances_in(names.iter().map(|s| s.to_string())),
+            vec![
+                "ttspotify@home.service",
+                r"ttspotify@my\x2dserver.service",
+                "ttspotify@work.service",
+            ]
+        );
     }
 
     #[test]
