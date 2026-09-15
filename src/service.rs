@@ -154,13 +154,21 @@ pub(crate) fn systemd_escape_instance(name: &str) -> String {
 pub fn offer_enable_instance(name: &str) {
     let instance = systemd_escape_instance(name);
     if prompt_yes_no(&format!("Enable and start ttspotify@{instance} now?")) {
-        let _ = Command::new("systemctl")
-            .args(["--user", "enable", &format!("ttspotify@{instance}")])
-            .status();
-        let _ = Command::new("systemctl")
-            .args(["--user", "start", &format!("ttspotify@{instance}")])
-            .status();
-        println!("  ttspotify@{instance} enabled and started.");
+        // One call, and its exit status believed: without a user session
+        // systemctl fails to reach the bus, and this still said "started".
+        let ok = Command::new("systemctl")
+            .args(["--user", "enable", "--now", &format!("ttspotify@{instance}")])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("  ttspotify@{instance} enabled and started.");
+        } else {
+            println!(
+                "  Could not enable and start ttspotify@{instance}. To try again: {} start {name}",
+                crate::paths::program_name()
+            );
+        }
     } else {
         // The prompt above ended the output with a dangling question when the
         // answer was no (or when there was nobody to answer), unlike every
@@ -239,6 +247,13 @@ pub fn install_service() -> Result<(), BotError> {
         println!("systemd not detected. This installer needs systemd.");
         println!("Run the binary directly, or supervise it with your");
         println!("init system (OpenRC, runit, s6).");
+        return Ok(());
+    }
+    // Booted under systemd is not enough: a shell without a user session
+    // cannot reload, enable or start anything, and every step below would
+    // report success regardless.
+    if !systemd_reachable() {
+        println!("{}", no_session_hint());
         return Ok(());
     }
 
