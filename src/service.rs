@@ -23,7 +23,10 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 6;
+///
+/// 7: a refresh in 1.1.0 wrote `config/` as the working and writable
+/// directory instead of the data root, and stamped the result 6.
+const UNIT_FILE_VERSION: u32 = 7;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -396,7 +399,7 @@ fn refreshed_unit(
         _ => current_config,
     };
     let exec_start = format!("\"{}\" --config \"{}\"", escape_specifiers(&binary), config_arg);
-    Some(unit_file_contents(&exec_start, config_base, tools_dir))
+    Some(unit_file_contents(&exec_start, data_root, tools_dir))
 }
 
 /// Bring an installed unit up to the current template when it is older.
@@ -851,6 +854,34 @@ RestartSec=2
     #[test]
     fn an_unstamped_unit_counts_as_stale() {
         let unit = LEGACY_UNIT.replace("# ttspotify-unit-version: 2\n", "");
+        assert!(refreshed_unit(
+            &unit,
+            Path::new("/home/u/.config/ttspotify"),
+            Path::new("/home/u/.config/ttspotify/config"),
+            None
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn the_refresh_keeps_the_whole_data_root_writable() {
+        let out = refreshed_unit(
+            LEGACY_UNIT,
+            Path::new("/home/u/.config/ttspotify"),
+            Path::new("/home/u/.config/ttspotify/config"),
+            None,
+        )
+        .unwrap();
+        // Logs, state, caches and the SDK sit beside config/, not inside it.
+        assert!(out.contains("WorkingDirectory=/home/u/.config/ttspotify\n"), "{out}");
+        assert!(out.contains("ReadWritePaths=-/home/u/.config/ttspotify\n"), "{out}");
+        assert!(!out.contains("WorkingDirectory=/home/u/.config/ttspotify/config"), "{out}");
+    }
+
+    #[test]
+    fn a_unit_stamped_6_is_refreshed() {
+        // 1.1.0 stamped its broken refresh 6, so 6 must count as stale.
+        let unit = LEGACY_UNIT.replace("unit-version: 2", "unit-version: 6");
         assert!(refreshed_unit(
             &unit,
             Path::new("/home/u/.config/ttspotify"),
