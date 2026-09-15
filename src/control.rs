@@ -37,7 +37,7 @@ fn config_names() -> Vec<String> {
     crate::config::list_configs().into_iter().map(|(name, _)| name).collect()
 }
 
-fn unit_for(name: &str) -> String {
+pub(crate) fn unit_for(name: &str) -> String {
     format!("ttspotify@{}.service", service::systemd_escape_instance(name))
 }
 
@@ -489,6 +489,8 @@ mod tests {
     fn unit_names_escape_the_config_name() {
         // systemd cannot address an instance with a raw space in it.
         assert_eq!(unit_for("my server"), r"ttspotify@my\x20server.service");
+        // systemd escapes a hyphen too, and hyphenated names are common.
+        assert_eq!(unit_for("my-server"), r"ttspotify@my\x2dserver.service");
         assert_eq!(unit_for("home"), "ttspotify@home.service");
     }
 }

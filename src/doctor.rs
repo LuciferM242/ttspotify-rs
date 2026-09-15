@@ -164,7 +164,7 @@ pub fn report() {
     let mut wants_spotify = false;
     let mut wants_youtube = false;
     for (name, path) in &configs {
-        let unit = format!("ttspotify@{name}.service");
+        let unit = crate::control::unit_for(name);
         let health = crate::service::unit_health(&unit);
         println!("  {name}: {}", instance_state(&unit, &running, &enabled, health));
         if matches!(
