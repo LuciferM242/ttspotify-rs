@@ -296,7 +296,23 @@ pub fn install_service() -> Result<(), BotError> {
 fn write_unit_file() -> Result<PathBuf, BotError> {
     let exe_path = std::env::current_exe()
         .map_err(|e| BotError::Usage(format!("Cannot determine executable path: {e}")))?;
-    write_unit_file_for(&exe_path)
+    // The installed copy, not the running file: setup is often run from a
+    // download folder, which gets deleted, and which `update` never touches.
+    let binary = match crate::install::installed_binary() {
+        Some(installed) => {
+            if installed != exe_path && !same_contents(&installed, &exe_path) {
+                println!("The service runs the installed copy, {}.", installed.display());
+                println!("To install this version there first, run: {} install", exe_path.display());
+            }
+            installed
+        }
+        None => exe_path,
+    };
+    write_unit_file_for(&binary)
+}
+
+fn same_contents(a: &Path, b: &Path) -> bool {
+    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Same, for a binary other than the running one — `--install` points the unit

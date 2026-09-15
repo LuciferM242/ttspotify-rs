@@ -189,6 +189,25 @@ fn looks_installed(src: &Path, dirs: &[PathBuf], names: &[String]) -> bool {
     !find_existing(dirs, names, Some(src)).is_empty()
 }
 
+/// The copy a service should run: this one when it already sits in an install
+/// directory, otherwise an installed copy on PATH, otherwise none.
+///
+/// A service pointed at the running file ended up on a copy in a download
+/// folder whenever setup ran from there, even straight after installing.
+pub fn installed_binary() -> Option<PathBuf> {
+    let src = std::env::current_exe().ok()?;
+    let names = known_names(&crate::paths::program_name());
+    let dirs = candidate_dirs(&path_env(), &home_dir());
+    service_binary(&src, &dirs, &names)
+}
+
+fn service_binary(src: &Path, dirs: &[PathBuf], names: &[String]) -> Option<PathBuf> {
+    if src.parent().is_some_and(|parent| dirs.iter().any(|dir| same_dir(dir, parent))) {
+        return Some(src.to_path_buf());
+    }
+    find_existing(dirs, names, Some(src)).into_iter().next()
+}
+
 /// Whether this binary is one `cargo build` just produced.
 ///
 /// Without this check, `cargo run` would offer to install itself on every
@@ -309,7 +328,7 @@ pub fn install() -> Result<(), BotError> {
         println!("first on PATH is the one your shell will run.");
     }
 
-    reconcile_unit(&dst);
+    reconcile_unit(&dst, !same);
 
     println!();
     println!(
@@ -322,7 +341,7 @@ pub fn install() -> Result<(), BotError> {
 /// If an installed unit runs a different file than the one we just installed,
 /// the service and the shell disagree about which version is "the" bot. Offer
 /// to point the unit at the new location.
-fn reconcile_unit(dst: &Path) {
+fn reconcile_unit(dst: &Path, replaced: bool) {
     let Some(unit) = crate::service::installed_unit() else {
         return;
     };
@@ -335,6 +354,11 @@ fn reconcile_unit(dst: &Path) {
         // is a version change like any other, so it gets the same reconcile an
         // update does.
         crate::postupdate::reconcile(crate::postupdate::Mode::Interactive);
+        // Running bots keep the file they started from until they restart.
+        if replaced && !crate::service::running_bot_units().is_empty() {
+            println!();
+            crate::service::offer_restart_running_bots();
+        }
         return;
     }
 
@@ -608,6 +632,34 @@ mod tests {
         // An unpacked tarball in a download folder is not installed, and
         // nothing else exists to find in this test environment.
         assert!(!looks_installed(Path::new("/home/u/Downloads/tt-spotify-bot"), &dirs, &names));
+    }
+
+    #[test]
+    fn a_service_runs_the_installed_copy_not_the_download() {
+        let root = std::env::temp_dir().join(format!("ttspotify_svcbin_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = root.join("bin");
+        let downloads = root.join("dl");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::write(bin.join("ttspotify"), "installed").unwrap();
+        std::fs::write(downloads.join("tt-spotify-bot"), "download").unwrap();
+        let dirs = vec![bin.clone()];
+        let names = known_names("tt-spotify-bot");
+
+        // Run from the download while a copy is installed: the installed one.
+        assert_eq!(
+            service_binary(&downloads.join("tt-spotify-bot"), &dirs, &names),
+            Some(bin.join("ttspotify"))
+        );
+        // Run from the install directory: this copy.
+        assert_eq!(
+            service_binary(&bin.join("ttspotify"), &dirs, &names),
+            Some(bin.join("ttspotify"))
+        );
+        // Nothing installed: no answer, so the caller falls back.
+        assert_eq!(service_binary(&downloads.join("tt-spotify-bot"), &[], &names), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
