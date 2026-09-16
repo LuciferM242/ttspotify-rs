@@ -310,6 +310,42 @@ fn parse_shuffle(args: &str, currently_on: bool) -> Option<bool> {
 /// Sanitize an error for display to a user: collapse to a single line and cap
 /// the length, so a raw multi-line `Display` (which may embed internal detail)
 /// doesn't flood a TeamTalk PM. Logs keep the full error.
+/// The repeat mode a `mode` argument names, or `None` when it names none.
+/// Shuffle is deliberately absent: it is a toggle of its own, so it can be
+/// combined with repeat. The usage line must list exactly these spellings.
+fn parse_mode(args: &str) -> Option<PlaybackMode> {
+    match args.trim() {
+        "r" | "repeat" => Some(PlaybackMode::RepeatTrack),
+        "rq" | "repeat_queue" => Some(PlaybackMode::RepeatQueue),
+        "off" | "o" | "none" => Some(PlaybackMode::Off),
+        _ => None,
+    }
+}
+
+/// What a `sp`/`yt` switch should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceSwitch {
+    /// The bot has this service turned off.
+    NotEnabled,
+    /// Already the active service.
+    Already,
+    /// Switch to it.
+    Switch,
+}
+
+/// Decide a service switch. Pure, so the outcome is testable without a
+/// TeamTalk client; every branch answers the user, because these are the
+/// commands someone discovers which services a bot has with.
+fn service_switch(target: Service, active: Service, enabled: bool) -> ServiceSwitch {
+    if !enabled {
+        ServiceSwitch::NotEnabled
+    } else if active == target {
+        ServiceSwitch::Already
+    } else {
+        ServiceSwitch::Switch
+    }
+}
+
 pub fn user_error(e: impl std::fmt::Display) -> String {
     const MAX: usize = 200;
     let one_line: String = e
@@ -641,28 +677,23 @@ impl CommandDispatcher {
             }
 
             // -- Modes --
-            "mode" => {
-                match args.trim() {
-                    "r" | "repeat" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatTrack, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeRepeatTrack, &[]);
-                    }
-                    "rq" | "repeat_queue" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatQueue, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeRepeatQueue, &[]);
-                    }
-                    "off" | "o" | "none" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::Off, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeOff, &[]);
-                    }
-                    _ => {
-                        let state = self.state.lock();
-                        let display = state.mode_display();
-                        drop(state);
-                        self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
-                    }
+            "mode" => match parse_mode(args) {
+                Some(mode) => {
+                    let key = match mode {
+                        PlaybackMode::RepeatTrack => Key::ModeRepeatTrack,
+                        PlaybackMode::RepeatQueue => Key::ModeRepeatQueue,
+                        PlaybackMode::Off => Key::ModeOff,
+                    };
+                    self.send(BotCommand::SetMode { mode, user_id: sender_id });
+                    self.reply_t(client, sender_id, key, &[]);
                 }
-            }
+                None => {
+                    let state = self.state.lock();
+                    let display = state.mode_display();
+                    drop(state);
+                    self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
+                }
+            },
 
             "shuffle" => {
                 // A toggle of its own rather than a mode, so it can be combined
@@ -765,13 +796,17 @@ impl CommandDispatcher {
                     (s.active_service, s.enabled_services.allows(target))
                 };
                 let name = target.name().to_string();
-                if !enabled {
-                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[("service", name)]);
-                } else if active == target {
-                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[("service", name)]);
-                } else {
-                    self.send(BotCommand::SetService { service: target, user_id: sender_id });
-                    self.reply_t(client, sender_id, Key::SwitchedService, &[("service", name)]);
+                match service_switch(target, active, enabled) {
+                    ServiceSwitch::NotEnabled => {
+                        self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[("service", name)]);
+                    }
+                    ServiceSwitch::Already => {
+                        self.reply_t(client, sender_id, Key::AlreadyOnService, &[("service", name)]);
+                    }
+                    ServiceSwitch::Switch => {
+                        self.send(BotCommand::SetService { service: target, user_id: sender_id });
+                        self.reply_t(client, sender_id, Key::SwitchedService, &[("service", name)]);
+                    }
                 }
             }
 
@@ -1021,6 +1056,75 @@ mod tests {
         let i18n = test_i18n("en");
         assert!(help_text(&i18n, 0, Service::Spotify, false).contains("library"));
         assert!(!help_text(&i18n, 0, Service::YouTube, false).contains("library"));
+    }
+
+    // -- mode --
+
+    #[test]
+    fn mode_accepts_its_spellings_and_rejects_shuffle() {
+        assert!(matches!(parse_mode("r"), Some(PlaybackMode::RepeatTrack)));
+        assert!(matches!(parse_mode("repeat"), Some(PlaybackMode::RepeatTrack)));
+        assert!(matches!(parse_mode("rq"), Some(PlaybackMode::RepeatQueue)));
+        assert!(matches!(parse_mode("repeat_queue"), Some(PlaybackMode::RepeatQueue)));
+        assert!(matches!(parse_mode(" off "), Some(PlaybackMode::Off)));
+        assert!(matches!(parse_mode("o"), Some(PlaybackMode::Off)));
+        assert!(matches!(parse_mode("none"), Some(PlaybackMode::Off)));
+        assert!(parse_mode("s").is_none(), "shuffle is a command of its own");
+        assert!(parse_mode("").is_none());
+    }
+
+    #[test]
+    fn the_mode_usage_line_advertises_only_spellings_mode_accepts() {
+        // The usage line offered `s`, which the parser never took, so the one
+        // reply that is supposed to teach the command taught it wrong.
+        let i18n = test_i18n("en");
+        let usage = i18n.tr(0, Key::ModeUsage, &[("modes", String::new())]);
+        let listed = usage
+            .split_once('[')
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(inside, _)| inside)
+            .expect("the usage line lists the modes in brackets");
+        for spelling in listed.split('|') {
+            assert!(
+                parse_mode(spelling).is_some(),
+                "usage advertises {spelling:?}, which mode does not accept"
+            );
+        }
+    }
+
+    // -- service switching --
+
+    #[rstest]
+    // A service the bot has turned off is named as such, whichever it is, and
+    // being "already there" does not override that.
+    #[case(Service::Spotify, Service::YouTube, false, ServiceSwitch::NotEnabled)]
+    #[case(Service::YouTube, Service::Spotify, false, ServiceSwitch::NotEnabled)]
+    #[case(Service::Spotify, Service::Spotify, false, ServiceSwitch::NotEnabled)]
+    // Already the active one.
+    #[case(Service::Spotify, Service::Spotify, true, ServiceSwitch::Already)]
+    #[case(Service::YouTube, Service::YouTube, true, ServiceSwitch::Already)]
+    // The switch itself, both directions.
+    #[case(Service::Spotify, Service::YouTube, true, ServiceSwitch::Switch)]
+    #[case(Service::YouTube, Service::Spotify, true, ServiceSwitch::Switch)]
+    fn a_switch_is_refused_noted_or_made(
+        #[case] target: Service,
+        #[case] active: Service,
+        #[case] enabled: bool,
+        #[case] expected: ServiceSwitch,
+    ) {
+        assert_eq!(service_switch(target, active, enabled), expected);
+    }
+
+    #[test]
+    fn both_spellings_of_each_switch_command_name_their_service() {
+        // One arm serves all four commands by reading the service back out of
+        // the command word, so these spellings must keep resolving.
+        for c in ["sp", "spotify"] {
+            assert_eq!(Service::parse(c), Some(Service::Spotify), "{c}");
+        }
+        for c in ["yt", "youtube"] {
+            assert_eq!(Service::parse(c), Some(Service::YouTube), "{c}");
+        }
     }
 
     #[test]
