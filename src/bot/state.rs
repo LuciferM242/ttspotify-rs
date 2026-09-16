@@ -295,6 +295,7 @@ impl PlayerState {
         allow_recommend: bool,
         context: Option<String>,
     ) {
+        let before = self.queue.source_len();
         self.queue.push_source(tracks.into_iter().map(|track| QueueEntry {
             track,
             requester: requester.clone(),
@@ -302,9 +303,11 @@ impl PlayerState {
             context: context.clone(),
         }));
         // With shuffle on, a playlist added now must land shuffled too —
-        // otherwise it plays in order and shuffle looks broken.
+        // otherwise it plays in order and shuffle looks broken. Only the new
+        // arrivals: re-shuffling the whole tier tore up the album already
+        // queued and interleaved the two.
         if self.shuffle {
-            self.queue.shuffle_source();
+            self.queue.shuffle_source_tail(before);
         }
     }
 
@@ -543,6 +546,37 @@ mod tests {
     fn fill(state: &mut PlayerState, n: usize) {
         let tracks: Vec<Track> = (0..n).map(|i| track(&i.to_string())).collect();
         state.enqueue_source(tracks, "tester".to_string(), true);
+    }
+
+    #[test]
+    fn a_second_source_queued_with_shuffle_on_leaves_the_first_in_order() {
+        // Shuffle re-randomised the whole source tier on every add, so queueing
+        // a second album tore up what was left of the first and interleaved the
+        // two. Only the new arrivals are shuffled.
+        let mut state = PlayerState::new();
+        state.shuffle = true;
+        let ids = |s: &PlayerState| -> Vec<String> {
+            s.upcoming().map(|e| e.track.id().to_string()).collect()
+        };
+
+        state.enqueue_source(
+            vec![track("a0"), track("a1"), track("a2"), track("a3")],
+            "tester".to_string(),
+            true,
+        );
+        let first = ids(&state);
+
+        state.enqueue_source(
+            vec![track("b0"), track("b1"), track("b2"), track("b3")],
+            "tester".to_string(),
+            true,
+        );
+
+        let after = ids(&state);
+        assert_eq!(after[..first.len()], first[..], "the queued album keeps its order");
+        let mut tail = after[first.len()..].to_vec();
+        tail.sort();
+        assert_eq!(tail, ["b0", "b1", "b2", "b3"], "and the new one is all there");
     }
 
     // -- search results --

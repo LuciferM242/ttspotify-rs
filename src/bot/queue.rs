@@ -148,6 +148,11 @@ impl Queue {
     /// exhausted queue always becomes the current track.
     fn start_if_idle(&mut self) {
         if self.current.is_none() {
+            // Nothing was playing, so whatever starts now begins a fresh count:
+            // a queue that ran dry and was filled again is not track 24 of a
+            // playlist that finished. A repeat-queue lap never comes through
+            // here — it sets its own numbering.
+            self.played_total = 0;
             self.current = self.take_next();
         }
     }
@@ -239,6 +244,11 @@ impl Queue {
                 // drained back in. Shuffle makes this a guess, so don't guess.
                 (repeat == RepeatMode::Queue).then(|| self.history.front()).flatten()
             })
+            .or_else(|| {
+                // A repeat-queue lap with nothing queued and nothing behind:
+                // the lap replays what is playing, so that is what to preload.
+                (repeat == RepeatMode::Queue).then_some(self.current.as_ref()).flatten()
+            })
     }
 
     /// Step back. Past `PREV_RESTART_AFTER_MS` into the track this means
@@ -258,6 +268,23 @@ impl Queue {
         self.current = Some(previous);
         self.played_total = self.played_total.saturating_sub(1);
         PrevAction::MovedBack
+    }
+
+    /// How many tracks sit in the source tier. Taken before appending, this is
+    /// the boundary `shuffle_source_tail` shuffles from.
+    pub fn source_len(&self) -> usize {
+        self.upcoming.len()
+    }
+
+    /// Randomise only the source tracks from `from` onwards. Queueing a second
+    /// album must not re-randomise what is left of the first one.
+    pub fn shuffle_source_tail(&mut self, from: usize) {
+        if from >= self.upcoming.len() {
+            return;
+        }
+        let mut tail: Vec<QueueEntry> = self.upcoming.drain(from..).collect();
+        tail.shuffle(&mut rand::thread_rng());
+        self.upcoming.extend(tail);
     }
 
     /// Randomise the order of the source tier. Explicit picks keep their order.
@@ -397,6 +424,59 @@ mod tests {
             Some("r2".to_string()),
             "and a skip can move through it"
         );
+    }
+
+    #[test]
+    fn a_source_started_after_the_queue_ran_dry_is_numbered_from_one() {
+        // The count is "which track of this queue", so a queue that emptied
+        // and was filled again starts over rather than carrying the old total.
+        let mut q = Queue::new();
+        q.push_source([entry("a"), entry("b")]);
+        assert!(q.advance(RepeatMode::Off, false).is_some());
+        assert!(q.advance(RepeatMode::Off, false).is_none(), "queue runs out");
+
+        q.push_source([entry("x"), entry("y")]);
+
+        assert_eq!(q.position(), (1, 2));
+    }
+
+    #[test]
+    fn a_one_track_repeat_queue_lap_preloads_the_track_it_replays() {
+        // Nothing queued and nothing behind: `advance` replays the current
+        // track, so preload must name it too or that lap starts with a gap.
+        let mut q = Queue::new();
+        q.push_source([entry("a")]);
+
+        assert_eq!(
+            q.peek_next(RepeatMode::Queue).map(|e| e.track.id().to_string()),
+            Some("a".to_string())
+        );
+    }
+
+    #[test]
+    fn shuffling_a_new_source_leaves_what_is_already_queued_in_order() {
+        let mut q = Queue::new();
+        q.push_source([entry("a0"), entry("a1"), entry("a2"), entry("a3")]);
+        let before = q.source_len();
+
+        q.push_source([entry("b0"), entry("b1"), entry("b2"), entry("b3")]);
+        q.shuffle_source_tail(before);
+
+        let ids = upcoming_ids(&q);
+        assert_eq!(&ids[..3], ["a1", "a2", "a3"], "the album already queued keeps its order");
+        let mut tail = ids[3..].to_vec();
+        tail.sort();
+        assert_eq!(tail, ["b0", "b1", "b2", "b3"], "and the new one is all there");
+    }
+
+    #[test]
+    fn shuffling_from_past_the_end_changes_nothing() {
+        let mut q = Queue::new();
+        q.push_source([entry("a0"), entry("a1")]);
+
+        q.shuffle_source_tail(99);
+
+        assert_eq!(upcoming_ids(&q), ["a1"]);
     }
 
     // -- explicit picks jump ahead of the source --
