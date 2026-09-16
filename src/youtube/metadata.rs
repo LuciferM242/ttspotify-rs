@@ -410,7 +410,7 @@ impl YouTubeMetadata {
                     tracing::info!("YouTube: searched {corrected:?} instead of {query:?}");
                 }
                 match top_song(result.items.items) {
-                    Some(t) => Ok(vec![track_item_to_track(t)]),
+                    Some(t) => Ok(vec![self.with_duration(track_item_to_track(t)).await]),
                     None => {
                         tracing::debug!("YouTube: no song among the top results for {query:?}; using the songs shelf");
                         self.search_tracks(query, 1).await
@@ -423,6 +423,19 @@ impl YouTubeMetadata {
                 tracing::warn!("YouTube: top-result search failed ({e}); using the songs shelf");
                 self.search_tracks(query, 1).await
             }
+        }
+    }
+
+    /// Fill in a length the ranking left out. The all-categories search says
+    /// nothing about how long its top result is, and the queue then shows the
+    /// track as 0:00 and estimates every wait after it as instant.
+    async fn with_duration(&self, track: YouTubeTrack) -> YouTubeTrack {
+        if track.duration_ms > 0 {
+            return track;
+        }
+        match self.fetch_video(&track.id).await {
+            Ok(full) if full.duration_ms > 0 => full,
+            _ => track,
         }
     }
 
@@ -779,6 +792,69 @@ mod tests {
         }
         let top = meta.search_top_track("imagine dragons believer").await.expect("search");
         assert_eq!(top.len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_queued_track_knows_how_long_it_is() {
+        // The queue shows each entry's length and estimates how long until a
+        // track plays; a zero there reads as a broken entry.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let searched = meta.search_tracks("never gonna give you up", 3).await.expect("search");
+        for track in &searched {
+            println!("search: {} {}", track.display_name(), track.duration_display());
+        }
+        assert!(
+            searched.iter().all(|t| t.duration_ms > 0),
+            "a search result has no duration"
+        );
+
+        let top = meta.search_top_track("never gonna give you up").await.expect("top track");
+        for track in &top {
+            println!("top: {} {}", track.display_name(), track.duration_display());
+        }
+        assert!(top.iter().all(|t| t.duration_ms > 0), "the top track has no duration");
+
+        let by_id = meta.fetch_video("lYBUbBu4W08").await.expect("fetch by id");
+        println!("by id: {} {}", by_id.display_name(), by_id.duration_display());
+        assert!(by_id.duration_ms > 0, "a track fetched by id has no duration");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn every_offered_locale_is_one_youtube_searches_with() {
+        // The picker offers YouTube's own lists, but a code it will not accept
+        // would only show up as searches failing for whoever picked it.
+        use crate::youtube::locale;
+        let countries = locale::country_options();
+        let languages = locale::language_options();
+        let sample = [
+            ("", ""),
+            ("DE", "de"),
+            ("IN", "hi"),
+            ("BR", "pt"),
+            ("JP", "ja"),
+            ("GB", "en-GB"),
+        ];
+        for (country, language) in sample {
+            assert!(
+                country.is_empty() || countries.iter().any(|o| o.code == country),
+                "{country} is not offered"
+            );
+            assert!(
+                language.is_empty() || languages.iter().any(|o| o.code == language),
+                "{language} is not offered"
+            );
+            let config = crate::config::BotConfig {
+                youtube_country: country.to_string(),
+                youtube_language: language.to_string(),
+                ..Default::default()
+            };
+            let meta = super::YouTubeMetadata::new(&config).unwrap();
+            let tracks = meta.search_tracks("konkani songs", 3).await.expect("search failed");
+            println!("{country}/{language}: {} results, first {:?}", tracks.len(), tracks.first().map(|t| t.display_name()));
+            assert!(!tracks.is_empty(), "no results for {country}/{language}");
+        }
     }
 
     #[tokio::test]
