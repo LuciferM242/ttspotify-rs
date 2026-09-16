@@ -958,72 +958,55 @@ enum BulkRest {
     YouTube(crate::youtube::metadata::YtPlaylistRest),
 }
 
-/// Fetch the remaining pages of a YouTube playlist, appending each page to the
-/// queue. Same contract as spawn_bulk_loader: dies the moment the state's
-/// bulk_load_generation no longer matches `generation`.
-fn spawn_youtube_bulk_loader(
-    metadata: std::sync::Arc<crate::youtube::metadata::YouTubeMetadata>,
-    state: crate::bot::state::SharedState,
-    mut rest: crate::youtube::metadata::YtPlaylistRest,
-    requester: String,
-    generation: u64,
-    cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
-) {
-    tokio::spawn(async move {
-        loop {
-            if state.lock().bulk_load_generation != generation {
-                return;
-            }
-            let page = match metadata.fetch_more_playlist(&mut rest).await {
-                Ok(Some(tracks)) => tracks,
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::warn!("YouTube background playlist load stopped early: {e}");
-                    break;
-                }
-            };
-            let batch: Vec<crate::track::Track> = page.into_iter().map(Into::into).collect();
-            {
-                let mut s = state.lock();
-                if s.bulk_load_generation != generation {
-                    return;
-                }
-                let was_idle = s.current().is_none();
-                let fresh = s.filter_unqueued(batch);
-                if !fresh.is_empty() {
-                    s.enqueue_source(fresh, requester.clone(), false);
-                }
-                // The queue revived itself; ask the command loop for audio.
-                if was_idle && s.current().is_some() {
-                    let _ = cmd_tx.send(BotCommand::StartCurrent);
-                }
-            }
-            tokio::time::sleep(BULK_BG_DELAY).await;
-        }
-        tracing::info!("Background YouTube playlist load complete");
-    });
-}
-
-/// Fetch the remaining tracks of a bulk load (playlist / liked songs) in paced
-/// batches, appending each batch to the queue. Dies silently the moment the
-/// state's bulk_load_generation no longer matches `generation` (stop, queue
-/// clear, or a newer bulk load).
+/// Fetch the rest of a bulk load (playlist / liked songs) in paced batches,
+/// appending each batch to the queue. Dies silently the moment the state's
+/// bulk_load_generation no longer matches `generation` (stop, queue clear, or
+/// a newer bulk load).
+#[allow(clippy::too_many_arguments)]
 fn spawn_bulk_loader(
     metadata: crate::spotify::metadata::SpotifyMetadata,
+    youtube_metadata: std::sync::Arc<crate::youtube::metadata::YouTubeMetadata>,
     state: crate::bot::state::SharedState,
-    uris: Vec<librespot_core::spotify_uri::SpotifyUri>,
+    mut rest: BulkRest,
     context: Option<String>,
     requester: String,
     generation: u64,
     cmd_tx: tokio::sync::mpsc::UnboundedSender<BotCommand>,
 ) {
+    // Tracks out of a YouTube playlist seed no recommendations; a Spotify
+    // album or playlist does. `radio_skip_reason` reads this back.
+    let allow_recommend = matches!(rest, BulkRest::Spotify(_));
     tokio::spawn(async move {
-        for chunk in uris.chunks(BULK_BG_BATCH) {
+        loop {
             if state.lock().bulk_load_generation != generation {
                 return;
             }
-            let tracks = metadata.fetch_tracks_meta(chunk).await;
-            let batch: Vec<crate::track::Track> = tracks.into_iter().map(Into::into).collect();
+            let batch: Vec<crate::track::Track> = match &mut rest {
+                BulkRest::Spotify(uris) => {
+                    if uris.is_empty() {
+                        break;
+                    }
+                    let take = uris.len().min(BULK_BG_BATCH);
+                    let chunk: Vec<librespot_core::spotify_uri::SpotifyUri> =
+                        uris.drain(..take).collect();
+                    metadata
+                        .fetch_tracks_meta(&chunk)
+                        .await
+                        .into_iter()
+                        .map(Into::into)
+                        .collect()
+                }
+                BulkRest::YouTube(rest) => {
+                    match youtube_metadata.fetch_more_playlist(rest).await {
+                        Ok(Some(tracks)) => tracks.into_iter().map(Into::into).collect(),
+                        Ok(None) => break,
+                        Err(e) => {
+                            tracing::warn!("Background playlist load stopped early: {e}");
+                            break;
+                        }
+                    }
+                }
+            };
             {
                 let mut s = state.lock();
                 if s.bulk_load_generation != generation {
@@ -1033,7 +1016,7 @@ fn spawn_bulk_loader(
                 // A repeated bulk source may overlap what's queued already.
                 let fresh = s.filter_unqueued(batch);
                 if !fresh.is_empty() {
-                    s.enqueue_source_from(fresh, requester.clone(), true, context.clone());
+                    s.enqueue_source_from(fresh, requester.clone(), allow_recommend, context.clone());
                 }
                 // The queue revived itself; ask the command loop for audio.
                 if was_idle && s.current().is_some() {
@@ -1758,26 +1741,16 @@ async fn command_processor(
                         };
 
                         if let Some(generation) = loader_gen {
-                            match bulk_rest {
-                                Some(BulkRest::Spotify(uris)) => spawn_bulk_loader(
-                                    metadata.clone(),
-                                    state.clone(),
-                                    uris,
-                                    context,
-                                    user_name.clone(),
-                                    generation,
-                                    radio_cmd_tx.clone(),
-                                ),
-                                Some(BulkRest::YouTube(rest)) => spawn_youtube_bulk_loader(
-                                    youtube_metadata.clone(),
-                                    state.clone(),
-                                    rest,
-                                    user_name.clone(),
-                                    generation,
-                                    radio_cmd_tx.clone(),
-                                ),
-                                None => unreachable!("loader_gen implies bulk_rest"),
-                            }
+                            spawn_bulk_loader(
+                                metadata.clone(),
+                                youtube_metadata.clone(),
+                                state.clone(),
+                                bulk_rest.expect("loader_gen is only claimed for a bulk rest"),
+                                context,
+                                user_name.clone(),
+                                generation,
+                                radio_cmd_tx.clone(),
+                            );
                         }
                         // Translated "more loading" note, or empty when the
                         // whole request is already queued. Fed into the
