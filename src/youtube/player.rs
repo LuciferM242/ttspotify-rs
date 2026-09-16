@@ -297,11 +297,28 @@ async fn play_track(
         crate::youtube::cache::mark_played(&path);
         match std::fs::File::open(&path) {
             Ok(file) => {
-                return tokio::task::spawn_blocking(move || {
-                    decode_file(file, audio_tx, ctrl, state, pipeline_pos_ms)
-                })
-                .await
-                .map_err(|e| format!("decode worker join: {e}"))?;
+                let decoded = {
+                    let audio_tx = audio_tx.clone();
+                    let ctrl = ctrl.clone();
+                    let state = state.clone();
+                    let pipeline_pos_ms = pipeline_pos_ms.clone();
+                    tokio::task::spawn_blocking(move || {
+                        decode_file(file, audio_tx, ctrl, state, pipeline_pos_ms)
+                    })
+                    .await
+                    .map_err(|e| format!("decode worker join: {e}"))?
+                };
+                match decoded {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        // A file that opens but will not decode is truncated or
+                        // corrupt; kept, it fails the same way on every replay.
+                        tracing::warn!(
+                            "YouTube: cached {video_id} did not decode ({e}); refetching"
+                        );
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
             }
             Err(e) => {
                 tracing::warn!("YouTube: cached {video_id} could not be opened ({e}); refetching");
@@ -349,11 +366,17 @@ async fn play_track(
     let renewer: Renewer = {
         let metadata = metadata.clone();
         let video_id = video_id.clone();
+        let ctrl = ctrl.clone();
         Box::new(move || {
             let metadata = metadata.clone();
             let video_id = video_id.clone();
+            // Watch the stop flag here too: spawn_blocking cannot be aborted,
+            // so without it a stop leaves the sidecar running to its timeout.
+            let ctrl = ctrl.clone();
             Box::pin(async move {
-                let found = tokio::task::spawn_blocking(move || resolve_stream(&metadata, &video_id, None))
+                let found = tokio::task::spawn_blocking(move || {
+                    resolve_stream(&metadata, &video_id, Some(&ctrl.stopped))
+                })
                     .await
                     .map_err(|e| format!("sidecar worker join: {e}"))??;
                 let info = found.ok_or_else(|| "the sidecar was stopped".to_string())?;
