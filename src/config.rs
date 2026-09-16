@@ -247,12 +247,15 @@ pub fn list_configs_and_problems() -> (Vec<(String, PathBuf)>, Vec<String>) {
     list_configs_and_problems_in(&crate::paths::configs_dir())
 }
 
+/// JSON files that share the config directory and are not bots. "settings" is
+/// the app-global settings.json (update-check toggle), "lang_prefs" is the i18n
+/// per-user language store; the rest are auth/session artifacts. They are
+/// skipped when listing, and refused as names, because a bot saved under one of
+/// them would be invisible to every command that goes by name.
+const NON_BOT_STEMS: [&str; 5] = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
+
 fn list_configs_and_problems_in(dir: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
-    // Non-bot JSON files that share the config directory. "settings" is the
-    // app-global settings.json (update-check toggle), "lang_prefs" is the i18n
-    // per-user language store; the rest are auth/session artifacts. None are
-    // server configs, so they must never appear as bots.
-    let skip = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
+    let skip = NON_BOT_STEMS;
     if !dir.exists() {
         return (Vec::new(), Vec::new());
     }
@@ -373,8 +376,13 @@ pub fn sanitise_config_name(name: &str) -> Option<String> {
     // restart accept for "every bot", so a bot called that could never be
     // started on its own. "tray" owns logs/tray/ on Windows, so a bot of that
     // name would share the tray's own log folder — and "delete this bot's
-    // logs" would delete the tray's.
-    if ["all", "tray"].iter().any(|r| cleaned.eq_ignore_ascii_case(r)) {
+    // logs" would delete the tray's. The rest are the files the config folder
+    // holds beside bots, which every listing skips by name.
+    if ["all", "tray"]
+        .iter()
+        .chain(NON_BOT_STEMS.iter())
+        .any(|r| cleaned.eq_ignore_ascii_case(r))
+    {
         return None;
     }
     Some(cleaned)
@@ -768,6 +776,12 @@ impl BotConfig {
             let clamped = self.search_limit.clamp(1, 20);
             warnings.push(format!("search_limit {} out of 1..=20, set to {clamped}", self.search_limit));
             self.search_limit = clamped;
+        }
+        // Fed to Duration::from_secs_f32, which panics on a negative, NaN or
+        // huge value — and with panic = "abort" that takes the bot with it.
+        if !(0.0..=3600.0).contains(&self.radio_delay) {
+            warnings.push(format!("radio_delay {} out of 0..=3600, reset to 10", self.radio_delay));
+            self.radio_delay = default_radio_delay();
         }
         if self.jitter_buffer_ms > 2000 {
             warnings.push(format!("jitter_buffer_ms {} > 2000, clamped to 2000", self.jitter_buffer_ms));
@@ -1165,6 +1179,38 @@ mod tests {
         assert!(problems.iter().any(|p| p.starts_with("junk.json") && p.contains("not valid")));
         assert!(problems.iter().any(|p| p.starts_with("nohost.json") && p.contains("host")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_delay_a_timer_cannot_take_is_reset() {
+        // Duration::from_secs_f32 panics on these, and the radio delay is fed
+        // straight to it before every prefetch.
+        for bad in [-5.0f32, f32::NAN, 1e30, f32::INFINITY] {
+            assert!(
+                std::panic::catch_unwind(|| std::time::Duration::from_secs_f32(bad)).is_err(),
+                "{bad} was expected to be unusable as a delay"
+            );
+            let mut cfg = BotConfig { host: "h".to_string(), radio_delay: bad, ..Default::default() };
+            let warnings = cfg.validate();
+            assert_eq!(cfg.radio_delay, 10.0, "{bad}");
+            assert!(warnings.iter().any(|w| w.contains("radio_delay")), "{warnings:?}");
+        }
+        // A delay somebody chose is left alone.
+        let mut fine = BotConfig { host: "h".to_string(), radio_delay: 45.0, ..Default::default() };
+        assert!(fine.validate().iter().all(|w| !w.contains("radio_delay")));
+        assert_eq!(fine.radio_delay, 45.0);
+    }
+
+    #[test]
+    fn a_bot_cannot_take_the_name_of_a_file_the_listing_skips() {
+        // Saved happily and then missing from list, status, start and edit,
+        // because every listing skips these names.
+        for reserved in NON_BOT_STEMS {
+            assert_eq!(sanitise_config_name(reserved), None, "{reserved}");
+            assert_eq!(sanitise_config_name(&reserved.to_uppercase()), None, "{reserved}");
+        }
+        assert_eq!(sanitise_config_name("settings.json"), None);
+        assert_eq!(sanitise_config_name("mysettings"), Some("mysettings".to_string()));
     }
 
     #[test]
