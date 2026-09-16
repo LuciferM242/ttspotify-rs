@@ -53,7 +53,7 @@ shuffle_usage = Uso: shuffle [on|off]
 
 # Shown when the previous-track command has no earlier track to return to.
 nothing_behind = Nao ha nada anterior.
-mode_usage = {modes}\nUso: mode [r|rq|s|off]
+mode_usage = {modes}\nUso: mode [r|rq|off]
 
 # Busca e escolha
 

@@ -107,7 +107,7 @@ shuffle_usage = Usage: shuffle [on|off]
 nothing_behind = Nothing to go back to.
 
 # Shown when the mode command is used without a valid option. {modes} = the current mode status.
-mode_usage = {modes}\nUsage: mode [r|rq|s|off]
+mode_usage = {modes}\nUsage: mode [r|rq|off]
 
 # Search and pick
 
