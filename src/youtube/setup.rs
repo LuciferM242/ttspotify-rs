@@ -880,6 +880,102 @@ mod tests {
         assert_eq!(p.file_name().and_then(|s| s.to_str()), Some("cookies.txt"));
     }
 
+    /// A one-request HTTP server on a free port, serving `body`.
+    fn serve_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.read(&mut [0u8; 2048]);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(&body));
+            }
+        });
+        (format!("http://{addr}/deno.zip"), handle)
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    #[test]
+    fn a_download_whose_hash_is_wrong_is_refused_and_leaves_nothing_behind() {
+        // A corrupted or substituted asset must not land on disk at all: a
+        // truncated deno in lib/ reads as installed and every track then fails.
+        let dir = mig_tmp("badhash");
+        let dest = dir.join("deno");
+        let (url, server) = serve_once(b"not the real deno".to_vec());
+        let client = http_client().unwrap();
+        let wrong = sha256_hex(b"something else");
+
+        let err = block_on(download_verified(&client, &url, &dest, Some(&wrong), false))
+            .expect_err("a wrong checksum must fail");
+        assert!(err.to_string().contains("checksum mismatch"), "{err}");
+        assert!(!dest.exists(), "the file must not be written");
+        assert!(!dest.with_extension("download.tmp").exists(), "temp file left behind");
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_that_matches_its_hash_lands_whole() {
+        let dir = mig_tmp("goodhash");
+        let dest = dir.join("deno");
+        let body = b"deno bytes".to_vec();
+        let (url, server) = serve_once(body.clone());
+        let client = http_client().unwrap();
+
+        block_on(download_verified(&client, &url, &dest, Some(&sha256_hex(&body)), false))
+            .expect("a matching checksum should install");
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!dest.with_extension("download.tmp").exists());
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_that_is_not_one_is_refused_and_leaves_nothing_behind() {
+        let dir = mig_tmp("badzip");
+        let zip = dir.join("deno.zip");
+        std::fs::write(&zip, b"this is not a zip file").unwrap();
+        let dest = dir.join("deno");
+
+        let err = extract_single_file(&zip, &dest).expect_err("junk must not extract");
+        assert!(err.to_string().contains("read zip"), "{err}");
+        assert!(!dest.exists(), "no binary may be left at the destination");
+        assert!(!dest.with_extension("extract.tmp").exists(), "temp file left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_tools_folder_that_cannot_be_written_reports_rather_than_half_installing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = mig_tmp("readonly");
+        let lib = dir.join("lib");
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let err = crate::youtube::sidecar::ensure_script(&lib)
+            .expect_err("an unwritable tools folder must be reported");
+        assert!(err.to_string().contains("could not"), "{err}");
+        assert!(!lib.exists(), "nothing may be created there");
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn sha256_of_known_input() {
         // SHA-256 of "abc".

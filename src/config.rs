@@ -1033,6 +1033,83 @@ mod store_tests {
     }
 
     #[test]
+    fn concurrent_writers_never_leave_a_config_unreadable() {
+        // Two bots in one tray process, each persisting volume and modes as
+        // they change. A torn write here is a config nobody can load again.
+        let dir = scratch("concurrent");
+        let path = dir.join("busy.json");
+        let cfg = BotConfig { host: "tt.example.org".to_string(), ..Default::default() };
+        cfg.save(&path).unwrap();
+        let store = std::sync::Arc::new(ConfigStore::new(path.clone(), cfg));
+
+        let readers_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, stop) = (path.clone(), readers_stop.clone());
+            std::thread::spawn(move || {
+                let mut reads = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if path.exists() {
+                        BotConfig::parse_file(&path).expect("a half-written config was visible");
+                        reads += 1;
+                    }
+                }
+                reads
+            })
+        };
+        let writers: Vec<_> = (0..8)
+            .map(|n| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        store.update(|c| c.volume = 10 + n);
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        readers_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(reader.join().unwrap() > 0, "the reader never saw the file");
+
+        let final_cfg = BotConfig::parse_file(&path).unwrap();
+        assert!((10..=17).contains(&final_cfg.volume), "volume {}", final_cfg.volume);
+        // Every write goes through a temp file; none may be left behind.
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "busy.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_config_folder_that_cannot_be_written_reports_instead_of_losing_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("readonly");
+        let path = dir.join("locked.json");
+        let cfg = BotConfig { host: "tt.example.org".to_string(), ..Default::default() };
+        cfg.save(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500); // read and enter, no writing
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let err = BotConfig { volume: 99, ..cfg.clone() }.save(&path);
+        assert!(err.is_err(), "saving into an unwritable folder should fail");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the old config must survive");
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn update_does_not_recreate_a_config_that_was_deleted() {
         // Removing a bot deletes its config while the bot may still be
         // running. The bot saves its volume and modes as they change and again
