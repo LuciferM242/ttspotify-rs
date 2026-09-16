@@ -753,47 +753,25 @@ impl CommandDispatcher {
             }
 
             // -- Service switching --
-            "sp" | "spotify" => {
+            // One body for both switches: the command names the service. A
+            // refused switch is spoken, not silent — these are the commands a
+            // user finds out which services exist with, so staying quiet would
+            // leave a disabled service indistinguishable from a broken command.
+            "sp" | "spotify" | "yt" | "youtube" => {
+                // The arm patterns are exactly the spellings `parse` accepts.
+                let Some(target) = Service::parse(&cmd) else { return true };
                 let (active, enabled) = {
                     let s = self.state.lock();
-                    (s.active_service, s.enabled_services.allows(Service::Spotify))
+                    (s.active_service, s.enabled_services.allows(target))
                 };
-                // A refused switch is spoken, not silent: on a YouTube-only
-                // bot the user otherwise has no way to tell a disabled
-                // service from a broken command.
+                let name = target.name().to_string();
                 if !enabled {
-                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
-                } else if active == Service::Spotify {
-                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
+                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[("service", name)]);
+                } else if active == target {
+                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[("service", name)]);
                 } else {
-                    self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
-                    self.reply_t(client, sender_id, Key::SwitchedService, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
-                }
-            }
-            "yt" | "youtube" => {
-                let (active, enabled) = {
-                    let s = self.state.lock();
-                    (s.active_service, s.enabled_services.allows(Service::YouTube))
-                };
-                if !enabled {
-                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
-                } else if active == Service::YouTube {
-                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
-                } else {
-                    self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
-                    self.reply_t(client, sender_id, Key::SwitchedService, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
+                    self.send(BotCommand::SetService { service: target, user_id: sender_id });
+                    self.reply_t(client, sender_id, Key::SwitchedService, &[("service", name)]);
                 }
             }
 
