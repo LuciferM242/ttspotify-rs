@@ -104,7 +104,6 @@ queued_one = Na fila: {track}{upcoming}{more}
 already_queued_loading_rest = Já na fila, carregando o resto
 already_in_queue = Já está na fila
 search_failed = A busca falhou: {error}
-radio_fetching = Rádio: buscando recomendações...
 radio_playing = Rádio: {track}
 radio_no_recs = Rádio: nenhuma recomendação encontrada
 radio_failed = O rádio falhou: {error}

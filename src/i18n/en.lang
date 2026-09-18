@@ -232,9 +232,6 @@ already_in_queue = Already in queue
 # Shown when a search could not be completed. {error} = a short error description.
 search_failed = Search failed: {error}
 
-# Shown while radio looks for recommendations.
-radio_fetching = Radio: fetching recommendations...
-
 # Shown when radio starts a recommended track. {track} = the track title.
 radio_playing = Radio: {track}
 

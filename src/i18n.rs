@@ -169,7 +169,6 @@ keys! {
     AlreadyQueuedLoadingRest => "already_queued_loading_rest",
     AlreadyInQueue => "already_in_queue",
     SearchFailed => "search_failed",
-    RadioFetching => "radio_fetching",
     RadioPlaying => "radio_playing",
     RadioNoRecs => "radio_no_recs",
     RadioFailed => "radio_failed",

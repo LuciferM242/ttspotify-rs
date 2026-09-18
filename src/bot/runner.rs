@@ -892,12 +892,7 @@ async fn fetch_radio_for_seed(
             // radio pick.
             let still_ours = station.as_ref().is_some_and(|st| st.covers(seed_uri));
             if !still_ours {
-                *station = Some(
-                    youtube_metadata
-                        .start_radio(seed_uri)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
+                *station = Some(open_station(youtube_metadata, seed_uri).await?);
             }
 
             let st = station.as_mut().expect("station was just set");
@@ -911,10 +906,7 @@ async fn fetch_radio_for_seed(
             // after a few dozen songs.
             if tracks.is_empty() {
                 tracing::info!("Radio: station exhausted, reseeding from {seed_uri}");
-                let mut fresh = youtube_metadata
-                    .start_radio(seed_uri)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let mut fresh = open_station(youtube_metadata, seed_uri).await?;
                 tracks = youtube_metadata
                     .next_radio_tracks(&mut fresh, batch, played_ids)
                     .await
@@ -925,6 +917,23 @@ async fn fetch_radio_for_seed(
             Ok(tracks.into_iter().map(Into::into).collect())
         }
     }
+}
+
+/// Open the station a YouTube seed names.
+///
+/// A seed is either a station id a radio link left behind, which is asked for
+/// as it stands - `RDEM...` and `RDAMVM<video>` are different stations - or a
+/// video id, which opens that video's autoplay.
+async fn open_station(
+    youtube_metadata: &Arc<crate::youtube::metadata::YouTubeMetadata>,
+    seed: &str,
+) -> Result<crate::youtube::metadata::YtRadioStation, String> {
+    let station = if crate::youtube::types::is_radio_id(seed) {
+        youtube_metadata.start_radio_id(seed).await
+    } else {
+        youtube_metadata.start_radio(seed).await
+    };
+    station.map_err(|e| e.to_string())
 }
 
 fn schedule_radio_prefetch(
@@ -1491,7 +1500,7 @@ async fn command_processor(
     let start_track = |service: crate::services::Service, uri_str: &str, player: &SpotifyPlayer, youtube_player: &crate::youtube::player::YouTubePlayer, client: &::teamtalk::Client, state: &SharedState, audio_reset: &AtomicBool, pause_flag: &AtomicBool| -> bool {
         use crate::player::MediaPlayer;
         sweep_cache();
-        match service {
+        let started = match service {
             crate::services::Service::Spotify => {
                 if let Ok(uri) = SpotifyUri::from_uri(uri_str) {
                     pause_flag.store(false, Ordering::Relaxed);
@@ -1533,7 +1542,23 @@ async fn command_processor(
                 }
                 true
             }
+        };
+        // A link that named a time starts there. Done here rather than where
+        // the link was read, so it holds for one queued behind other tracks
+        // too. The control is in place as soon as the load is dispatched and
+        // the decoder reads the seek flag on its first pass, so nothing of the
+        // opening is heard first.
+        // Read the offset out before acting on it: an `if let` holds the lock
+        // it took for the whole body, and the seek below takes it again.
+        let start_at = started.then(|| state.lock().current().and_then(|e| e.start_ms)).flatten();
+        if let Some(position_ms) = start_at {
+            tracing::info!("Starting at {position_ms}ms, as the link asked");
+            if crate::player::player_for(service, player, youtube_player).seek(position_ms) {
+                state.lock().position_ms = position_ms;
+                audio_reset.store(true, Ordering::Relaxed);
+            }
         }
+        started
     };
 
     let do_exit = |reason: BotExit| {
@@ -1631,6 +1656,12 @@ async fn command_processor(
             BotCommand::SearchAndPlay { request, user_id, user_name } => {
                 use crate::bot::commands::PlayRequest;
                 let service = request.service(state.lock().active_service);
+                // `t=`/`start=`/`#t=` on the link: where in the track to begin.
+                // Kept on the queue entry, so it applies whenever the track starts.
+                let start_at = match &request {
+                    PlayRequest::Query(query) => crate::youtube::types::parse_start_seconds(query),
+                    _ => None,
+                };
                 type ResolveOk = (Vec<crate::track::Track>, Option<BulkRest>, bool, Option<String>);
                 let result: Result<ResolveOk, BotError> = match service {
                     crate::services::Service::Spotify => {
@@ -1671,6 +1702,11 @@ async fn command_processor(
                                     true,
                                     None,
                                 ),
+                                // The station id rides along as the context,
+                                // which is what radio grows from.
+                                YtResolved::Radio { track, radio_id } => {
+                                    (vec![track.into()], None, false, Some(radio_id))
+                                }
                             })
                     }
                 };
@@ -1714,7 +1750,13 @@ async fn command_processor(
                                 // An explicit request plays before whatever
                                 // playlist or radio is being worked through.
                                 for track in fresh {
-                                    s.enqueue_next(track, user_name.clone(), true);
+                                    s.enqueue_next(crate::bot::queue::QueueEntry {
+                                        track,
+                                        requester: user_name.clone(),
+                                        allow_recommend: true,
+                                        context: context.clone(),
+                                        start_ms: start_at.map(|secs| secs.saturating_mul(1000)),
+                                    });
                                 }
                             }
                             let generation = if bulk_rest.is_some() {
@@ -1955,7 +1997,6 @@ async fn command_processor(
                     let mut resumed = false;
                     if radio_on && pre_allow_rec && pre_seed.is_some() {
                         if let Some((seed_service, seed)) = pre_seed {
-                            reply_t(user_id, Key::RadioFetching, &[]);
                             tracing::info!("Radio: queue ran out, fetching recommendations from seed {seed}");
                             let fetched = fetch_radio_for_seed(
                                 seed_service,
@@ -2291,7 +2332,13 @@ async fn command_processor(
                         let service = track.service();
                         let uri_str = track.uri().to_string();
                         let track_name = track.display_name();
-                        s.enqueue_next(track, user_name, true);
+                        s.enqueue_next(crate::bot::queue::QueueEntry {
+                            track,
+                            requester: user_name,
+                            allow_recommend: true,
+                            context: None,
+                            start_ms: None,
+                        });
                         // A pick sits at the back of the next-up tier, ahead
                         // of any source — its position is NOT the queue length.
                         (service, uri_str, track_name, idle, s.queue.next_up_len())
@@ -3001,6 +3048,17 @@ mod tests {
 
     // -- explicit picks: the position is the pick's slot, not the queue length --
 
+    /// A plain next-up entry: what the tests below queue.
+    fn entry(track: crate::track::Track) -> crate::bot::queue::QueueEntry {
+        crate::bot::queue::QueueEntry {
+            track,
+            requester: "u".into(),
+            allow_recommend: true,
+            context: None,
+            start_ms: None,
+        }
+    }
+
     #[test]
     fn an_explicit_pick_ahead_of_a_playlist_is_reported_as_next() {
         // The regression this suite used to miss: every production single-track
@@ -3009,7 +3067,7 @@ mod tests {
         // next, so its wait is just A's remainder — not the whole queue's.
         let mut state = PlayerState::new();
         enqueue(&mut state, &[60_000, 300_000, 300_000, 300_000]);
-        state.enqueue_next(track("x", 60_000), "u".into(), true);
+        state.enqueue_next(entry(track("x", 60_000)));
         let pos = state.queue.next_up_len();
         assert_eq!(pos, 1);
         assert_eq!(queue_wait_info(&state, pos), " (next, ~1 min)");
@@ -3021,8 +3079,8 @@ mod tests {
         // Y is 2nd up: wait = remaining A + X = 2 min. B is behind both picks.
         let mut state = PlayerState::new();
         enqueue(&mut state, &[60_000, 300_000]);
-        state.enqueue_next(track("x", 60_000), "u".into(), true);
-        state.enqueue_next(track("y", 60_000), "u".into(), true);
+        state.enqueue_next(entry(track("x", 60_000)));
+        state.enqueue_next(entry(track("y", 60_000)));
         let pos = state.queue.next_up_len();
         assert_eq!(pos, 2);
         assert_eq!(queue_wait_info(&state, pos), " (2 ahead, ~2 min)");

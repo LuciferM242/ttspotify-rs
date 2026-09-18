@@ -58,6 +58,10 @@ pub enum YtResolved {
         tracks: Vec<YouTubeTrack>,
         rest: Option<YtPlaylistRest>,
     },
+    /// A radio link: the track it starts on, and the station it belongs to.
+    /// The station id becomes the entry's context, so radio continues that
+    /// station instead of opening one from the video.
+    Radio { track: YouTubeTrack, radio_id: String },
 }
 
 /// YouTube Music metadata service.
@@ -212,10 +216,14 @@ impl YouTubeMetadata {
     /// continuation so the caller can start playback immediately and pull the
     /// remaining pages in the background (mirrors Spotify bulk loading).
     pub async fn resolve_paged(&self, query: &str, search_limit: u8) -> Result<YtResolved, BotError> {
-        if let Some(YouTubeRef::Playlist(id)) = parse_youtube_ref(query) {
-            return self.fetch_playlist_first_page(&id).await;
+        match parse_youtube_ref(query) {
+            Some(YouTubeRef::Playlist(id)) => self.fetch_playlist_first_page(&id).await,
+            Some(YouTubeRef::Radio { id, start }) => self
+                .fetch_radio_start(&id, start.as_deref())
+                .await
+                .map(|track| YtResolved::Radio { track, radio_id: id }),
+            _ => self.resolve(query, search_limit).await.map(YtResolved::Tracks),
         }
-        self.resolve(query, search_limit).await.map(YtResolved::Tracks)
     }
 
     /// The account's YouTube Music liked songs, read signed in with the cookies file.
@@ -241,6 +249,12 @@ impl YouTubeMetadata {
             },
             Some(YouTubeRef::Playlist(id)) => self.fetch_playlist(&id).await,
             Some(YouTubeRef::Album(id)) => self.fetch_album(&id).await,
+            // A radio link plays the track it starts on and nothing else.
+            // Only the paged entry point keeps the station id, so radio here
+            // continues from the track the way it does from any other.
+            Some(YouTubeRef::Radio { id, start }) => {
+                self.fetch_radio_start(&id, start.as_deref()).await.map(|t| vec![t])
+            }
             // A free-form search returns just the top hit so play_and_queue
             // doesn't accidentally enqueue 5 tracks for a single song name.
             None => self.search_top_track(query).await,
@@ -439,6 +453,40 @@ impl YouTubeMetadata {
         }
     }
 
+    /// The track a radio link starts on: the video it names, or the station's
+    /// own first track when it names none (`RDMM`, an `RDEM...` mix opened
+    /// from its playlist page).
+    async fn fetch_radio_start(
+        &self,
+        radio_id: &str,
+        start: Option<&str>,
+    ) -> Result<YouTubeTrack, BotError> {
+        match start {
+            Some(video_id) => self.fetch_video(video_id).await,
+            None => {
+                let mut station = self.start_radio_id(radio_id).await?;
+                station.buffer.pop_front().ok_or(BotError::NoResults)
+            }
+        }
+    }
+
+    /// Open the station a radio link names, by its own `RD...` id.
+    ///
+    /// Not interchangeable with autoplay from a video: measured on the same
+    /// link, `RDEM...` and `RDAMVM<video>` share almost nothing. The id the
+    /// link carries is what gets asked for.
+    pub async fn start_radio_id(&self, radio_id: &str) -> Result<YtRadioStation, BotError> {
+        let q = self.client.query();
+        let paginator = retry_once(|| q.music_radio(radio_id))
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube radio fetch failed: {e}")))?;
+        let mut known = std::collections::HashSet::new();
+        // A station answers to its own id: that is what the queue entry
+        // carries, and what `covers` is asked about when radio tops up.
+        known.insert(radio_id.to_string());
+        Ok(drain_station(paginator, known))
+    }
+
     /// Open a YouTube Music radio station for a track.
     ///
     /// `music_radio_track` is YouTube Music's autoplay, not a separate radio
@@ -450,21 +498,12 @@ impl YouTubeMetadata {
     /// the song that is currently playing.
     pub async fn start_radio(&self, video_id: &str) -> Result<YtRadioStation, BotError> {
         let q = self.client.query();
-        let mut paginator = retry_once(|| q.music_radio_track(video_id))
+        let paginator = retry_once(|| q.music_radio_track(video_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube radio fetch failed: {e}")))?;
-
-        // Drain the first page out of the paginator: extend() appends, so
-        // leaving it in place would hand the same tracks back on every later
-        // page. The playlist loader takes the same precaution.
         let mut known = std::collections::HashSet::new();
         known.insert(video_id.to_string());
-        let buffer: std::collections::VecDeque<YouTubeTrack> = std::mem::take(&mut paginator.items)
-            .into_iter()
-            .map(track_item_to_track)
-            .collect();
-
-        Ok(YtRadioStation { paginator, buffer, known, exhausted: false })
+        Ok(drain_station(paginator, known))
     }
 
     /// Take up to `limit` more tracks from a station, paging YouTube as needed.
@@ -582,6 +621,22 @@ fn top_song(items: Vec<rustypipe::model::MusicItem>) -> Option<rustypipe::model:
     })
 }
 
+/// Make a station of a paginator's first page.
+///
+/// The page is taken out of the paginator: `extend()` appends, so leaving it
+/// in place hands the same tracks back on every later page. `known` starts
+/// with what the station must never hand out - the seed it grew from.
+fn drain_station(
+    mut paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    known: std::collections::HashSet<String>,
+) -> YtRadioStation {
+    let buffer: std::collections::VecDeque<YouTubeTrack> = std::mem::take(&mut paginator.items)
+        .into_iter()
+        .map(track_item_to_track)
+        .collect();
+    YtRadioStation { paginator, buffer, known, exhausted: false }
+}
+
 fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
     YouTubeTrack {
         id: item.id,
@@ -622,6 +677,59 @@ mod tests {
             });
         println!("{} serves {} bytes", info.client, info.content_length);
         assert!(info.content_length > 1_000_000, "a whole song is more than a megabyte");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_radio_link_keeps_the_station_it_names() {
+        // The station id has to survive the round trip: rebuilt from the video
+        // instead, an RDEM mix turns into RDAMVM<video>, which plays a
+        // different set of songs.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let link = "https://www.youtube.com/watch?v=NrLkTZrPZA4&list=RDEMtu8TSn01ATwUIqXnxfa6zQ&start_radio=1";
+        match meta.resolve_paged(link, 1).await.expect("radio link") {
+            super::YtResolved::Radio { track, radio_id } => {
+                assert_eq!(track.id, "NrLkTZrPZA4", "it starts on the video the link names");
+                assert_eq!(radio_id, "RDEMtu8TSn01ATwUIqXnxfa6zQ");
+            }
+            _ => panic!("a radio link resolves to its station"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_opened_by_id_never_replays_what_it_grew_from() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let radio_id = "RDEMtu8TSn01ATwUIqXnxfa6zQ";
+        let mut station = meta.start_radio_id(radio_id).await.expect("station");
+        assert!(station.covers(radio_id), "the station answers to its own id");
+        let tracks = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("tracks");
+        assert_eq!(tracks.len(), 5, "should honour the limit");
+        // music_radio hands back the track the station starts on; playing it
+        // again right after it has played is exactly what must not happen.
+        let start = "NrLkTZrPZA4";
+        let excluded = meta
+            .next_radio_tracks(&mut station, 5, &[start.to_string()])
+            .await
+            .expect("tracks");
+        assert!(!excluded.iter().any(|t| t.id == start), "an excluded track came back");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_mix_with_no_video_starts_at_its_own_first_track() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        match meta
+            .resolve_paged("https://music.youtube.com/playlist?list=RDMM", 1)
+            .await
+            .expect("mix link")
+        {
+            super::YtResolved::Radio { track, radio_id } => {
+                assert_eq!(radio_id, "RDMM");
+                assert!(!track.id.is_empty(), "a mix link still starts on a track");
+            }
+            _ => panic!("a mix link resolves to its station"),
+        }
     }
 
     #[tokio::test]
@@ -788,7 +896,7 @@ mod tests {
                     meta.fetch_more_playlist(&mut rest).await.expect("next page");
                 }
             }
-            super::YtResolved::Tracks(_) => panic!("liked music is a playlist"),
+            _ => panic!("liked music is a playlist"),
         }
         let top = meta.search_top_track("imagine dragons believer").await.expect("search");
         assert_eq!(top.len(), 1);

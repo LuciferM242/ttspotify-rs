@@ -104,7 +104,6 @@ queued_one = В очереди: {track}{upcoming}{more}
 already_queued_loading_rest = Уже в очереди, загружается остальное
 already_in_queue = Уже в очереди
 search_failed = Ошибка поиска: {error}
-radio_fetching = Радио: поиск рекомендаций...
 radio_playing = Радио: {track}
 radio_no_recs = Радио: рекомендации не найдены
 radio_failed = Ошибка радио: {error}

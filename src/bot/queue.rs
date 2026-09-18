@@ -37,6 +37,10 @@ pub struct QueueEntry {
     pub allow_recommend: bool,
     /// The album or playlist uri this entry was loaded from, if any.
     pub context: Option<String>,
+    /// Where in the track to start, when the link that queued it named a
+    /// time. Kept on the entry so a link that waits its turn starts where it
+    /// says, not only one that plays at once.
+    pub start_ms: Option<u32>,
 }
 
 impl QueueEntry {
@@ -372,6 +376,7 @@ mod tests {
             requester: "tester".to_string(),
             allow_recommend: true,
             context: None,
+            start_ms: None,
         }
     }
 

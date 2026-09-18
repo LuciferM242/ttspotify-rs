@@ -277,8 +277,8 @@ impl PlayerState {
     /// Queue a track the user asked for by name: it plays before whatever
     /// source is being worked through, the way "next in queue" sits ahead of
     /// "next from" in Spotify.
-    pub fn enqueue_next(&mut self, track: Track, requester: String, allow_recommend: bool) {
-        self.queue.push_next(QueueEntry { track, requester, allow_recommend, context: None });
+    pub fn enqueue_next(&mut self, entry: QueueEntry) {
+        self.queue.push_next(entry);
     }
 
     /// Queue tracks from a source being played through: a playlist, an album,
@@ -301,6 +301,7 @@ impl PlayerState {
             requester: requester.clone(),
             allow_recommend,
             context: context.clone(),
+            start_ms: None,
         }));
         // With shuffle on, a playlist added now must land shuffled too —
         // otherwise it plays in order and shuffle looks broken. Only the new
@@ -1073,7 +1074,13 @@ mod tests {
     fn apply(state: &mut PlayerState, op: &Op, next_id: &mut u32) {
         match op {
             Op::PlayNext => {
-                state.enqueue_next(track(&next_id.to_string()), "u".into(), true);
+                state.enqueue_next(QueueEntry {
+                    track: track(&next_id.to_string()),
+                    requester: "u".into(),
+                    allow_recommend: true,
+                    context: None,
+                    start_ms: None,
+                });
                 *next_id += 1;
             }
             Op::QueueSource(n) => {
