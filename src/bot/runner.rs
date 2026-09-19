@@ -388,7 +388,12 @@ pub async fn run_bot(
     let pipeline_shutdown = local_shutdown.clone();
     let pipeline_pos = pipeline_pos_ms.clone();
     let pipeline_recovery_drain = recovery_drain.clone();
+    // The pipeline is the one bot thread the runtime does not start, so it
+    // carries the tag over itself; without it every line it logs would land in
+    // the tray's log instead of this bot's.
+    let pipeline_bot = crate::bot::identity::current_bot();
     std::thread::spawn(move || {
+        crate::bot::identity::set_current_bot(pipeline_bot);
         let mut pipeline = crate::audio::pipeline::AudioPipeline::new(
             audio_rx,
             pipeline_client,
