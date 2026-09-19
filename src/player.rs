@@ -76,6 +76,28 @@ mod tests {
     }
 
     #[test]
+    fn pause_reaches_only_the_player_that_is_playing() {
+        // Pausing both meant librespot logged an error every time a YouTube
+        // track was paused, because its own player was sitting stopped.
+        let mut spotify = MockMediaPlayer::new();
+        let mut youtube = MockMediaPlayer::new();
+        youtube.expect_pause().times(1).return_const(());
+        spotify.expect_pause().never();
+
+        player_for(Service::YouTube, &spotify, &youtube).pause();
+    }
+
+    #[test]
+    fn resume_reaches_only_the_player_that_is_paused() {
+        let mut spotify = MockMediaPlayer::new();
+        let mut youtube = MockMediaPlayer::new();
+        spotify.expect_play().times(1).return_const(());
+        youtube.expect_play().never();
+
+        player_for(Service::Spotify, &spotify, &youtube).play();
+    }
+
+    #[test]
     fn preload_routes_by_service_too() {
         let mut spotify = MockMediaPlayer::new();
         let mut youtube = MockMediaPlayer::new();

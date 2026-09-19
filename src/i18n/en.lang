@@ -64,7 +64,7 @@ seek_forward = Seeking forward {seconds}s
 seek_backward = Seeking backward {seconds}s
 
 # Shown when the seek command is used incorrectly.
-seek_usage = Usage: sf [seconds] / sb [seconds]
+seek_usage = Usage: sf [seconds] / sb [seconds] / seek <seconds>
 
 # Queue
 
@@ -273,7 +273,7 @@ help_overview_spotify =   radio [on|off]      Toggle radio (auto-recommendations
 help_overview_library =   library [words]     List your playlists, or play the one matching
 
 # The rest of the main help listing: audio, search, service, bot.
-help_overview_rest = \nAudio:\n  v [0-100]       Get or set volume\n  sf/sb [N]       Seek forward/backward N seconds\n\nSearch:\n  search <query>  Search and pick from results\n  <number>        Pick a search result\n  a / cancel      Cancel search\n\nService:\n  /sp             Switch to Spotify\n  /yt             Switch to YouTube\n\nBot:\n  link         Get URL for current track\n  stats        Show bot uptime and session stats\n  lang         Show or set your language\n  cn <name>    Change nickname\n  gender       Set bot gender\n  info         Bot info
+help_overview_rest = \nAudio:\n  v [0-100]       Get or set volume\n  sf/sb [N]       Seek forward/backward N seconds\n  seek <N>        Go to N seconds into the track\n\nSearch:\n  search <query>  Search and pick from results\n  <number>        Pick a search result\n  a / cancel      Cancel search\n\nService:\n  /sp             Switch to Spotify\n  /yt             Switch to YouTube\n\nBot:\n  link         Get URL for current track\n  stats        Show bot uptime and session stats\n  lang         Show or set your language\n  cn <name>    Change nickname\n  gender       Set bot gender\n  info         Bot info
 
 # Help lines shown only to admins.
 help_overview_admin =   jc <path>    Join channel\n  glang        Set the server default language\n  rs           Restart\n  q            Quit
@@ -304,7 +304,7 @@ help_shuffle = shuffle [on|off]\n  shuffle       Turn shuffle on or off\n  shuff
 
 help_volume = v / volume [0-100]\n  v          Show current volume\n  v 50       Set volume to 50%\n  v50        Set volume to 50% (no space)\n  volume 30  Set volume to 30%\nVolume is capped by the configured max volume.
 
-help_seek = sf / sb [seconds]\n  sf         Seek forward 10 seconds (default)\n  sb         Seek backward 10 seconds (default)\n  sf30       Seek forward 30 seconds\n  sb 5       Seek backward 5 seconds
+help_seek = sf / sb [seconds]\n  sf         Seek forward 10 seconds (default)\n  sb         Seek backward 10 seconds (default)\n  sf30       Seek forward 30 seconds\n  sb 5       Seek backward 5 seconds\n  seek 600   Go to 10 minutes into the track
 
 help_search = search <query>\n  Search and show results. Then:\n  <number>   Pick a result to play/queue\n  a / cancel Dismiss search results\nExample:\n  search photograph\n  2          Play the 2nd result
 

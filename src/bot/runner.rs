@@ -936,6 +936,13 @@ async fn open_station(
     station.map_err(|e| e.to_string())
 }
 
+/// The service of the track in hand, or the one bare commands go to when
+/// there is none.
+fn current_service(state: &Arc<parking_lot::Mutex<PlayerState>>) -> crate::services::Service {
+    let s = state.lock();
+    s.current().map(|e| e.track.service()).unwrap_or(s.active_service)
+}
+
 fn schedule_radio_prefetch(
     tx: &tokio::sync::mpsc::UnboundedSender<BotCommand>,
     track_uri: String,
@@ -1861,11 +1868,12 @@ async fn command_processor(
             }
 
             BotCommand::Play { user_id: _ } => {
-                use crate::player::MediaPlayer as _;
                 pause_flag.store(false, Ordering::Relaxed);
                 timing_reset.store(true, Ordering::Relaxed);
-                player.play();
-                youtube_player.play();
+                // Only the player holding the track: the idle one answers a
+                // resume it has no track for with an error, which is what put
+                // librespot's on every pause of a YouTube bot.
+                crate::player::player_for(current_service(&state), &player, &youtube_player).play();
                 let mut s = state.lock();
                 s.status = PlaybackStatus::Playing;
                 if let Some(entry) = s.current() {
@@ -1874,10 +1882,8 @@ async fn command_processor(
             }
 
             BotCommand::Pause { user_id: _ } => {
-                use crate::player::MediaPlayer as _;
                 pause_flag.store(true, Ordering::Relaxed);
-                player.pause();
-                youtube_player.pause();
+                crate::player::player_for(current_service(&state), &player, &youtube_player).pause();
                 crate::tt::audio_inject::flush_audio(&client);
                 let mut s = state.lock();
                 s.status = PlaybackStatus::Paused;
@@ -2149,6 +2155,18 @@ async fn command_processor(
                 // nothing — flushing there discarded the last seconds of the
                 // song and fired the advance early.
                 if crate::player::player_for(service, &player, &youtube_player).seek(new_pos) {
+                    audio_reset.store(true, Ordering::Relaxed);
+                }
+            }
+
+            BotCommand::SeekTo { position_ms, user_id: _ } => {
+                let service = {
+                    let mut s = state.lock();
+                    let svc = s.current().map(|e| e.track.service()).unwrap_or(s.active_service);
+                    s.position_ms = position_ms;
+                    svc
+                };
+                if crate::player::player_for(service, &player, &youtube_player).seek(position_ms) {
                     audio_reset.store(true, Ordering::Relaxed);
                 }
             }

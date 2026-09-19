@@ -55,6 +55,8 @@ pub enum BotCommand {
     PlaybackStarted,
     Prev { user_id: i32 },
     Seek { offset_ms: i32, user_id: i32 },
+    /// Jump to an absolute position, as `seek <seconds>` asks for.
+    SeekTo { position_ms: u32, user_id: i32 },
     SetVolume { percent: u8, user_id: i32 },
     SetMode { mode: PlaybackMode, user_id: i32 },
     SetShuffle { enable: bool, user_id: i32 },
@@ -262,6 +264,25 @@ fn parse_volume(cmd: &str, args: &str) -> Option<VolumeParse> {
 enum SeekParse {
     Seconds(i32),
     Usage,
+}
+
+/// Parsed `seek` argument: an absolute position, in seconds.
+#[derive(Debug, PartialEq)]
+enum SeekTo {
+    Seconds(u32),
+    Usage,
+}
+
+/// Parse the argument to `seek`: whole seconds from the start of the track.
+///
+/// Seconds only. `2:30` is rejected rather than guessed at, so there is one
+/// way of saying it and no reading of "2:30" as two seconds.
+fn parse_seek_to(args: &str) -> Option<SeekTo> {
+    let arg = args.trim();
+    if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_digit()) {
+        return Some(SeekTo::Usage);
+    }
+    Some(arg.parse().map_or(SeekTo::Usage, SeekTo::Seconds))
 }
 
 /// Parse a seek command word + args. Matches bare `sf`/`sb` (default 10s) or
@@ -569,6 +590,15 @@ impl CommandDispatcher {
                     }
                 }
             }
+            "seek" => match parse_seek_to(args) {
+                Some(SeekTo::Seconds(secs)) => {
+                    self.send(BotCommand::SeekTo {
+                        position_ms: secs.saturating_mul(1000),
+                        user_id: sender_id,
+                    });
+                }
+                _ => self.reply_t(client, sender_id, Key::SeekUsage, &[]),
+            },
             "s" | "stop" => {
                 self.send(BotCommand::Stop { user_id: sender_id });
             }
@@ -1282,6 +1312,23 @@ mod tests {
     }
 
     // -- parse_seek --
+
+    #[test]
+    fn seek_to_takes_a_position_in_seconds() {
+        assert_eq!(parse_seek_to("600"), Some(SeekTo::Seconds(600)));
+        assert_eq!(parse_seek_to(" 45 "), Some(SeekTo::Seconds(45)));
+        assert_eq!(parse_seek_to("0"), Some(SeekTo::Seconds(0)));
+    }
+
+    #[test]
+    fn seek_to_rejects_anything_that_is_not_seconds() {
+        // No mm:ss: one way of saying it, and "2:30" would otherwise be read
+        // as 2 seconds by a lenient parser.
+        assert_eq!(parse_seek_to("2:30"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to("later"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to("-5"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to(""), Some(SeekTo::Usage));
+    }
 
     #[test]
     fn seek_forms() {
