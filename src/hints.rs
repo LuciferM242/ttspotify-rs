@@ -32,6 +32,18 @@ pub fn sign_in_spotify() -> String {
     }
 }
 
+/// How to sign in to Spotify where no browser can be opened.
+pub fn sign_in_spotify_without_browser() -> String {
+    #[cfg(windows)]
+    {
+        sign_in_spotify()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("run: {} auth code", crate::paths::program_name())
+    }
+}
+
 /// How to install the YouTube tools.
 pub fn install_youtube_tools() -> String {
     #[cfg(windows)]
@@ -146,6 +158,7 @@ mod tests {
         vec![
             ("create_bot", create_bot()),
             ("sign_in_spotify", sign_in_spotify()),
+            ("sign_in_spotify_without_browser", sign_in_spotify_without_browser()),
             ("install_youtube_tools", install_youtube_tools()),
             ("update_youtube_tools", update_youtube_tools()),
             ("install_service", install_service()),
@@ -190,6 +203,7 @@ mod tests {
         let expected = [
             ("create_bot", " add "),
             ("sign_in_spotify", " auth"),
+            ("sign_in_spotify_without_browser", " auth code"),
             ("install_youtube_tools", " yt install"),
             ("update_youtube_tools", " yt update"),
             ("install_service", " service install"),

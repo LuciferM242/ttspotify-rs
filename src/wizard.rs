@@ -6,6 +6,7 @@ use std::io::{self, Write};
 use crate::config::{config_dir, kick_delay_label, kick_delay_options, AdminMode, BotConfig, EnabledServices};
 use crate::error::BotError;
 use crate::services::Service;
+use crate::spotify::auth::{PairCode, SignInMethod};
 use crate::youtube::locale::{self, LocaleOption};
 use crate::youtube::setup;
 
@@ -458,35 +459,113 @@ fn offer_spotify_sign_in() {
         return;
     }
 
-    println!("  Starting Spotify authentication...");
-    // Its own thread and runtime: the wizard is sync but may be called from
-    // async main, and a nested runtime panics.
-    let auth_result = std::thread::spawn(|| {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                eprintln!("  Failed to create async runtime: {e}");
-                return None;
-            }
-        };
-        let mut auth = crate::spotify::auth::SpotifyAuth::new();
-        Some(rt.block_on(auth.connect()))
-    })
-    .join()
-    .ok()
-    .flatten();
-
-    match auth_result {
-        Some(Ok(_)) => println!("  Spotify authentication successful! Credentials cached."),
-        Some(Err(e)) => {
-            println!("  Spotify authentication failed: {e}");
+    let Some(method) = ask_sign_in_method() else {
+        println!("  Skipping Spotify sign-in. To sign in later, {}", crate::hints::sign_in_spotify());
+        return;
+    };
+    match sign_in_spotify(method) {
+        Ok(()) => println!("  Signed in to Spotify. The login is saved for every bot here."),
+        Err(e) => {
+            println!("  Spotify sign-in failed: {e}");
             println!("  To try again, {}", crate::hints::sign_in_spotify());
         }
-        None => {
-            println!("  Could not initialize authentication.");
-            println!("  To sign in later, {}", crate::hints::sign_in_spotify());
+    }
+}
+
+/// Ask how to sign in to Spotify. `None` when input ends.
+pub fn ask_sign_in_method() -> Option<SignInMethod> {
+    println!("  How do you want to sign in?");
+    println!("  1. Browser - authorize in a browser on this machine");
+    println!("  2. Pair code - confirm a short code on any device, such as a phone");
+    match ask_menu("Sign-in method (1-2)", 2, "1")? {
+        2 => Some(SignInMethod::Code),
+        _ => Some(SignInMethod::Browser),
+    }
+}
+
+/// What to print for a pair code, one line each.
+fn pair_code_lines(code: &PairCode) -> Vec<String> {
+    let mut lines = vec![
+        format!("Pair code: {}", code.user_code),
+        format!("Confirm it at: {}", code.url),
+    ];
+    if code.url != code.page {
+        lines.push(format!(
+            "If the code is not filled in, open {} and type it.",
+            code.page
+        ));
+    }
+    lines
+}
+
+/// Show a pair code, copy its link, and wait for it to be confirmed. The copy
+/// key stays live until then; Ctrl+C gives up.
+async fn sign_in_with_pair_code(auth: &mut crate::spotify::auth::SpotifyAuth) -> Result<(), BotError> {
+    use crate::terminal_copy;
+
+    let pending = auth.request_pair_code().await?;
+    for line in pair_code_lines(&pending.code) {
+        println!("  {line}");
+    }
+    let copied = terminal_copy::copy(&pending.code.url);
+    if auth.can_open_browser() {
+        if let Err(e) = open::that_detached(&pending.code.url) {
+            tracing::debug!("could not open the pairing page: {e}");
         }
     }
+
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+    let keys = terminal_copy::CopyKeys::start(pending.code.url.clone(), cancel_tx);
+    if let Some(hint) = terminal_copy::copy_hint(copied, keys.as_ref().map(|k| k.key)) {
+        terminal_copy::say_while(keys.as_ref(), &hint);
+    }
+    terminal_copy::say_while(keys.as_ref(), "Waiting for you to confirm. Press Ctrl+C to give up.");
+
+    let confirmed = tokio::select! {
+        credentials = auth.confirm_pair(pending) => credentials,
+        // A listener that never started drops its sender; that is no cancel.
+        Ok(()) = &mut cancel_rx => Err(BotError::SpotifyAuth("sign-in cancelled".into())),
+        () = terminated() => {
+            // Killed while keys were read one by one: put the terminal back
+            // first, or the shell is left without echo.
+            drop(keys);
+            std::process::exit(143);
+        }
+    };
+    // Back to line-by-line output before the sign-in starts logging.
+    drop(keys);
+    let credentials = confirmed?;
+    auth.connect_fresh(credentials).await.map(drop)
+}
+
+/// Resolves on SIGTERM. Never elsewhere.
+async fn terminated() {
+    #[cfg(unix)]
+    if let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        term.recv().await;
+        return;
+    }
+    std::future::pending::<()>().await
+}
+
+/// Sign in to Spotify with `method`, replacing any saved login.
+///
+/// Its own thread and runtime: this is sync but may be called from async main,
+/// and a nested runtime panics.
+pub fn sign_in_spotify(method: SignInMethod) -> Result<(), BotError> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| BotError::SpotifyAuth(format!("could not start the sign-in: {e}")))?;
+        let mut auth = crate::spotify::auth::SpotifyAuth::new();
+        rt.block_on(async {
+            match method {
+                SignInMethod::Browser => auth.reauthenticate().await.map(drop),
+                SignInMethod::Code => sign_in_with_pair_code(&mut auth).await,
+            }
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| Err(BotError::SpotifyAuth("the sign-in stopped unexpectedly".into())))
 }
 
 /// `youtube install`: download the runtime and sidecar unless already there.
@@ -566,6 +645,37 @@ where
     })
     .join()
     .map_err(|_| BotError::Config("async worker thread panicked".to_string()))?
+}
+
+#[cfg(test)]
+mod pair_code_tests {
+    use super::pair_code_lines;
+    use crate::spotify::auth::PairCode;
+
+    fn code(url: &str) -> PairCode {
+        PairCode {
+            user_code: "ABCD-EFGH".into(),
+            url: url.into(),
+            page: "https://www.spotify.com/pair".into(),
+        }
+    }
+
+    #[test]
+    fn the_code_comes_first_then_where_to_confirm_it() {
+        let lines = pair_code_lines(&code("https://www.spotify.com/pair?code=ABCD-EFGH"));
+        assert_eq!(lines[0], "Pair code: ABCD-EFGH");
+        assert_eq!(lines[1], "Confirm it at: https://www.spotify.com/pair?code=ABCD-EFGH");
+        assert!(
+            lines.iter().any(|l| l.contains("type it") && l.contains("https://www.spotify.com/pair ")),
+            "a prefilled link still says where to type the code by hand: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_plain_page_is_not_offered_twice() {
+        let lines = pair_code_lines(&code("https://www.spotify.com/pair"));
+        assert!(!lines.iter().any(|l| l.contains("type it")), "{lines:?}");
+    }
 }
 
 #[cfg(test)]

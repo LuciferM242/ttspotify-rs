@@ -483,9 +483,7 @@ fn handle_action(
             BotAction::Config => edit_config(wnd, tray, &name),
             BotAction::Remove => remove_server(wnd, tray, &name),
         },
-        MenuAction::SpotifyAuth => {
-            spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
-        }
+        MenuAction::SpotifyAuth => sign_in_spotify(hwnd, wnd, tray),
         MenuAction::CheckUpdates => check_for_updates_now(hwnd, wnd),
         MenuAction::AddServer => add_server(wnd, tray),
         MenuAction::YoutubeInstall => {
@@ -937,6 +935,41 @@ fn report_auth_outcome(hwnd: &w::HWND, tray: &Rc<Tray>) {
                 co::MB::OK | co::MB::ICONERROR,
             );
         }
+    }
+}
+
+/// Ask how to sign in to Spotify, then sign in that way.
+fn sign_in_spotify(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    use crate::gui_native::signin_dialog::{self, PairOutcome};
+    use crate::spotify::auth::SignInMethod;
+    match signin_dialog::choose(wnd) {
+        Some(SignInMethod::Browser) => {
+            spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
+        }
+        Some(SignInMethod::Code) => {
+            let outcome = signin_dialog::pair(wnd);
+            tray.facts.borrow().mark_stale();
+            match outcome {
+                PairOutcome::SignedIn => {
+                    let _ = hwnd.MessageBox(
+                        "Signed in to Spotify. The login is saved for every bot here.",
+                        "TT Spotify",
+                        co::MB::OK | co::MB::ICONINFORMATION,
+                    );
+                }
+                PairOutcome::Failed(e) => {
+                    let _ = hwnd.MessageBox(
+                        &format!("Could not sign in to Spotify.
+
+{e}"),
+                        "TT Spotify",
+                        co::MB::OK | co::MB::ICONERROR,
+                    );
+                }
+                PairOutcome::Cancelled => {}
+            }
+        }
+        None => {}
     }
 }
 

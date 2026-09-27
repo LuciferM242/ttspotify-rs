@@ -392,6 +392,10 @@ enum CacheAction {
 enum AuthAction {
     /// Say whether a Spotify login is already cached
     Status,
+    /// Sign in by authorizing in a browser on this machine
+    Browser,
+    /// Sign in by confirming a short code on any device
+    Code,
 }
 
 #[cfg(not(windows))]
@@ -749,10 +753,20 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
                 }
             }
         }
-        Commands::Auth { action: None } => {
-            let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
-            match auth.connect().await {
-                Ok(_) => {
+        Commands::Auth { action } => {
+            use tt_spotify_bot::spotify::auth::SignInMethod;
+            let method = match action {
+                Some(AuthAction::Code) => SignInMethod::Code,
+                Some(AuthAction::Browser) => SignInMethod::Browser,
+                // Status is answered above; nobody to ask means the default.
+                _ if !std::io::IsTerminal::is_terminal(&std::io::stdin()) => SignInMethod::default(),
+                _ => match tt_spotify_bot::wizard::ask_sign_in_method() {
+                    Some(method) => method,
+                    None => std::process::exit(1),
+                },
+            };
+            match tt_spotify_bot::wizard::sign_in_spotify(method) {
+                Ok(()) => {
                     println!("Signed in to Spotify. The login is cached for every bot here.");
                     std::process::exit(0);
                 }

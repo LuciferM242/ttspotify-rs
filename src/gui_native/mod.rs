@@ -20,6 +20,7 @@ pub mod menu;
 pub mod progress_dialog;
 pub mod remove_dialog;
 pub mod settings_dialog;
+pub mod signin_dialog;
 pub mod tooltip;
 pub mod tray;
 pub mod update_dialog;

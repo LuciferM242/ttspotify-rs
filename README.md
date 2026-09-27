@@ -53,7 +53,7 @@ Download the latest build from the [**Releases page**](https://github.com/Lucife
 
 1. Download `tt-spotify-bot-windows-x86_64.zip`, extract it, and run the `.exe` — a tray icon appears.
 2. On first run it prompts you to create a config (a setup dialog). Fill it in and the bot connects.
-3. Open the tray menu with a right click or Enter on the icon. **Sign in / re-authenticate**, under the Spotify submenu, signs in; **Install tools**, under the YouTube tools submenu, sets up YouTube; and each bot has **Start**, **Stop**, **Restart**, **View Logs**, **Edit Config** and **Remove Server**. **Settings** covers update checks, launching on Windows startup and the saved-music limits.
+3. Open the tray menu with a right click or Enter on the icon. **Sign in / re-authenticate**, under the Spotify submenu, signs in, in a browser or with a pair code confirmed on any device; **Install tools**, under the YouTube tools submenu, sets up YouTube; and each bot has **Start**, **Stop**, **Restart**, **View Logs**, **Edit Config** and **Remove Server**. **Settings** covers update checks, launching on Windows startup and the saved-music limits.
 
 ### Linux (x86_64, Ubuntu 22.04+ / glibc)
 
@@ -92,6 +92,16 @@ one during setup:
 
 ```bash
 ttspotify
+```
+
+To sign in to Spotify, or switch accounts. It asks how: in a browser on this
+machine, or with a pair code you confirm at spotify.com/pair on any device,
+such as a phone, which suits a server with no browser. `ttspotify auth code`
+and `ttspotify auth browser` skip the question, and `ttspotify auth status`
+checks the saved login:
+
+```bash
+ttspotify auth
 ```
 
 To install the YouTube tools (Deno, the JavaScript runtime YouTube playback
