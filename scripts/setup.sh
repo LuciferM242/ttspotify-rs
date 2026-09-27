@@ -60,16 +60,46 @@ install_deps() {
     esac
 }
 
-# Install Rust via rustup
+# The oldest Rust that builds the locked dependencies, from Cargo.toml.
+MIN_RUST=$(grep -m1 '^rust-version' "$(dirname "$0")/../Cargo.toml" 2>/dev/null | cut -d'"' -f2)
+if [ -z "$MIN_RUST" ]; then
+    error "Cargo.toml not found next to this script's folder. Run it from a checkout of the repository."
+    exit 1
+fi
+
+rust_is_new_enough() {
+    local have
+    have=$(rustc --version 2>/dev/null | awk '{print $2}')
+    [ -n "$have" ] && [ "$(printf '%s\n%s\n' "$MIN_RUST" "$have" | sort -V | head -n1)" = "$MIN_RUST" ]
+}
+
+# Install Rust via rustup. A distribution's packaged Rust (apt's rustc on
+# Debian, say) is often older than the dependencies need, so any Rust is not
+# enough: an old one is updated, or replaced by rustup's.
 install_rust() {
-    if command -v rustc &>/dev/null; then
+    if command -v rustc &>/dev/null && rust_is_new_enough; then
         info "Rust already installed: $(rustc --version)"
+        return
+    fi
+    if command -v rustc &>/dev/null; then
+        warn "$(rustc --version) is too old; this needs Rust $MIN_RUST or newer."
+    fi
+    if command -v rustup &>/dev/null; then
+        info "Updating Rust via rustup..."
+        rustup update stable
     else
         info "Installing Rust via rustup..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-        info "Rust installed: $(rustc --version)"
     fi
+    # Puts rustup's Rust ahead of a packaged one for the rest of this script.
+    source "$HOME/.cargo/env"
+    if ! rust_is_new_enough; then
+        error "Still on $(rustc --version). Run 'rustup default stable', or remove the"
+        error "distribution's Rust package, then run this script again."
+        exit 1
+    fi
+    info "Rust ready: $(rustc --version)"
+    warn "Open a new terminal, or run 'source ~/.cargo/env', before building."
 }
 
 echo ""

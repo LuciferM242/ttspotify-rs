@@ -358,6 +358,9 @@ Admin-only (see [Admin permissions](#admin-permissions)):
 
 ## Building from source
 
+Building needs Rust 1.88 or newer. A distribution's packaged Rust is often
+older, so the setup scripts below install or update it through rustup.
+
 Build prerequisites — **Linux:** gcc, pkg-config, libssl-dev, libclang-dev, and
 the runtime libraries listed under Installation (libpulse and ALSA).
 **Windows:** Visual Studio Build Tools with the **Desktop development with C++**
