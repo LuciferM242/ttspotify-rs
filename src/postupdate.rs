@@ -36,7 +36,10 @@ pub fn reconcile(mode: Mode) {
     crate::config::top_up_configs();
 
     #[cfg(target_os = "linux")]
-    reconcile_unit(mode);
+    {
+        reconcile_unit(mode);
+        repoint_unit(mode);
+    }
 
     check_youtube_tools(mode);
 }
@@ -73,6 +76,63 @@ fn reconcile_unit(mode: Mode) {
             }
         }
     }
+}
+
+/// Point the service at this binary when it still runs another copy.
+///
+/// A bot set up from a download ran its service from the download, and an
+/// update replaces only the installed copy, so after an update the bots stayed
+/// on the old version while `--version` reported the new one.
+#[cfg(target_os = "linux")]
+fn repoint_unit(mode: Mode) {
+    let Some(unit) = crate::service::installed_unit() else {
+        return;
+    };
+    let Some(runs) = crate::service::exec_start_binary(&unit) else {
+        return;
+    };
+    let Ok(this) = std::env::current_exe() else {
+        return;
+    };
+    let installed = crate::install::installed_binary();
+    if !needs_repoint(std::path::Path::new(&runs), &this, installed.as_deref()) {
+        return;
+    }
+    let shown = this.display();
+    match mode {
+        Mode::Startup => tracing::warn!(
+            "The systemd service runs {runs}, not this copy ({shown}), so bots started by it do \
+             not get this version. To point it here, {}",
+            crate::hints::install_service()
+        ),
+        Mode::Interactive => {
+            println!();
+            println!("Your systemd service runs {runs},");
+            println!("not {shown}, the copy that was just updated, so your bots would stay on the old version.");
+            if prompt_yes_no("Point the service at the updated copy?") {
+                match crate::service::write_unit_file_for(&this) {
+                    Ok(_) => println!("Service file updated."),
+                    Err(e) => println!(
+                        "Could not update the service file: {e}. To do it later, {}",
+                        crate::hints::install_service()
+                    ),
+                }
+            } else {
+                println!("Left as it is. To do it later, {}", crate::hints::install_service());
+            }
+        }
+    }
+}
+
+/// Whether a service running `unit_binary` should be pointed at `this`: only
+/// when they differ and `this` is the installed copy, never a download that
+/// happened to run the update.
+#[cfg(target_os = "linux")]
+fn needs_repoint(unit_binary: &std::path::Path, this: &std::path::Path, installed: Option<&std::path::Path>) -> bool {
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || std::fs::canonicalize(a).ok().is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+    };
+    !same(unit_binary, this) && installed.is_some_and(|installed| same(installed, this))
 }
 
 /// YouTube tools installed by a version that played through yt-dlp do not
@@ -119,4 +179,30 @@ fn prompt_yes_no(message: &str) -> bool {
         return false;
     }
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::needs_repoint;
+    use std::path::Path;
+
+    #[test]
+    fn a_service_on_a_download_is_pointed_at_the_updated_install() {
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(needs_repoint(Path::new("/home/u/Downloads/tt-spotify-bot"), installed, Some(installed)));
+    }
+
+    #[test]
+    fn a_service_already_on_this_copy_is_left_alone() {
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(!needs_repoint(installed, installed, Some(installed)));
+    }
+
+    #[test]
+    fn a_download_that_ran_the_update_is_never_made_the_service() {
+        let download = Path::new("/home/u/Downloads/tt-spotify-bot");
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(!needs_repoint(installed, download, Some(installed)));
+        assert!(!needs_repoint(Path::new("/opt/old"), download, None));
+    }
 }

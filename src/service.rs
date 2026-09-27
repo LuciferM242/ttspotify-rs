@@ -257,7 +257,9 @@ pub fn install_service() -> Result<(), BotError> {
         return Ok(());
     }
 
+    let ran = installed_unit().and_then(|unit| exec_start_binary(&unit));
     let config_base = write_unit_file()?;
+    let runs = installed_unit().and_then(|unit| exec_start_binary(&unit));
 
     println!();
     println!("TTSpotify service installed.");
@@ -300,6 +302,16 @@ pub fn install_service() -> Result<(), BotError> {
     let configs = list_configs();
     for (name, _) in configs {
         offer_enable_instance(&name);
+    }
+
+    // Enabling a bot that is already running leaves it on the program it
+    // started from, so a changed binary only reaches it through a restart.
+    if let (Some(ran), Some(runs)) = (&ran, &runs) {
+        if ran != runs && !running_bot_units().is_empty() {
+            println!();
+            println!("The service now runs {runs}; running bots still run {ran} until they restart.");
+            offer_restart_running_bots();
+        }
     }
 
     Ok(())
