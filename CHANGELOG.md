@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-09-27
 
 **Upgrading: YouTube now plays through a small bundled helper that runs on
 Deno instead of yt-dlp. Say yes when the update offers to install the new
