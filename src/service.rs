@@ -613,6 +613,22 @@ pub fn running_bot_units() -> Vec<String> {
     }
 }
 
+/// The program each running bot unit executes, as the kernel reports it. A
+/// file replaced after the bot started reads as `<path> (deleted)`.
+pub fn running_bot_binaries() -> Vec<String> {
+    running_bot_units()
+        .iter()
+        .filter_map(|unit| {
+            let out = Command::new("systemctl")
+                .args(["--user", "show", unit, "-p", "MainPID", "--value"])
+                .output()
+                .ok()?;
+            let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok().filter(|pid| *pid > 0)?;
+            std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|exe| exe.display().to_string())
+        })
+        .collect()
+}
+
 /// What systemd thinks of one instance, beyond "is it in the running list".
 ///
 /// "Running or not" was the whole answer before, and it made the commonest

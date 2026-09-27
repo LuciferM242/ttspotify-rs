@@ -299,8 +299,82 @@ pub async fn install(
     // 3. Warm the dependency cache.
     warm_dependency_cache(paths, &progress);
 
+    // 4. What the yt-dlp versions installed here. Only a move from the old
+    // exe-side folder dropped it, so an install that was already in place kept
+    // it for good.
+    drop_old_tools(&paths.lib_dir, &progress);
+
     progress(&format!("YouTube support ready in {}", paths.lib_dir.display()));
     Ok(())
+}
+
+/// Who still plays through the yt-dlp tools.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum OldToolsUser {
+    /// The systemd service runs this other copy of the bot.
+    Service(String),
+    /// A running bot is executing another program, usually the version an
+    /// update just replaced.
+    RunningBot,
+}
+
+/// Remove the yt-dlp tools once nothing that plays through them is left. An
+/// older copy of the bot loses YouTube with them, so they stay while the
+/// service runs one or a running bot still is one.
+pub fn drop_old_tools(dir: &Path, progress: &impl Fn(&str)) {
+    if !dead_item_names().iter().any(|name| dir.join(name).exists()) {
+        return;
+    }
+    match old_tools_user() {
+        Some(OldToolsUser::Service(other)) => progress(&format!(
+            "  Kept the old yt-dlp tools: your service still runs {other}, which plays through them."
+        )),
+        Some(OldToolsUser::RunningBot) => progress(
+            "  Kept the old yt-dlp tools while a bot still runs the old version. They are removed once it restarts.",
+        ),
+        None => {
+            if remove_dead_items(dir) {
+                progress("  Removed the old yt-dlp tools, which nothing uses any more.");
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn old_tools_user() -> Option<OldToolsUser> {
+    let this = std::env::current_exe().ok()?;
+    let same = |other: &str| {
+        Path::new(other) == this
+            || std::fs::canonicalize(other).ok().is_some_and(|a| std::fs::canonicalize(&this).ok() == Some(a))
+    };
+    if let Some(runs) = crate::service::installed_unit().and_then(|unit| crate::service::exec_start_binary(&unit)) {
+        if !same(&runs) {
+            return Some(OldToolsUser::Service(runs));
+        }
+    }
+    crate::service::running_bot_binaries()
+        .iter()
+        .any(|running| !same(running))
+        .then_some(OldToolsUser::RunningBot)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn old_tools_user() -> Option<OldToolsUser> {
+    None
+}
+
+/// Remove what older versions installed and nothing reads any more. Whether
+/// anything was there to remove.
+fn remove_dead_items(dir: &Path) -> bool {
+    let mut removed = false;
+    for name in dead_item_names() {
+        let path = dir.join(name);
+        if path.exists() {
+            remove_item(&path, name);
+            removed |= !path.exists();
+        }
+    }
+    removed
 }
 
 /// The Deno release asset for this platform. Deno ships one zip per target,
@@ -566,6 +640,7 @@ pub async fn update_js_runtime(
     paths: &YoutubeSetupPaths,
     progress: impl Fn(&str),
 ) -> Result<(), BotError> {
+    drop_old_tools(&paths.lib_dir, &progress);
     if let JsRuntime::OnPath = find_js_runtime(paths) {
         let version = which("deno").and_then(|exe| deno_version_of(&exe));
         progress(&format!("  {}", system_deno_update_note(version)));
@@ -773,6 +848,20 @@ mod tests {
                 std::fs::write(legacy.join(name), *name).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn installing_in_place_drops_the_yt_dlp_tools_and_keeps_the_rest() {
+        let dir = mig_tmp("in_place").join("lib");
+        fake_legacy_install(&dir);
+        assert!(remove_dead_items(&dir));
+        for name in dead_item_names() {
+            assert!(!dir.join(name).exists(), "{name} left behind");
+        }
+        for name in live_item_names() {
+            assert!(dir.join(name).exists(), "{name} was removed");
+        }
+        assert!(!remove_dead_items(&dir), "nothing left to remove the second time");
     }
 
     #[test]

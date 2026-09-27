@@ -142,7 +142,17 @@ fn check_youtube_tools(mode: Mode) {
     let Ok(paths) = setup::resolve_paths() else {
         return;
     };
-    if !setup::has_legacy_tools(&paths) || setup::is_installed(&paths) {
+    if setup::is_installed(&paths) {
+        // The yt-dlp tools can outlive the upgrade: they stay while a bot is
+        // still on the old version, and a bot starting on this one is what
+        // notices they are free to go.
+        match mode {
+            Mode::Startup => setup::drop_old_tools(&paths.lib_dir, &|line| tracing::info!("{}", line.trim())),
+            Mode::Interactive => setup::drop_old_tools(&paths.lib_dir, &|line| println!("{line}")),
+        }
+        return;
+    }
+    if !setup::has_legacy_tools(&paths) {
         return;
     }
     match mode {
