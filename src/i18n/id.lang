@@ -15,6 +15,8 @@ loading_track = Memuat trek...
 nothing_to_play = Tidak ada yang dapat diputar. Gunakan: p <pencarian>
 restarting_track = Memulai ulang trek
 loading_liked = Memuat lagu yang disukai...
+liked_needs_cookies = Belum masuk ke YouTube.
+liked_sign_in_rejected = Sesi masuk YouTube sudah kedaluwarsa.
 nothing_playing = Tidak ada yang sedang diputar
 current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
 search_cancelled = Pencarian dibatalkan
@@ -26,7 +28,7 @@ volume_show = Volume: {percent}% (maks: {max})
 volume_range = Volume harus 0-{max}. Diminta: {got}
 seek_forward = Maju {seconds}s
 seek_backward = Mundur {seconds}s
-seek_usage = Penggunaan: sf [detik] / sb [detik]
+seek_usage = Penggunaan: sf [detik] / sb [detik] / seek <detik>
 
 # Antrean
 
@@ -70,6 +72,15 @@ already_on_service = Sudah berada di {service}
 switched_service = Beralih ke {service}
 service_not_enabled = {service} tidak diaktifkan pada bot ini
 
+# Pustaka
+
+loading_library = Memuat playlist Anda...
+library_header = Playlist Anda:
+library_entry = {name} ({count} trek)
+library_empty = Tidak ada playlist di pustaka Anda
+library_no_match = Tidak ada playlist yang cocok dengan {query}
+library_failed = Tidak dapat memuat playlist Anda: {error}
+
 # Bot
 
 nickname = Nama panggilan: {name}
@@ -90,7 +101,6 @@ queued_one = Diantrean: {track}{upcoming}{more}
 already_queued_loading_rest = Sudah di antrean, memuat sisanya
 already_in_queue = Sudah ada di antrean
 search_failed = Pencarian gagal: {error}
-radio_fetching = Radio: mengambil rekomendasi...
 radio_playing = Radio: {track}
 radio_no_recs = Radio: rekomendasi tidak ditemukan
 radio_failed = Radio gagal: {error}
@@ -99,13 +109,16 @@ invalid_pick = Pilihan tidak valid atau tidak ada hasil pencarian
 channel_not_found = Saluran tidak ditemukan: {path}
 failed_to_start = Gagal memutar trek: {track}
 
+youtube_not_set_up = YouTube belum bisa diputar di sini: alatnya belum terpasang di mesin ini. Untuk memperbaikinya, {fix}
+
 # Teks bantuan
 
 help_overview_playback = Pemutaran:\n  p <pencarian>  Cari dan putar trek, playlist, atau album\n  p               Beralih putar/jeda\n  s               Hentikan pemutaran dan kosongkan antrean\n  n               Trek berikutnya\n  o               Trek sebelumnya\n  replay          Mulai ulang trek saat ini\n  c               Tampilkan info trek saat ini\n\nAntrean:\n  queue           Tampilkan antrean\n  queue clear     Hapus trek mendatang\n  queue rm <N>    Hapus trek mendatang ke-N\n\nMode:\n  mode [r|rq|off]     Atur mode pengulangan\n  shuffle [on|off]    Acak trek mendatang
 
-help_overview_spotify =   radio [on|off]      Beralih radio (rekomendasi otomatis)\n  liked               Putar Lagu yang Disukai (juga: fav)
+help_overview_spotify =   radio [on|off]      Beralih radio (rekomendasi otomatis)\n  liked               Putar lagu yang disukai (juga: fav)
+help_overview_library =   library [kata]      Tampilkan playlist Anda, atau putar yang cocok
 
-help_overview_rest = \nAudio:\n  v [0-100]       Lihat atau atur volume\n  sf/sb [N]       Maju/mundur N detik\n\nPencarian:\n  search <pencarian>  Cari dan pilih dari hasil\n  <nomor>         Pilih hasil pencarian\n  a / cancel      Batalkan pencarian\n\nLayanan:\n  /sp             Beralih ke Spotify\n  /yt             Beralih ke YouTube\n\nBot:\n  link         Dapatkan URL trek saat ini\n  stats        Tampilkan waktu aktif dan statistik sesi\n  lang         Lihat atau atur bahasa Anda\n  cn <nama>    Ubah nama panggilan\n  gender       Atur jenis kelamin bot\n  info         Info bot
+help_overview_rest = \nAudio:\n  v [0-100]       Lihat atau atur volume\n  sf/sb [N]       Maju/mundur N detik\n  seek <N>        Lompat ke detik ke-N trek\n\nPencarian:\n  search <pencarian>  Cari dan pilih dari hasil\n  <nomor>         Pilih hasil pencarian\n  a / cancel      Batalkan pencarian\n\nLayanan:\n  /sp             Beralih ke Spotify\n  /yt             Beralih ke YouTube\n\nBot:\n  link         Dapatkan URL trek saat ini\n  stats        Tampilkan waktu aktif dan statistik sesi\n  lang         Lihat atau atur bahasa Anda\n  cn <nama>    Ubah nama panggilan\n  gender       Atur jenis kelamin bot\n  info         Info bot
 
 help_overview_admin =   jc <jalur>   Masuk saluran\n  glang        Atur bahasa bawaan server\n  rs           Mulai ulang bot\n  q            Keluar
 
@@ -133,11 +146,12 @@ help_shuffle = shuffle [on|off]\n  shuffle       Aktifkan atau matikan pengacaka
 
 help_volume = v / volume [0-100]\n  v          Tampilkan volume saat ini\n  v 50       Atur volume ke 50%\n  v50        Atur volume ke 50% (tanpa spasi)\n  volume 30  Atur volume ke 30%\nVolume dibatasi oleh volume maksimum yang dikonfigurasi.
 
-help_seek = sf / sb [detik]\n  sf         Maju 10 detik (bawaan)\n  sb         Mundur 10 detik (bawaan)\n  sf30       Maju 30 detik\n  sb 5       Mundur 5 detik
+help_seek = sf / sb [detik]\n  sf         Maju 10 detik (bawaan)\n  sb         Mundur 10 detik (bawaan)\n  sf30       Maju 30 detik\n  sb 5       Mundur 5 detik\n  seek 600   Lompat ke menit ke-10 trek
 
 help_search = search <pencarian>\n  Cari dan tampilkan hasil. Kemudian:\n  <nomor>    Pilih hasil untuk diputar/diantrekan\n  a / cancel Batalkan hasil pencarian\nContoh:\n  search photograph\n  2          Putar hasil ke-2
 
-help_radio = radio [on|off]\n  radio on   Aktifkan mode radio. Ketika satu trek selesai\n             dan tidak ada trek tersisa, secara otomatis mengambil\n             rekomendasi berdasarkan trek terakhir.\n             Tidak berlaku untuk playlist atau album.\n  radio off  Nonaktifkan mode radio.\n  radio      Tampilkan status radio saat ini.
+help_radio = radio [on|off]\n  radio on   Aktifkan mode radio. Ketika antrean habis,\n             secara otomatis mengambil rekomendasi berdasarkan\n             album atau playlist Spotify asalnya,\n             atau trek terakhir.\n             Tidak berlaku untuk playlist YouTube.\n  radio off  Nonaktifkan mode radio.\n  radio      Tampilkan status radio saat ini.
+help_liked = liked / fav\nPutar lagu yang disukai dari layanan aktif.\n  Spotify: Lagu yang Disukai Anda.\n  YouTube: lagu yang disukai di YouTube Music. Memerlukan file cookies dengan sesi masuk.
 
 help_link = link / url\nDapatkan URL untuk trek yang sedang diputar.\nBuka di aplikasi layanan atau bagikan dengan orang lain.
 

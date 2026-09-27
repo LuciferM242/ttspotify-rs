@@ -1190,6 +1190,7 @@ mod tests {
     #[case("es")]
     #[case("pt")]
     #[case("ru")]
+    #[case("id")]
     fn every_language_has_its_own_help(#[case] lang: &str) {
         // A missing key falls back to English, so identical output means the
         // translation is absent rather than merely similar.
@@ -1212,6 +1213,7 @@ mod tests {
     #[case("es")]
     #[case("pt")]
     #[case("ru")]
+    #[case("id")]
     fn every_language_has_per_topic_help(#[case] lang: &str) {
         let i18n = test_i18n(lang);
         let english = test_i18n("en");
