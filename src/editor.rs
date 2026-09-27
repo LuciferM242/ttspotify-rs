@@ -323,6 +323,7 @@ fn edit_services(config: &mut BotConfig) {
         }
         let Some(country) = ask_locale(
             "YouTube search location",
+            crate::wizard::SEARCH_LOCATION_INTRO,
             &config.youtube_country,
             &locale::country_options(),
             locale::search_countries,
@@ -331,6 +332,7 @@ fn edit_services(config: &mut BotConfig) {
         };
         let Some(language) = ask_locale(
             "YouTube language",
+            "",
             &config.youtube_language,
             &locale::language_options(),
             locale::search_languages,

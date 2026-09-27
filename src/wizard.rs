@@ -154,7 +154,10 @@ pub(crate) fn ask_kick_delay(current: Option<u32>) -> Option<Option<u32>> {
 /// What a typed YouTube location or language asks for.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LocaleAnswer {
+    /// Kept, or reset to YouTube's default: nothing to confirm.
     Code(String),
+    /// The one entry a search matched, to be confirmed before it is used.
+    Found(LocaleOption),
     ListAll,
     Several(Vec<LocaleOption>),
     Unknown,
@@ -171,18 +174,24 @@ pub fn answer_locale(input: &str, current: &str, search: fn(&str) -> Vec<LocaleO
             let mut found = search(typed);
             match found.len() {
                 0 => LocaleAnswer::Unknown,
-                1 => LocaleAnswer::Code(found.remove(0).code),
+                1 => LocaleAnswer::Found(found.remove(0)),
                 _ => LocaleAnswer::Several(found),
             }
         }
     }
 }
 
+/// Leads the search location question.
+pub(crate) const SEARCH_LOCATION_INTRO: &str = "YouTube Music ranks songs by where the search comes from.";
+
 /// Most matches read out before asking for more of the name instead.
 const MATCHES_SHOWN: usize = 10;
 
+/// Ask for a YouTube location or language. `intro`, when not empty, leads
+/// the question and is shown again whenever the question is.
 pub(crate) fn ask_locale(
     prompt: &str,
+    intro: &str,
     current: &str,
     options: &[LocaleOption],
     search: fn(&str) -> Vec<LocaleOption>,
@@ -193,8 +202,14 @@ pub(crate) fn ask_locale(
             .find(|o| o.code.eq_ignore_ascii_case(code))
             .map_or_else(|| code.to_string(), |o| o.label.clone())
     };
-    println!("  {prompt}: {}", label(current));
-    println!("  Type a name or code to change it, - for YouTube's default, ? to list them all.");
+    let show_question = || {
+        if !intro.is_empty() {
+            println!("  {intro}");
+        }
+        println!("  {prompt}: {}", label(current));
+        println!("  Type a name or code to change it, - for YouTube's default, ? to list them all.");
+    };
+    show_question();
     loop {
         let raw = ask("Name or code, Enter keeps it", "", false)?;
         match answer_locale(&raw, current, search) {
@@ -203,6 +218,16 @@ pub(crate) fn ask_locale(
                     println!("    Chosen: {}", label(&code));
                 }
                 return Some(code);
+            }
+            // A code or part of a name can match something unexpected, so the
+            // match is read back; no asks the same question again.
+            LocaleAnswer::Found(found) if found.code == current => return Some(found.code),
+            LocaleAnswer::Found(found) => {
+                if ask_bool(&format!("{}, is that right", found.label), true)? {
+                    return Some(found.code);
+                }
+                println!();
+                show_question();
             }
             LocaleAnswer::ListAll => options.iter().for_each(|o| println!("    {}", o.label)),
             LocaleAnswer::Several(found) if found.len() > MATCHES_SHOWN => {
@@ -364,15 +389,15 @@ pub fn run_wizard(
             config.youtube_cookies_file = path;
         }
         println!();
-        println!("  YouTube Music ranks songs by where the search comes from.");
         config.youtube_country = or_cancel!(ask_locale(
             "Search location",
+            SEARCH_LOCATION_INTRO,
             "",
             &locale::country_options(),
             locale::search_countries
         ));
         config.youtube_language =
-            or_cancel!(ask_locale("Language", "", &locale::language_options(), locale::search_languages));
+            or_cancel!(ask_locale("Language", "", "", &locale::language_options(), locale::search_languages));
     }
 
     println!();
@@ -748,10 +773,15 @@ mod prompt_tests {
         assert_eq!(answer_locale("", "IN", countries), LocaleAnswer::Code("IN".into()));
         assert_eq!(answer_locale(" - ", "IN", countries), LocaleAnswer::Code(String::new()));
         assert_eq!(answer_locale("?", "IN", countries), LocaleAnswer::ListAll);
-        assert_eq!(answer_locale("germany", "", countries), LocaleAnswer::Code("DE".into()));
-        assert_eq!(answer_locale("ger", "", countries), LocaleAnswer::Code("DE".into()));
+        let found = |answer: LocaleAnswer| match answer {
+            LocaleAnswer::Found(option) => option.code,
+            other => panic!("expected one match to confirm, got {other:?}"),
+        };
+        assert_eq!(found(answer_locale("germany", "", countries)), "DE");
+        assert_eq!(found(answer_locale("ger", "", countries)), "DE");
+        assert_eq!(found(answer_locale("de", "", countries)), "DE");
         assert_eq!(answer_locale("Atlantis", "IN", countries), LocaleAnswer::Unknown);
-        assert_eq!(answer_locale("en-gb", "", locale::search_languages), LocaleAnswer::Code("en-GB".into()));
+        assert_eq!(found(answer_locale("en-gb", "", locale::search_languages)), "en-GB");
     }
 
     #[test]
