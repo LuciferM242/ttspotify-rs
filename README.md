@@ -18,7 +18,9 @@ Tracks, albums, playlists, search, and radio recommendations.
 
 ### YouTube
 
-Videos, Shorts, playlists, albums, and search. Audio is fetched by a small
+Videos, Shorts, playlists, albums, search, and autoplay. "Start radio" and mix
+links play as the station they name, and a link with a time (`t=90`) starts
+there. Audio is fetched by a small
 helper built on [youtubei.js](https://github.com/LuanRT/YouTube.js), which the
 YouTube tools install sets up.
 
@@ -170,7 +172,8 @@ binary in place. No manual re-download needed.
 - **Windows:** the tray checks on startup and offers the update; there's also
   a **Check for updates** item in the tray menu.
 - **Linux:** run `ttspotify update`. It brings your service file up to date,
-  and if bots are running as systemd services, it offers to restart them on the
+  offers to point a bot that still runs from its download at the updated copy,
+  and if bots are running as systemd services, offers to restart them on the
   new version.
 
 Updating the YouTube tools (Deno) is separate: `ttspotify yt update`, or
@@ -333,6 +336,7 @@ Send these to the bot in a **private message** — it only responds to PMs, not 
 | `shuffle [on\|off]` | Shuffle what is coming; no argument toggles it. Works alongside repeat |
 | `v [0-100]` | Get or set volume |
 | `sf [N]` / `sb [N]` | Seek forward / backward N seconds (default 10) |
+| `seek <N>` | Go to N seconds into the track |
 | `search <query>` | Search, then type a number to pick (`a` to cancel) |
 | `pick <N>` | Pick from the last search by number |
 | `radio [on\|off]` | Toggle recommendations when the queue runs out (autoplay on YouTube) |
