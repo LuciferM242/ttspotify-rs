@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "youtubei.js": "npm:youtubei.js@18.0.0",
+    "bgutils-js": "npm:bgutils-js@3.2.0",
+    "jsdom": "npm:jsdom@25.0.1"
+  }
+}

@@ -23,9 +23,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --lib
+        run: cargo test --locked --lib
 
   check-windows:
     runs-on: windows-latest
@@ -39,6 +39,6 @@ jobs:
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Tests
-        run: cargo test --lib
+        run: cargo test --locked --lib

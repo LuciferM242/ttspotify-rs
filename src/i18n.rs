@@ -70,6 +70,8 @@ keys! {
     NothingToPlay => "nothing_to_play",
     RestartingTrack => "restarting_track",
     LoadingLiked => "loading_liked",
+    LikedNeedsCookies => "liked_needs_cookies",
+    LikedSignInRejected => "liked_sign_in_rejected",
     NothingPlaying => "nothing_playing",
     CurrentTrack => "current_track",
     SearchCancelled => "search_cancelled",
@@ -98,6 +100,7 @@ keys! {
     // Help text
     HelpOverviewPlayback => "help_overview_playback",
     HelpOverviewSpotify => "help_overview_spotify",
+    HelpOverviewLibrary => "help_overview_library",
     HelpOverviewRest => "help_overview_rest",
     HelpOverviewAdmin => "help_overview_admin",
     HelpOverviewFooter => "help_overview_footer",
@@ -115,6 +118,7 @@ keys! {
     HelpSeek => "help_seek",
     HelpSearch => "help_search",
     HelpRadio => "help_radio",
+    HelpLiked => "help_liked",
     HelpLink => "help_link",
     HelpStats => "help_stats",
     HelpJc => "help_jc",
@@ -131,6 +135,13 @@ keys! {
     SearchResultsFooter => "search_results_footer",
     PickUsage => "pick_usage",
     PickTooLow => "pick_too_low",
+    // Library
+    LoadingLibrary => "loading_library",
+    LibraryHeader => "library_header",
+    LibraryEntry => "library_entry",
+    LibraryEmpty => "library_empty",
+    LibraryNoMatch => "library_no_match",
+    LibraryFailed => "library_failed",
     // Radio
     RadioAlreadyOn => "radio_already_on",
     RadioEnabled => "radio_enabled",
@@ -159,7 +170,6 @@ keys! {
     AlreadyQueuedLoadingRest => "already_queued_loading_rest",
     AlreadyInQueue => "already_in_queue",
     SearchFailed => "search_failed",
-    RadioFetching => "radio_fetching",
     RadioPlaying => "radio_playing",
     RadioNoRecs => "radio_no_recs",
     RadioFailed => "radio_failed",
@@ -167,6 +177,7 @@ keys! {
     InvalidPick => "invalid_pick",
     ChannelNotFound => "channel_not_found",
     FailedToStart => "failed_to_start",
+    YoutubeNotSetUp => "youtube_not_set_up",
 }
 
 /// Parse `.lang` file text into a key -> template map.

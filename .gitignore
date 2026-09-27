@@ -5,6 +5,10 @@
 /data/
 *.credentials.json
 
+# Release signing key. Committed ignore rule, not .git/info/exclude: that one
+# never leaves the clone it was written in.
+minisign.key
+
 # Claude Code
 /.claude/
 CLAUDE.md

@@ -14,24 +14,25 @@ use std::process::Command;
 
 use crate::config::BotConfig;
 
-/// The shared library the TeamTalk SDK links against. Without it the SDK
+/// Shared libraries the TeamTalk SDK links against. Without either one the SDK
 /// refuses to initialise, and the error it gives says nothing about audio.
 const PULSE_SONAME: &str = "libpulse.so.0";
+const ALSA_SONAME: &str = "libasound.so.2";
 
-/// Pull the resolved path for libpulse out of `ldconfig -p` output.
+/// Pull the resolved path for a library out of `ldconfig -p` output.
 ///
 /// Lines look like `libpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0`.
-fn libpulse_from_ldconfig(output: &str) -> Option<String> {
+fn library_from_ldconfig(output: &str, soname: &str) -> Option<String> {
     output
         .lines()
         .map(str::trim)
-        .filter(|line| line.starts_with(PULSE_SONAME))
+        .filter(|line| line.split_whitespace().next() == Some(soname))
         .find_map(|line| line.split("=>").nth(1))
         .map(|path| path.trim().to_string())
 }
 
-/// Places a distribution may keep the library when `ldconfig` is unavailable.
-fn fallback_pulse_paths() -> Vec<PathBuf> {
+/// Places a distribution may keep a library when `ldconfig` is unavailable.
+fn fallback_library_paths(soname: &str) -> Vec<PathBuf> {
     [
         "/usr/lib/x86_64-linux-gnu",
         "/usr/lib/aarch64-linux-gnu",
@@ -40,37 +41,78 @@ fn fallback_pulse_paths() -> Vec<PathBuf> {
         "/lib",
     ]
     .iter()
-    .map(|dir| Path::new(dir).join(PULSE_SONAME))
+    .map(|dir| Path::new(dir).join(soname))
     .collect()
 }
 
-/// Where libpulse is, if it is anywhere.
-pub fn libpulse_path() -> Option<String> {
+/// Where a library is, if it is anywhere.
+fn library_path(soname: &str) -> Option<String> {
     let from_ldconfig = Command::new("ldconfig")
         .arg("-p")
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .and_then(|o| libpulse_from_ldconfig(&String::from_utf8_lossy(&o.stdout)));
+        .and_then(|o| library_from_ldconfig(&String::from_utf8_lossy(&o.stdout), soname));
     if from_ldconfig.is_some() {
         return from_ldconfig;
     }
-    fallback_pulse_paths()
+    fallback_library_paths(soname)
         .into_iter()
         .find(|p| p.exists())
         .map(|p| p.display().to_string())
 }
 
-/// The sentence to add to an SDK startup failure when the library it needs is
-/// missing. `None` when libpulse is present and the failure is something else.
-pub fn libpulse_hint() -> Option<String> {
-    if libpulse_path().is_some() {
-        return None;
+/// The package that provides ALSA's library. Ubuntu 24.04 renamed it
+/// libasound2t64, and there `libasound2` is a virtual name apt refuses to pick.
+fn alsa_package() -> &'static str {
+    let renamed = Command::new("apt-cache")
+        .args(["show", "libasound2t64"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if renamed {
+        "libasound2t64"
+    } else {
+        "libasound2"
     }
+}
+
+/// The SDK's libraries that are missing, each with the package providing it.
+fn missing_libraries() -> Vec<(&'static str, &'static str)> {
+    let mut missing = Vec::new();
+    if library_path(PULSE_SONAME).is_none() {
+        missing.push((PULSE_SONAME, "libpulse0"));
+    }
+    if library_path(ALSA_SONAME).is_none() {
+        missing.push((ALSA_SONAME, alsa_package()));
+    }
+    missing
+}
+
+fn install_command(missing: &[(&str, &str)]) -> String {
+    let packages: Vec<&str> = missing.iter().map(|(_, package)| *package).collect();
+    format!("sudo apt install {}", packages.join(" "))
+}
+
+fn library_hint(missing: &[(&str, &str)]) -> Option<String> {
+    let names: Vec<&str> = missing.iter().map(|(soname, _)| *soname).collect();
+    let verb = match names.len() {
+        0 => return None,
+        1 => "is",
+        _ => "are",
+    };
     Some(format!(
-        "{PULSE_SONAME} is not installed - the TeamTalk SDK needs it. \
-         On Debian, Ubuntu and Raspberry Pi OS: sudo apt install libpulse0"
+        "{} {verb} not installed - the TeamTalk SDK needs it. \
+         On Debian, Ubuntu and Raspberry Pi OS: {}",
+        names.join(" and "),
+        install_command(missing)
     ))
+}
+
+/// The sentence to add to an SDK startup failure when a library it needs is
+/// missing. `None` when both are present and the failure is something else.
+pub fn missing_library_hint() -> Option<String> {
+    library_hint(&missing_libraries())
 }
 
 /// The SDK's shared library, the file whose presence means it was downloaded.
@@ -112,6 +154,15 @@ fn instance_state(
     }
 }
 
+/// The fix for a binary not on PATH. An installed copy only needs its folder
+/// added; telling it to install again names a command the shell cannot find.
+fn path_fix(installed_dir: Option<&Path>) -> String {
+    match installed_dir {
+        Some(dir) => format!("Add {} to your PATH - {}", dir.display(), crate::hints::add_to_path(dir)),
+        None => format!("Put the binary on your PATH - {}", crate::hints::install_binary()),
+    }
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -143,7 +194,9 @@ pub fn report() {
     );
     println!("  on PATH: {}", yes_no(on_path));
     if !on_path {
-        fixes.push(format!("Put the binary on your PATH - {}", crate::hints::install_binary()));
+        let installed = crate::install::installed_binary();
+        let installed_dir = exe.as_deref().filter(|e| installed.as_deref() == Some(*e)).and_then(Path::parent);
+        fixes.push(path_fix(installed_dir));
     }
 
     println!();
@@ -164,7 +217,7 @@ pub fn report() {
     let mut wants_spotify = false;
     let mut wants_youtube = false;
     for (name, path) in &configs {
-        let unit = format!("ttspotify@{name}.service");
+        let unit = crate::control::unit_for(name);
         let health = crate::service::unit_health(&unit);
         println!("  {name}: {}", instance_state(&unit, &running, &enabled, health));
         if matches!(
@@ -220,24 +273,25 @@ pub fn report() {
     }
 
     let tools = crate::youtube::setup::installed_tool_versions();
-    println!("  yt-dlp: {}", tools.yt_dlp.as_deref().unwrap_or("not installed"));
-    println!("  bgutil-pot: {}", tools.bgutil.as_deref().unwrap_or("not installed"));
+    let paths = crate::youtube::setup::resolve_paths().ok();
+    let script_present = paths
+        .as_ref()
+        .map(|p| p.lib_dir.join(crate::youtube::sidecar::SCRIPT_NAME).is_file())
+        .unwrap_or(false);
     println!(
         "  JavaScript runtime: {}",
-        tools.js_runtime.as_deref().unwrap_or("none - some YouTube formats will be unavailable")
+        tools.js_runtime.as_deref().unwrap_or("none - YouTube playback cannot start")
     );
-    if wants_youtube && tools.yt_dlp.is_none() {
-        fixes.push(format!("Install the YouTube tools - {}", crate::hints::install_youtube_tools()));
-    }
-    // An install from before yt-dlp needed a JavaScript runtime reports every
-    // tool present and still fails on most tracks. Naming the problem without
-    // naming the cure sent people looking for a bug instead of running one
-    // command.
-    if wants_youtube && tools.yt_dlp.is_some() && tools.js_runtime.is_none() {
-        fixes.push(format!(
-            "Add the JavaScript runtime YouTube needs - {}",
-            crate::hints::update_youtube_tools()
-        ));
+    println!(
+        "  YouTube sidecar: {}",
+        if script_present { "installed" } else { "not installed" }
+    );
+    if wants_youtube {
+        // Both halves are needed: the sidecar is a Deno program, so either
+        // one missing stops playback entirely.
+        if let Some(what) = youtube_tools_status(tools.js_runtime.is_some(), script_present) {
+            fixes.push(what);
+        }
     }
 
     let settings = crate::settings::load();
@@ -260,13 +314,15 @@ pub fn report() {
 
     println!();
     println!("System");
-    let pulse = libpulse_path();
-    println!(
-        "  {PULSE_SONAME}: {}",
-        pulse.as_deref().unwrap_or("MISSING - the bot cannot start without it")
-    );
-    if pulse.is_none() {
-        fixes.push("Install the audio library: sudo apt install libpulse0".to_string());
+    for soname in [PULSE_SONAME, ALSA_SONAME] {
+        println!(
+            "  {soname}: {}",
+            library_path(soname).as_deref().unwrap_or("MISSING - the bot cannot start without it")
+        );
+    }
+    let missing = missing_libraries();
+    if !missing.is_empty() {
+        fixes.push(format!("Install the audio libraries: {}", install_command(&missing)));
     }
 
     // `main` pins TEAMTALK_SDK_DIR before anything loads the SDK, so that is
@@ -344,6 +400,17 @@ pub fn report() {
     }
 }
 
+/// The fix to list when YouTube playback cannot start. Both the runtime and the
+/// sidecar script are needed; either one missing stops every track.
+fn youtube_tools_status(runtime_present: bool, script_present: bool) -> Option<String> {
+    let install = crate::hints::install_youtube_tools();
+    match (runtime_present, script_present) {
+        (true, true) => None,
+        (false, _) => Some(format!("Install Deno, which YouTube playback runs on - {install}")),
+        (true, false) => Some(format!("Install the YouTube sidecar - {install}")),
+    }
+}
+
 fn describe_services(spotify: bool, youtube: bool) -> &'static str {
     match (spotify, youtube) {
         (true, true) => "Spotify and YouTube",
@@ -355,15 +422,49 @@ fn describe_services(spotify: bool, youtube: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::youtube_tools_status;
+
+    #[test]
+    fn an_installed_copy_off_path_is_told_to_add_its_folder_not_to_install() {
+        let fix = super::path_fix(Some(std::path::Path::new("/home/u/.local/bin")));
+        assert!(fix.contains("/home/u/.local/bin:$PATH"), "{fix}");
+        assert!(!fix.contains(" install"), "{fix}");
+        assert!(super::path_fix(None).contains(" install"));
+    }
+
+    #[test]
+    fn nothing_to_say_when_both_halves_are_present() {
+        assert_eq!(youtube_tools_status(true, true), None);
+    }
+
+    #[test]
+    fn a_missing_runtime_names_deno_not_the_old_tools() {
+        let msg = youtube_tools_status(false, true).expect("should report");
+        assert!(msg.contains("Deno"), "{msg}");
+        let lower = msg.to_lowercase();
+        assert!(!lower.contains("yt-dlp") && !lower.contains("bgutil"), "{msg}");
+    }
+
+    #[test]
+    fn a_missing_script_is_reported_separately() {
+        let msg = youtube_tools_status(true, false).expect("should report");
+        assert!(msg.contains("sidecar"), "{msg}");
+    }
+
     use super::*;
 
     #[test]
-    fn libpulse_is_read_from_the_ldconfig_line_for_it() {
+    fn a_library_is_read_from_the_ldconfig_line_for_it() {
         let out = "\tlibpulse-simple.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse-simple.so.0\n\
-                   \tlibpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0\n";
+                   \tlibpulse.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpulse.so.0\n\
+                   \tlibasound.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libasound.so.2\n";
         assert_eq!(
-            libpulse_from_ldconfig(out).as_deref(),
+            library_from_ldconfig(out, PULSE_SONAME).as_deref(),
             Some("/lib/x86_64-linux-gnu/libpulse.so.0")
+        );
+        assert_eq!(
+            library_from_ldconfig(out, ALSA_SONAME).as_deref(),
+            Some("/lib/x86_64-linux-gnu/libasound.so.2")
         );
     }
 
@@ -373,8 +474,19 @@ mod tests {
         // dependencies of something else; neither means libpulse.so.0 is.
         let out = "\tlibpulse-simple.so.0 (libc6,x86-64) => /lib/libpulse-simple.so.0\n\
                    \tlibpulsecommon-15.99.so (libc6,x86-64) => /lib/libpulsecommon-15.99.so\n";
-        assert_eq!(libpulse_from_ldconfig(out), None);
-        assert_eq!(libpulse_from_ldconfig(""), None);
+        assert_eq!(library_from_ldconfig(out, PULSE_SONAME), None);
+        assert_eq!(library_from_ldconfig("", PULSE_SONAME), None);
+    }
+
+    #[test]
+    fn the_hint_names_every_missing_library_in_one_install_command() {
+        assert_eq!(library_hint(&[]), None);
+        let alsa = library_hint(&[(ALSA_SONAME, "libasound2t64")]).unwrap();
+        assert!(alsa.starts_with("libasound.so.2 is not installed"), "{alsa}");
+        assert!(alsa.ends_with("sudo apt install libasound2t64"), "{alsa}");
+        let both = library_hint(&[(PULSE_SONAME, "libpulse0"), (ALSA_SONAME, "libasound2")]).unwrap();
+        assert!(both.starts_with("libpulse.so.0 and libasound.so.2 are not installed"), "{both}");
+        assert!(both.ends_with("sudo apt install libpulse0 libasound2"), "{both}");
     }
 
     #[test]

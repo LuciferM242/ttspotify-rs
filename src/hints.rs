@@ -24,7 +24,7 @@ pub fn create_bot() -> String {
 pub fn sign_in_spotify() -> String {
     #[cfg(windows)]
     {
-        "use Spotify sign-in in the tray menu".to_string()
+        "use Sign in / re-authenticate under Spotify in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -32,11 +32,23 @@ pub fn sign_in_spotify() -> String {
     }
 }
 
+/// How to sign in to Spotify where no browser can be opened.
+pub fn sign_in_spotify_without_browser() -> String {
+    #[cfg(windows)]
+    {
+        sign_in_spotify()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("run: {} auth code", crate::paths::program_name())
+    }
+}
+
 /// How to install the YouTube tools.
 pub fn install_youtube_tools() -> String {
     #[cfg(windows)]
     {
-        "use Install YouTube tools in the tray menu".to_string()
+        "use Install tools under YouTube tools in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -48,7 +60,7 @@ pub fn install_youtube_tools() -> String {
 pub fn update_youtube_tools() -> String {
     #[cfg(windows)]
     {
-        "use Update tools in the tray menu".to_string()
+        "use Update tools under YouTube tools in the tray menu".to_string()
     }
     #[cfg(not(windows))]
     {
@@ -81,6 +93,16 @@ pub fn install_binary() -> String {
     }
 }
 
+/// How to reach an installed binary whose folder is not on PATH yet, as with a
+/// `~/.local/bin` created after this login.
+#[cfg(target_os = "linux")]
+pub fn add_to_path(dir: &std::path::Path) -> String {
+    format!(
+        "open a new shell; if it is still missing, run: echo 'export PATH=\"{}:$PATH\"' >> ~/.profile",
+        dir.display()
+    )
+}
+
 /// How to run one bot in this terminal.
 pub fn run_bot(name: &str) -> String {
     #[cfg(windows)]
@@ -107,6 +129,12 @@ pub fn restart_bot(name: &str) -> String {
     }
 }
 
+/// How to see why a bot service is not running.
+#[cfg(target_os = "linux")]
+pub fn follow_log(name: &str) -> String {
+    format!("run: {} watch {name}", crate::paths::program_name())
+}
+
 /// How to change a bot's settings.
 pub fn edit_bot(name: &str) -> String {
     #[cfg(windows)]
@@ -130,6 +158,7 @@ mod tests {
         vec![
             ("create_bot", create_bot()),
             ("sign_in_spotify", sign_in_spotify()),
+            ("sign_in_spotify_without_browser", sign_in_spotify_without_browser()),
             ("install_youtube_tools", install_youtube_tools()),
             ("update_youtube_tools", update_youtube_tools()),
             ("install_service", install_service()),
@@ -174,6 +203,7 @@ mod tests {
         let expected = [
             ("create_bot", " add "),
             ("sign_in_spotify", " auth"),
+            ("sign_in_spotify_without_browser", " auth code"),
             ("install_youtube_tools", " yt install"),
             ("update_youtube_tools", " yt update"),
             ("install_service", " service install"),

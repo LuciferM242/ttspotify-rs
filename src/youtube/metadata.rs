@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::config::BotConfig;
 use crate::error::BotError;
-use crate::youtube::setup::{default_cookies_path, resolve_paths, which, YoutubeSetupPaths};
+use crate::youtube::setup::{default_cookies_path, resolve_paths, which};
 use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 
 /// Opaque continuation for a playlist whose first page has been returned but
@@ -14,6 +14,39 @@ use crate::youtube::types::{parse_youtube_ref, YouTubeRef, YouTubeTrack};
 /// `fetch_more_playlist` by the background loader.
 pub struct YtPlaylistRest {
     paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    /// Later pages of an account playlist are read signed in too.
+    signed_in: bool,
+}
+
+/// YouTube Music's playlist of the signed-in account's liked songs.
+const LIKED_MUSIC: &str = "LM";
+
+/// A live YouTube Music radio station: the paginator YouTube handed back, plus
+/// enough memory to know whether we are still inside it.
+///
+/// Held across top-ups so autoplay pages one station the way the YouTube Music
+/// app does, instead of starting a fresh station from whatever happens to be
+/// playing. Reseeding per batch drifts: measured from one seed, a station
+/// reseeded from its own fifth track shared only 11 of 50 tracks with the
+/// original.
+pub struct YtRadioStation {
+    paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    /// Fetched but not yet handed out.
+    buffer: std::collections::VecDeque<YouTubeTrack>,
+    /// The seed, plus every id this station has produced. Used to tell "still
+    /// playing our own station" from "the user has put on something else".
+    known: std::collections::HashSet<String>,
+    /// YouTube has no more pages. Stop asking.
+    exhausted: bool,
+}
+
+impl YtRadioStation {
+    /// Whether `video_id` is this station's seed or something it handed out.
+    /// A seed from anywhere else means the user moved on and the station
+    /// should be replaced rather than continued.
+    pub fn covers(&self, video_id: &str) -> bool {
+        self.known.contains(video_id)
+    }
 }
 
 /// Result of `resolve_paged`.
@@ -25,33 +58,36 @@ pub enum YtResolved {
         tracks: Vec<YouTubeTrack>,
         rest: Option<YtPlaylistRest>,
     },
+    /// A radio link: the track it starts on, and the station it belongs to.
+    /// The station id becomes the entry's context, so radio continues that
+    /// station instead of opening one from the video.
+    Radio { track: YouTubeTrack, radio_id: String },
 }
 
 /// YouTube Music metadata service.
 ///
 /// Search and track metadata go through rustypipe (fast, native).
-/// Stream URL resolution goes through `yt-dlp` because rustypipe's
-/// signature deobfuscator can't keep up with YouTube's player JS
+/// Audio fetching goes through the Deno sidecar (see `sidecar.rs`), because
+/// rustypipe's signature deobfuscator can't keep up with YouTube's player JS
 /// changes.
 pub struct YouTubeMetadata {
     client: Arc<RustyPipe>,
-    /// Path passed to `yt-dlp --cookies <file>`. Empty = don't pass.
+    /// Signed in with the cookies file, for the account's own library. Built on
+    /// first use and never stored: rustypipe would write the cookie to its cache file.
+    account: tokio::sync::OnceCell<Arc<RustyPipe>>,
+    country: Option<rustypipe::param::Country>,
+    language: Option<rustypipe::param::Language>,
+    /// Cookies file handed to the sidecar. Empty = don't pass one.
     /// Resolved at init: explicit config override → falls back to the
     /// default `<config_dir>/cookies.txt` if it exists → empty.
     cookies_file: String,
-    /// Resolved paths for the bundled binaries + plugin dir.
-    /// `Some` if the bot can find them; `None` falls back to PATH.
-    bundle: Option<YoutubeSetupPaths>,
-    /// Resolved yt-dlp executable path. PATH lookup happens once at
-    /// construction; falls back to the bundled binary or the bare name.
-    yt_dlp_exe: PathBuf,
+    /// Resolved Deno executable. The bundled copy wins so `youtube update`
+    /// stays in control; a new enough Deno already on PATH is used as-is
+    /// rather than downloading a second one.
+    deno_exe: PathBuf,
+    /// Where the sidecar script, its import map and its lockfile are written.
+    lib_dir: PathBuf,
 }
-
-/// The player clients tried in turn until one yields audio bytes.
-pub const PLAYER_CLIENTS: [&str; 3] = ["web_embedded", "tv_simply", "android_vr"];
-
-/// The client tried first. See [`PLAYER_CLIENTS`].
-pub const PRIMARY_CLIENT: &str = PLAYER_CLIENTS[0];
 
 /// `resolve_paths` looks beside the running executable; a test binary runs
 /// from `target/<profile>/deps`, one level below the real `lib/`.
@@ -59,52 +95,55 @@ pub const PRIMARY_CLIENT: &str = PLAYER_CLIENTS[0];
 pub fn find_bundled_tools() -> Option<crate::youtube::setup::YoutubeSetupPaths> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
-    let (yt_dlp_name, bgutil_name) = if cfg!(windows) {
-        ("yt-dlp.exe", "bgutil-pot.exe")
-    } else {
-        ("yt-dlp", "bgutil-pot")
-    };
     for _ in 0..3 {
         let lib_dir = dir.join("lib");
-        if lib_dir.join(yt_dlp_name).is_file() {
-            return Some(crate::youtube::setup::YoutubeSetupPaths {
-                yt_dlp: lib_dir.join(yt_dlp_name),
-                bgutil_pot: lib_dir.join(bgutil_name),
-                plugin_dir: lib_dir.join("yt-dlp-plugins"),
-                deno: lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" }),
-                lib_dir,
-            });
+        let deno = lib_dir.join(if cfg!(windows) { "deno.exe" } else { "deno" });
+        if deno.is_file() {
+            return Some(crate::youtube::setup::YoutubeSetupPaths { deno, lib_dir });
         }
         dir = dir.parent()?;
     }
     None
 }
 
-/// A metadata client pointed at the bundled tools, for tests that really fetch.
-/// `None` when the tools are not installed.
+/// A metadata client for tests that really fetch: the bundled tools when they
+/// are there, otherwise a Deno on PATH. `None` when there is no Deno at all.
 #[cfg(test)]
 pub fn for_tests() -> Option<YouTubeMetadata> {
-    let bundle = find_bundled_tools()?;
     let mut meta = YouTubeMetadata::new(&crate::config::BotConfig::default()).ok()?;
-    meta.yt_dlp_exe = bundle.yt_dlp.clone();
-    meta.bundle = Some(bundle);
+    if let Some(bundle) = find_bundled_tools() {
+        meta.deno_exe = bundle.deno.clone();
+        meta.lib_dir = bundle.lib_dir.clone();
+    } else if which(if cfg!(windows) { "deno.exe" } else { "deno" }).is_none() {
+        return None;
+    }
     Some(meta)
 }
 
 impl YouTubeMetadata {
     pub fn new(config: &BotConfig) -> Result<Self, BotError> {
-        // Keep rustypipe's cache (rustypipe_cache.json) in the config dir.
-        // The default is the process working directory, which under systemd
-        // may be unwritable (silently losing the cache) and during development
-        // litters the repo root.
-        let client = RustyPipe::builder()
+        // The cache goes in the data root: the working directory may be unwritable under systemd.
+        // YouTube Music ranks results by locale, so the configured one is applied.
+        let mut builder = RustyPipe::builder()
             .no_botguard()
-            .storage_dir(crate::paths::cache_dir())
+            .storage_dir(crate::paths::cache_dir());
+        let country = parse_country(&config.youtube_country);
+        let language = parse_language(&config.youtube_language);
+        if let Some(c) = country {
+            builder = builder.country(c);
+        }
+        if let Some(l) = language {
+            builder = builder.lang(l);
+        }
+        let client = builder
             .build()
             .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
         // Resolve bundled paths but don't require them — falling back to PATH
         // keeps the manual-install path working.
-        let bundle = resolve_paths().ok().filter(|p| p.yt_dlp.is_file());
+        // Not filtered on any tool being present: this only answers "where do
+        // the tools live", and the answer must not change because one of them
+        // has not been installed yet.
+        let bundle = resolve_paths().ok();
 
         // Cookies: explicit override wins; otherwise look for the default path.
         let cookies_file = if !config.youtube_cookies_file.is_empty() {
@@ -112,10 +151,7 @@ impl YouTubeMetadata {
             if configured.is_file() {
                 config.youtube_cookies_file.clone()
             } else if default_cookies_path().is_file() {
-                // The layout migration moved <root>/cookies.txt into config/
-                // but configs holding the old absolute path were not rewritten;
-                // without this rescue every yt-dlp spawn died on "unable to
-                // open cookie file" with nothing tying it to the move.
+                // Configs from before the layout migration still name <root>/cookies.txt.
                 let default = default_cookies_path();
                 tracing::warn!(
                     "YouTube: configured cookies file {} does not exist; using {} instead. Update youtubeCookiesFile in the config.",
@@ -124,14 +160,11 @@ impl YouTubeMetadata {
                 );
                 default.to_string_lossy().into_owned()
             } else {
-                // No fallback available: keep the configured path so yt-dlp's
-                // own loud "unable to open cookie file" error still surfaces a
-                // genuine typo, but say up front why playback is about to fail.
                 tracing::warn!(
-                    "YouTube: configured cookies file {} does not exist; yt-dlp will refuse to start until the file is restored or the setting is cleared",
+                    "YouTube: configured cookies file {} does not exist; tracks that need a sign-in will fail until it is restored or the setting is cleared",
                     configured.display()
                 );
-                config.youtube_cookies_file.clone()
+                String::new()
             }
         } else {
             let default = default_cookies_path();
@@ -142,21 +175,40 @@ impl YouTubeMetadata {
                 String::new()
             }
         };
+        if !cookies_file.is_empty() {
+            match std::fs::read_to_string(&cookies_file) {
+                Ok(text) if !crate::youtube::sidecar::cookies_have_sign_in(&text) => tracing::warn!(
+                    "YouTube: {cookies_file} holds no YouTube sign-in, so tracks that need one will still fail. Export it from a signed-in browser."
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("YouTube: cannot read cookies file {cookies_file}: {e}"),
+            }
+        }
 
-        // Resolve yt-dlp once: prefer the bundled copy under <exe-dir>/lib since
-        // its version is paired with the bundled bgutil plugin and kept current
-        // by --update-tools. Fall back to a PATH install, then a bare `yt-dlp`
-        // (NotFound at spawn time). A stale PATH yt-dlp otherwise wins and 403s
-        // on YouTube's current PO-token requirements.
-        let yt_dlp_exe = bundle.as_ref().map(|b| b.yt_dlp.clone())
-            .or_else(|| which("yt-dlp"))
-            .unwrap_or_else(|| PathBuf::from("yt-dlp"));
+        // Resolve the runtime once. The bundled copy wins so `youtube update`
+        // stays in control of it; otherwise a Deno the user already installed
+        // is used rather than downloading a second one, and a bare name is the
+        // last resort so a missing runtime is a NotFound at spawn time with a
+        // message that names it.
+        let lib_dir = bundle
+            .as_ref()
+            .map(|b| b.lib_dir.clone())
+            .unwrap_or_else(|| PathBuf::from("lib"));
+        let deno_exe = bundle
+            .as_ref()
+            .map(|b| b.deno.clone())
+            .filter(|p| p.is_file())
+            .or_else(|| which(if cfg!(windows) { "deno.exe" } else { "deno" }))
+            .unwrap_or_else(|| PathBuf::from("deno"));
 
         Ok(Self {
             client: Arc::new(client),
+            account: tokio::sync::OnceCell::new(),
+            country,
+            language,
             cookies_file,
-            bundle,
-            yt_dlp_exe,
+            deno_exe,
+            lib_dir,
         })
     }
 
@@ -164,10 +216,19 @@ impl YouTubeMetadata {
     /// continuation so the caller can start playback immediately and pull the
     /// remaining pages in the background (mirrors Spotify bulk loading).
     pub async fn resolve_paged(&self, query: &str, search_limit: u8) -> Result<YtResolved, BotError> {
-        if let Some(YouTubeRef::Playlist(id)) = parse_youtube_ref(query) {
-            return self.fetch_playlist_first_page(&id).await;
+        match parse_youtube_ref(query) {
+            Some(YouTubeRef::Playlist(id)) => self.fetch_playlist_first_page(&id).await,
+            Some(YouTubeRef::Radio { id, start }) => self
+                .fetch_radio_start(&id, start.as_deref())
+                .await
+                .map(|track| YtResolved::Radio { track, radio_id: id }),
+            _ => self.resolve(query, search_limit).await.map(YtResolved::Tracks),
         }
-        self.resolve(query, search_limit).await.map(YtResolved::Tracks)
+    }
+
+    /// The account's YouTube Music liked songs, read signed in with the cookies file.
+    pub async fn liked(&self) -> Result<YtResolved, BotError> {
+        self.fetch_playlist_first_page(LIKED_MUSIC).await
     }
 
     /// Resolve a YouTube URL/ID/playlist/album/search query into a list of
@@ -183,14 +244,20 @@ impl YouTubeMetadata {
                 Ok(t) => Ok(vec![t]),
                 Err(e) => {
                     tracing::debug!("Bare token '{id}' is not a video id ({e}); searching instead");
-                    self.search_tracks(query, 1).await
+                    self.search_top_track(query).await
                 }
             },
             Some(YouTubeRef::Playlist(id)) => self.fetch_playlist(&id).await,
             Some(YouTubeRef::Album(id)) => self.fetch_album(&id).await,
+            // A radio link plays the track it starts on and nothing else.
+            // Only the paged entry point keeps the station id, so radio here
+            // continues from the track the way it does from any other.
+            Some(YouTubeRef::Radio { id, start }) => {
+                self.fetch_radio_start(&id, start.as_deref()).await.map(|t| vec![t])
+            }
             // A free-form search returns just the top hit so play_and_queue
             // doesn't accidentally enqueue 5 tracks for a single song name.
-            None => self.search_tracks(query, 1).await,
+            None => self.search_top_track(query).await,
         }
     }
 
@@ -202,14 +269,51 @@ impl YouTubeMetadata {
         Ok(track_item_to_track(details.track))
     }
 
+    /// The client signed in with the cookies file, built on first use.
+    async fn account(&self) -> Result<Arc<RustyPipe>, BotError> {
+        self.account
+            .get_or_try_init(|| async {
+                let text = std::fs::read_to_string(&self.cookies_file).unwrap_or_default();
+                if self.cookies_file.is_empty() || !crate::youtube::sidecar::cookies_have_sign_in(&text) {
+                    return Err(BotError::YouTubeSignInMissing);
+                }
+                let mut builder = RustyPipe::builder().no_botguard().no_storage();
+                if let Some(c) = self.country {
+                    builder = builder.country(c);
+                }
+                if let Some(l) = self.language {
+                    builder = builder.lang(l);
+                }
+                let client = builder
+                    .build()
+                    .map_err(|e| BotError::Playback(format!("rustypipe init failed: {e}")))?;
+                client
+                    .user_auth_set_cookie_txt(&text)
+                    .await
+                    .map_err(|e| BotError::YouTubeSignInRejected(e.to_string()))?;
+                Ok(Arc::new(client))
+            })
+            .await
+            .map(Arc::clone)
+    }
+
+    /// Liked Music belongs to the account, so it is read signed in.
+    async fn playlist_query(&self, playlist_id: &str) -> Result<rustypipe::client::RustyPipeQuery, BotError> {
+        if playlist_id == LIKED_MUSIC {
+            Ok(self.account().await?.query().authenticated())
+        } else {
+            Ok(self.client.query())
+        }
+    }
+
     async fn fetch_playlist(&self, playlist_id: &str) -> Result<Vec<YouTubeTrack>, BotError> {
-        let q = self.client.query();
+        let q = self.playlist_query(playlist_id).await?;
         let mut playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
         // Pull all pages, not just the first. A paging failure truncates the
         // list; say so instead of silently returning a partial playlist.
-        if let Err(e) = playlist.tracks.extend_all(&self.client.query()).await {
+        if let Err(e) = playlist.tracks.extend_all(&q).await {
             tracing::warn!("YouTube playlist only partially loaded: {e}");
         }
         let tracks: Vec<YouTubeTrack> = playlist.tracks.items.into_iter().map(track_item_to_track).collect();
@@ -222,7 +326,7 @@ impl YouTubeMetadata {
 
     /// First page of a playlist plus a continuation for background loading.
     async fn fetch_playlist_first_page(&self, playlist_id: &str) -> Result<YtResolved, BotError> {
-        let q = self.client.query();
+        let q = self.playlist_query(playlist_id).await?;
         let playlist = retry_once(|| q.music_playlist(playlist_id))
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist fetch failed: {e}")))?;
@@ -237,7 +341,10 @@ impl YouTubeMetadata {
         if tracks.is_empty() {
             return Err(BotError::NoResults);
         }
-        let rest = paginator.ctoken.is_some().then_some(YtPlaylistRest { paginator });
+        let rest = paginator.ctoken.is_some().then_some(YtPlaylistRest {
+            paginator,
+            signed_in: playlist_id == LIKED_MUSIC,
+        });
         Ok(YtResolved::PlaylistFirstPage { tracks, rest })
     }
 
@@ -247,7 +354,12 @@ impl YouTubeMetadata {
         &self,
         rest: &mut YtPlaylistRest,
     ) -> Result<Option<Vec<YouTubeTrack>>, BotError> {
-        let more = rest.paginator.extend(self.client.query())
+        let q = if rest.signed_in {
+            self.account().await?.query().authenticated()
+        } else {
+            self.client.query()
+        };
+        let more = rest.paginator.extend(q)
             .await
             .map_err(|e| BotError::Playback(format!("YouTube playlist page fetch failed: {e}")))?;
         if !more {
@@ -275,6 +387,11 @@ impl YouTubeMetadata {
 
     /// Search YouTube Music for tracks matching the query.
     /// Returns up to `limit` results (sliced from the first page).
+    ///
+    /// Deliberately the songs shelf: this backs the numbered `search` list,
+    /// where a tidy list of actual songs beats a better single top hit. The
+    /// all-categories search ranks its first result better but its tail worse,
+    /// mixing in remixes and live clips.
     pub async fn search_tracks(&self, query: &str, limit: u8) -> Result<Vec<YouTubeTrack>, BotError> {
         let q = self.client.query();
         let result = retry_once(|| q.music_search_tracks(query))
@@ -294,119 +411,181 @@ impl YouTubeMetadata {
         }
     }
 
-    /// Spawn yt-dlp as a child process that streams M4A audio bytes to its
-    /// stdout. The caller owns the `Child` — drop or kill it to stop the
-    /// download (and free the pipe). yt-dlp handles all of YouTube's
-    /// header/cookie/fragment requirements.
-    pub fn spawn_ytdlp(&self, video_id: &str) -> Result<std::process::Child, BotError> {
-        self.spawn_ytdlp_with_client(video_id, PRIMARY_CLIENT)
-    }
-
-    /// As `spawn_ytdlp`, asking YouTube through a named player client.
+    /// The single best song for a query, for a bare play: the first YouTube
+    /// Music song in the all-categories ranking, else the songs shelf.
     ///
-    /// See [`PLAYER_CLIENTS`] for which clients are tried and why.
-    pub fn spawn_ytdlp_with_client(
-        &self,
-        video_id: &str,
-        client: &str,
-    ) -> Result<std::process::Child, BotError> {
-        use std::process::{Command, Stdio};
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
-
-        let mut cmd = Command::new(&self.yt_dlp_exe);
-        cmd.args([
-            "--no-warnings",
-            "--no-playlist",
-            "-f", "bestaudio[ext=m4a]/bestaudio",
-            "-o", "-",
-        ]);
-
-        // Ask one client rather than letting yt-dlp poll several. Left to
-        // itself it queries the tv and android players and merges the formats,
-        // which is most of the wait before a track starts.
-        //
-        // Deliberately no `player_skip`. It is the usual advice for speed and
-        // it does not work here: skipping the webpage made YouTube answer
-        // "Sign in to confirm you're not a bot" whether or not a PO token was
-        // present.
-        cmd.arg("--extractor-args");
-        cmd.arg(format!("youtube:player_client={client}"));
-
-        // Wire the bgutil-pot plugin and binary if bundled.
-        if let Some(b) = &self.bundle {
-            if b.plugin_dir.is_dir() {
-                // yt-dlp searches <plugin-dir>/*/yt_dlp_plugins, one level down,
-                // so point it at lib_dir (which contains the yt-dlp-plugins
-                // package), not at the package dir itself.
-                cmd.arg("--plugin-dirs");
-                cmd.arg(&b.lib_dir);
+    /// Uploaded videos in the ranking are passed over. YouTube returns
+    /// different top results on repeated runs, so tests must not pin a song.
+    pub async fn search_top_track(&self, query: &str) -> Result<Vec<YouTubeTrack>, BotError> {
+        let q = self.client.query();
+        match retry_once(|| q.music_search_main(query)).await {
+            Ok(result) => {
+                if let Some(corrected) = &result.corrected_query {
+                    tracing::info!("YouTube: searched {corrected:?} instead of {query:?}");
+                }
+                match top_song(result.items.items) {
+                    Some(t) => Ok(vec![self.with_duration(track_item_to_track(t)).await]),
+                    None => {
+                        tracing::debug!("YouTube: no song among the top results for {query:?}; using the songs shelf");
+                        self.search_tracks(query, 1).await
+                    }
+                }
             }
-            if b.bgutil_pot.is_file() {
-                // `bgutilcli:cli_path`, not `bgutilscript:script_path`. Those
-                // are two different providers: the script one runs a .js file
-                // under Node, the CLI one runs the bgutil-pot binary we ship.
-                // Naming the wrong one left the CLI provider with no path, so
-                // it looked for a bare `bgutil-pot` on PATH, found nothing, and
-                // silently carried on without a PO token - which is what YouTube
-                // answers with 403.
-                //
-                // Measured over eight videos: 5 played with the wrong name,
-                // 7 with the right one.
-                cmd.arg("--extractor-args");
-                cmd.arg(format!(
-                    "youtubepot-bgutilcli:cli_path={}",
-                    b.bgutil_pot.display()
-                ));
-            }
-            // Since yt-dlp 2025.11.12, YouTube's player challenges are solved
-            // by running its JavaScript, and without a runtime some formats
-            // are unavailable. A Deno on PATH is found by yt-dlp itself; ours
-            // has to be pointed at.
-            if let crate::youtube::setup::JsRuntime::Bundled(deno) =
-                crate::youtube::setup::find_js_runtime(b)
-            {
-                cmd.arg("--js-runtimes");
-                cmd.arg(format!("deno:{}", deno.display()));
+            Err(e) => {
+                // Never fail the play over the better-ranked path being
+                // unavailable; the songs shelf is still a usable answer.
+                tracing::warn!("YouTube: top-result search failed ({e}); using the songs shelf");
+                self.search_tracks(query, 1).await
             }
         }
-
-        // Cookies (optional, helps with rate-limited / age-restricted videos).
-        if !self.cookies_file.is_empty() {
-            cmd.arg("--cookies");
-            cmd.arg(&self.cookies_file);
-        }
-
-        // Covers yt-dlp itself and no further: the flag denies yt-dlp a
-        // console, so anything yt-dlp starts is given a fresh one by Windows —
-        // which is why deno opens a black window titled with its own path
-        // while a track is playing.
-        //
-        // Not fixable from here. yt-dlp offers no say over how it spawns a
-        // runtime, and deno has no flag for it; the runtimes yt-dlp supports
-        // (deno, node, quickjs, bun) are all console programs. Telling yt-dlp
-        // to skip the runtime does stop the window, and costs far too much:
-        // alternating both settings over three rounds, android_vr played 8/9
-        // tracks with a runtime and 3/9 without, failing with 403. YouTube's
-        // "n" parameter is solved by that JavaScript, and an unsolved one is
-        // refused.
-        //
-        // The only remaining lever is giving this process a console of its own
-        // and hiding it, so the whole tree inherits it.
-        crate::proc::hide_console_window(&mut cmd);
-
-        cmd.arg("--").arg(&url)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null())
-            .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => BotError::Playback(format!(
-                    "yt-dlp not found. To install it, {}",
-                    crate::hints::install_youtube_tools()
-                )),
-                _ => BotError::Playback(format!("yt-dlp spawn: {e}")),
-            })
     }
+
+    /// Fill in a length the ranking left out. The all-categories search says
+    /// nothing about how long its top result is, and the queue then shows the
+    /// track as 0:00 and estimates every wait after it as instant.
+    async fn with_duration(&self, track: YouTubeTrack) -> YouTubeTrack {
+        if track.duration_ms > 0 {
+            return track;
+        }
+        match self.fetch_video(&track.id).await {
+            Ok(full) if full.duration_ms > 0 => full,
+            _ => track,
+        }
+    }
+
+    /// The track a radio link starts on: the video it names, or the station's
+    /// own first track when it names none (`RDMM`, an `RDEM...` mix opened
+    /// from its playlist page).
+    async fn fetch_radio_start(
+        &self,
+        radio_id: &str,
+        start: Option<&str>,
+    ) -> Result<YouTubeTrack, BotError> {
+        match start {
+            Some(video_id) => self.fetch_video(video_id).await,
+            None => {
+                let mut station = self.start_radio_id(radio_id).await?;
+                station.buffer.pop_front().ok_or(BotError::NoResults)
+            }
+        }
+    }
+
+    /// Open the station a radio link names, by its own `RD...` id.
+    ///
+    /// Not interchangeable with autoplay from a video: measured on the same
+    /// link, `RDEM...` and `RDAMVM<video>` share almost nothing. The id the
+    /// link carries is what gets asked for.
+    pub async fn start_radio_id(&self, radio_id: &str) -> Result<YtRadioStation, BotError> {
+        let q = self.client.query();
+        let paginator = retry_once(|| q.music_radio(radio_id))
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube radio fetch failed: {e}")))?;
+        let mut known = std::collections::HashSet::new();
+        // A station answers to its own id: that is what the queue entry
+        // carries, and what `covers` is asked about when radio tops up.
+        known.insert(radio_id.to_string());
+        Ok(drain_station(paginator, known))
+    }
+
+    /// Open a YouTube Music radio station for a track.
+    ///
+    /// `music_radio_track` is YouTube Music's autoplay, not a separate radio
+    /// feature: it asks the same endpoint the app does, with automix on. The
+    /// first page excludes the seed and starts at what plays next.
+    ///
+    /// `music_related` is deliberately not used - that is a browse shelf, it
+    /// includes the seed track itself, and feeding it to a queue would replay
+    /// the song that is currently playing.
+    pub async fn start_radio(&self, video_id: &str) -> Result<YtRadioStation, BotError> {
+        let q = self.client.query();
+        let paginator = retry_once(|| q.music_radio_track(video_id))
+            .await
+            .map_err(|e| BotError::Playback(format!("YouTube radio fetch failed: {e}")))?;
+        let mut known = std::collections::HashSet::new();
+        known.insert(video_id.to_string());
+        Ok(drain_station(paginator, known))
+    }
+
+    /// Take up to `limit` more tracks from a station, paging YouTube as needed.
+    ///
+    /// Returns fewer than `limit` - possibly none - once the station runs out.
+    /// An empty result is the caller's cue to seed a new station rather than a
+    /// failure.
+    pub async fn next_radio_tracks(
+        &self,
+        station: &mut YtRadioStation,
+        limit: usize,
+        exclude: &[String],
+    ) -> Result<Vec<YouTubeTrack>, BotError> {
+        let mut out = Vec::with_capacity(limit);
+        while out.len() < limit {
+            while let Some(track) = station.buffer.pop_front() {
+                let seen = station.known.contains(&track.id) || exclude.contains(&track.id);
+                station.known.insert(track.id.clone());
+                if !seen {
+                    out.push(track);
+                    if out.len() == limit {
+                        return Ok(out);
+                    }
+                }
+            }
+            if station.exhausted {
+                break;
+            }
+            // Buffer empty: ask for the next page. extend() appends to
+            // `items`, which is empty here precisely because the previous page
+            // was drained, so what lands is only the new tracks.
+            let more = station
+                .paginator
+                .extend(self.client.query())
+                .await
+                .map_err(|e| BotError::Playback(format!("YouTube radio page fetch failed: {e}")))?;
+            if !more {
+                station.exhausted = true;
+                break;
+            }
+            station.buffer = std::mem::take(&mut station.paginator.items)
+                .into_iter()
+                .map(track_item_to_track)
+                .collect();
+            if station.buffer.is_empty() {
+                station.exhausted = true;
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Spawn the sidecar, which prints where the track's audio is: one JSON
+    /// line read with `sidecar::parse_stream_info`.
+    ///
+    /// The caller owns the `Child` - kill it to give up and free the pipes. The
+    /// sidecar walks its own list of InnerTube clients against a session it has
+    /// already built, so a client that cannot serve the track costs
+    /// milliseconds rather than another process spawn.
+    pub fn spawn_sidecar(&self, video_id: &str) -> Result<std::process::Child, BotError> {
+        let script = crate::youtube::sidecar::ensure_script(&self.lib_dir)?;
+        crate::youtube::sidecar::spawn(&script, &self.deno_exe, video_id, &self.cookies_file)
+    }
+}
+
+/// The configured location. Unset or unrecognised leaves the library default,
+/// so a typo never stops the bot starting.
+fn parse_country(code: &str) -> Option<rustypipe::param::Country> {
+    let parsed = crate::youtube::locale::parse_country(code);
+    if parsed.is_none() && !code.trim().is_empty() {
+        tracing::warn!("YouTube: ignoring unrecognised youtubeCountry {code:?}");
+    }
+    parsed
+}
+
+/// As `parse_country`, for the language.
+fn parse_language(code: &str) -> Option<rustypipe::param::Language> {
+    let parsed = crate::youtube::locale::parse_language(code);
+    if parsed.is_none() && !code.trim().is_empty() {
+        tracing::warn!("YouTube: ignoring unrecognised youtubeLanguage {code:?}");
+    }
+    parsed
 }
 
 /// Run a rustypipe query, retrying once on error.
@@ -433,6 +612,31 @@ where
     }
 }
 
+/// The first YouTube Music song in search results; artists, albums and
+/// uploaded videos are skipped.
+fn top_song(items: Vec<rustypipe::model::MusicItem>) -> Option<rustypipe::model::TrackItem> {
+    items.into_iter().find_map(|item| match item {
+        rustypipe::model::MusicItem::Track(t) if t.track_type == rustypipe::model::TrackType::Track => Some(t),
+        _ => None,
+    })
+}
+
+/// Make a station of a paginator's first page.
+///
+/// The page is taken out of the paginator: `extend()` appends, so leaving it
+/// in place hands the same tracks back on every later page. `known` starts
+/// with what the station must never hand out - the seed it grew from.
+fn drain_station(
+    mut paginator: rustypipe::model::paginator::Paginator<rustypipe::model::TrackItem>,
+    known: std::collections::HashSet<String>,
+) -> YtRadioStation {
+    let buffer: std::collections::VecDeque<YouTubeTrack> = std::mem::take(&mut paginator.items)
+        .into_iter()
+        .map(track_item_to_track)
+        .collect();
+    YtRadioStation { paginator, buffer, known, exhausted: false }
+}
+
 fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
     YouTubeTrack {
         id: item.id,
@@ -445,90 +649,389 @@ fn track_item_to_track(item: rustypipe::model::TrackItem) -> YouTubeTrack {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_once, PLAYER_CLIENTS, PRIMARY_CLIENT};
+    use super::retry_once;
     use std::cell::Cell;
 
-    /// Which clients still play a gated "- Topic" track. Run by hand when
-    /// playback breaks, before changing the order in [`PLAYER_CLIENTS`].
+    /// The sidecar finds a gated "- Topic" track. Run by hand when playback
+    /// breaks: these uploads are what YouTube Music search returns, and they
+    /// are the first thing to fail when a client is retired.
     #[test]
-    #[ignore = "hits the network and needs the bundled YouTube tools"]
-    fn chain_plays_a_topic_track() {
-        use std::io::Read;
-
+    #[ignore = "hits the network and needs Deno installed"]
+    fn sidecar_finds_a_topic_track() {
         let Some(meta) = super::for_tests() else {
-            println!("skipped: no bundled yt-dlp found; run `--setup-yt` first");
+            println!("skipped: no Deno found; run the YouTube install first");
             return;
         };
+        let child = match meta.spawn_sidecar("5oWyMakvQew") {
+            Ok(c) => c,
+            Err(e) => panic!("could not spawn the sidecar: {e}"),
+        };
+        let out = child.wait_with_output().expect("wait for the sidecar");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let info = crate::youtube::sidecar::parse_stream_info(&String::from_utf8_lossy(&out.stdout))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no stream info ({e}); YouTube has moved again. It said: {}",
+                    crate::youtube::sidecar::complaint(&stderr)
+                )
+            });
+        println!("{} serves {} bytes", info.client, info.content_length);
+        assert!(info.content_length > 1_000_000, "a whole song is more than a megabyte");
+    }
 
-        let mut worked = Vec::new();
-        for client in PLAYER_CLIENTS {
-            let mut child = match meta.spawn_ytdlp_with_client("FvHIEK4f1Qc", client) {
-                Ok(c) => c,
-                Err(e) => {
-                    println!("{client}: could not spawn ({e})");
-                    continue;
-                }
-            };
-            let mut buf = [0u8; 16384];
-            let read = child
-                .stdout
-                .as_mut()
-                .map(|o| o.read(&mut buf).unwrap_or(0))
-                .unwrap_or(0);
-            let _ = child.kill();
-            let _ = child.wait();
-            println!("{client}: {read} bytes");
-            if read > 0 {
-                worked.push(client);
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_radio_link_keeps_the_station_it_names() {
+        // The station id has to survive the round trip: rebuilt from the video
+        // instead, an RDEM mix turns into RDAMVM<video>, which plays a
+        // different set of songs.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let link = "https://www.youtube.com/watch?v=NrLkTZrPZA4&list=RDEMtu8TSn01ATwUIqXnxfa6zQ&start_radio=1";
+        match meta.resolve_paged(link, 1).await.expect("radio link") {
+            super::YtResolved::Radio { track, radio_id } => {
+                assert_eq!(track.id, "NrLkTZrPZA4", "it starts on the video the link names");
+                assert_eq!(radio_id, "RDEMtu8TSn01ATwUIqXnxfa6zQ");
+            }
+            _ => panic!("a radio link resolves to its station"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_opened_by_id_never_replays_what_it_grew_from() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let radio_id = "RDEMtu8TSn01ATwUIqXnxfa6zQ";
+        let mut station = meta.start_radio_id(radio_id).await.expect("station");
+        assert!(station.covers(radio_id), "the station answers to its own id");
+        let tracks = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("tracks");
+        assert_eq!(tracks.len(), 5, "should honour the limit");
+        // music_radio hands back the track the station starts on; playing it
+        // again right after it has played is exactly what must not happen.
+        let start = "NrLkTZrPZA4";
+        let excluded = meta
+            .next_radio_tracks(&mut station, 5, &[start.to_string()])
+            .await
+            .expect("tracks");
+        assert!(!excluded.iter().any(|t| t.id == start), "an excluded track came back");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_mix_with_no_video_starts_at_its_own_first_track() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        match meta
+            .resolve_paged("https://music.youtube.com/playlist?list=RDMM", 1)
+            .await
+            .expect("mix link")
+        {
+            super::YtResolved::Radio { track, radio_id } => {
+                assert_eq!(radio_id, "RDMM");
+                assert!(!track.id.is_empty(), "a mix link still starts on a track");
+            }
+            _ => panic!("a mix link resolves to its station"),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn radio_returns_a_queue_that_excludes_the_seed() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        // A YouTube Music "- Topic" upload: the normal case for this bot.
+        let seed = "5oWyMakvQew";
+        let mut station = meta.start_radio(seed).await.expect("station");
+        let tracks = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("tracks");
+        assert_eq!(tracks.len(), 5, "should honour the limit");
+        assert!(
+            !tracks.iter().any(|t| t.id == seed),
+            "autoplay must not replay the track it was seeded from"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_keeps_handing_out_fresh_tracks() {
+        // The failure this guards: extend() APPENDS to the paginator, so a
+        // page that is not drained first comes back again and autoplay
+        // re-queues the same songs. Pull more than one page's worth.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let mut station = meta.start_radio("5oWyMakvQew").await.expect("station");
+
+        let mut seen: Vec<String> = Vec::new();
+        for round in 0..12 {
+            let batch = meta.next_radio_tracks(&mut station, 5, &[]).await.expect("batch");
+            if batch.is_empty() {
+                break;
+            }
+            for t in batch {
+                assert!(
+                    !seen.contains(&t.id),
+                    "round {round}: {} came back a second time",
+                    t.name
+                );
+                seen.push(t.id);
             }
         }
         assert!(
-            !worked.is_empty(),
-            "no client in PLAYER_CLIENTS produced audio; YouTube has moved again"
-        );
-        assert_eq!(
-            worked[0], PLAYER_CLIENTS[0],
-            "the first client tried is no longer one that works, so every play pays a wasted              attempt; working clients were {worked:?}"
+            seen.len() > 50,
+            "a paged station should outlast one page; got {}",
+            seen.len()
         );
     }
 
-    #[test]
-    fn primary_client_is_the_head_of_the_chain() {
-        assert_eq!(PRIMARY_CLIENT, PLAYER_CLIENTS[0]);
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_station_knows_which_tracks_are_its_own() {
+        // This is what stops autoplay reseeding every batch: the station is
+        // continued while the bot is still playing tracks it produced.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let seed = "5oWyMakvQew";
+        let mut station = meta.start_radio(seed).await.expect("station");
+        let tracks = meta.next_radio_tracks(&mut station, 3, &[]).await.expect("tracks");
+
+        assert!(station.covers(seed), "the seed itself belongs to the station");
+        for t in &tracks {
+            assert!(station.covers(&t.id), "{} should be recognised as ours", t.name);
+        }
+        assert!(
+            !station.covers("dQw4w9WgXcQ"),
+            "an unrelated track must not look like part of this station"
+        );
     }
 
-    #[test]
-    fn player_clients_are_distinct_and_non_empty() {
-        for (i, client) in PLAYER_CLIENTS.iter().enumerate() {
-            assert!(!client.is_empty(), "client {i} is empty");
-            assert!(
-                !PLAYER_CLIENTS[..i].contains(client),
-                "{client} appears more than once"
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn radio_skips_tracks_already_queued() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let mut a = meta.start_radio("5oWyMakvQew").await.unwrap();
+        let first = meta.next_radio_tracks(&mut a, 3, &[]).await.unwrap();
+        let exclude: Vec<String> = first.iter().map(|t| t.id.clone()).collect();
+
+        let mut b = meta.start_radio("5oWyMakvQew").await.unwrap();
+        let second = meta.next_radio_tracks(&mut b, 3, &exclude).await.unwrap();
+        assert!(
+            !second.iter().any(|t| exclude.contains(&t.id)),
+            "excluded ids came back anyway"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_bare_play_always_gets_exactly_one_playable_track() {
+        // Deliberately asserts the shape, not which song. YouTube returns
+        // different top results for the same query on repeated runs - measured
+        // across countries and rounds, "perfect by edge" alternates between two
+        // different songs regardless of locale - so pinning a title here would
+        // be a coin flip in CI.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        // "relaxing piano music" leads with an uploaded video; a song must be played instead.
+        for query in ["perfect by edge", "shape of yu", "konkani", "relaxing piano music"] {
+            let top = meta.search_top_track(query).await.expect(query);
+            assert_eq!(top.len(), 1, "{query}: a bare play must get one track");
+            assert!(!top[0].id.is_empty(), "{query}: track has no id");
+            assert!(!top[0].name.is_empty(), "{query}: track has no name");
+            let details = meta.client.query().music_details(&top[0].id).await.expect("details");
+            assert_eq!(
+                details.track.track_type,
+                rustypipe::model::TrackType::Track,
+                "{query}: {} is an uploaded video, not a YouTube Music song",
+                top[0].name
             );
         }
     }
 
-    #[test]
-    fn player_clients_are_names_yt_dlp_accepts() {
-        for client in PLAYER_CLIENTS {
-            assert!(
-                client
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
-                "{client} is not a bare yt-dlp client name"
-            );
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_query_whose_top_hit_is_an_artist_still_yields_a_track() {
+        // "konkani" returns an Artist first from the all-categories search,
+        // which is not playable; the songs shelf has to catch it.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let top = meta.search_top_track("konkani").await.expect("top");
+        assert_eq!(top.len(), 1, "a bare play must always get exactly one track");
+        assert!(!top[0].id.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn an_age_restricted_video_is_found_without_a_sign_in() {
+        // Only playback falls back to the cookies file, so the track itself must resolve.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        for id in ["HtVdAasjOgU", "Tq92D6wQ1mg"] {
+            let track = meta.fetch_video(id).await.unwrap_or_else(|e| panic!("{id}: {e}"));
+            assert_eq!(track.id, id);
         }
     }
 
-    #[test]
-    fn web_embedded_is_tried_before_the_clients_it_covers_for() {
-        let pos = |name: &str| PLAYER_CLIENTS.iter().position(|c| *c == name);
-        let web = pos("web_embedded").expect("web_embedded must stay in the chain");
-        for later in ["tv_simply", "android_vr"] {
-            if let Some(i) = pos(later) {
-                assert!(web < i, "web_embedded must be tried before {later}");
+    #[tokio::test]
+    async fn liked_music_without_a_signed_in_cookies_file_asks_for_one() {
+        use crate::error::BotError;
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = String::new();
+        let result = meta.liked().await;
+        assert!(matches!(result, Err(BotError::YouTubeSignInMissing)));
+
+        let signed_out = std::env::temp_dir().join(format!("liked_signed_out_{}.txt", std::process::id()));
+        std::fs::write(&signed_out, ".youtube.com\tTRUE\t/\tTRUE\t0\tYSC\tx\n").unwrap();
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = signed_out.to_string_lossy().into_owned();
+        let result = meta.liked().await;
+        let _ = std::fs::remove_file(&signed_out);
+        assert!(matches!(result, Err(BotError::YouTubeSignInMissing)));
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network and needs TTSPOTIFY_TEST_COOKIES"]
+    async fn liked_music_loads_signed_in_and_search_stays_anonymous() {
+        let Ok(path) = std::env::var("TTSPOTIFY_TEST_COOKIES") else {
+            println!("skipped: no TTSPOTIFY_TEST_COOKIES");
+            return;
+        };
+        let mut meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        meta.cookies_file = path;
+        match meta.liked().await.expect("liked music") {
+            super::YtResolved::PlaylistFirstPage { tracks, rest } => {
+                assert!(!tracks.is_empty());
+                assert!(tracks.iter().all(|t| !t.id.is_empty()));
+                if let Some(mut rest) = rest {
+                    assert!(rest.signed_in);
+                    meta.fetch_more_playlist(&mut rest).await.expect("next page");
+                }
             }
+            _ => panic!("liked music is a playlist"),
         }
+        let top = meta.search_top_track("imagine dragons believer").await.expect("search");
+        assert_eq!(top.len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_queued_track_knows_how_long_it_is() {
+        // The queue shows each entry's length and estimates how long until a
+        // track plays; a zero there reads as a broken entry.
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let searched = meta.search_tracks("never gonna give you up", 3).await.expect("search");
+        for track in &searched {
+            println!("search: {} {}", track.display_name(), track.duration_display());
+        }
+        assert!(
+            searched.iter().all(|t| t.duration_ms > 0),
+            "a search result has no duration"
+        );
+
+        let top = meta.search_top_track("never gonna give you up").await.expect("top track");
+        for track in &top {
+            println!("top: {} {}", track.display_name(), track.duration_display());
+        }
+        assert!(top.iter().all(|t| t.duration_ms > 0), "the top track has no duration");
+
+        let by_id = meta.fetch_video("lYBUbBu4W08").await.expect("fetch by id");
+        println!("by id: {} {}", by_id.display_name(), by_id.duration_display());
+        assert!(by_id.duration_ms > 0, "a track fetched by id has no duration");
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn every_offered_locale_is_one_youtube_searches_with() {
+        // The picker offers YouTube's own lists, but a code it will not accept
+        // would only show up as searches failing for whoever picked it.
+        use crate::youtube::locale;
+        let countries = locale::country_options();
+        let languages = locale::language_options();
+        let sample = [
+            ("", ""),
+            ("DE", "de"),
+            ("IN", "hi"),
+            ("BR", "pt"),
+            ("JP", "ja"),
+            ("GB", "en-GB"),
+        ];
+        for (country, language) in sample {
+            assert!(
+                country.is_empty() || countries.iter().any(|o| o.code == country),
+                "{country} is not offered"
+            );
+            assert!(
+                language.is_empty() || languages.iter().any(|o| o.code == language),
+                "{language} is not offered"
+            );
+            let config = crate::config::BotConfig {
+                youtube_country: country.to_string(),
+                youtube_language: language.to_string(),
+                ..Default::default()
+            };
+            let meta = super::YouTubeMetadata::new(&config).unwrap();
+            let tracks = meta.search_tracks("konkani songs", 3).await.expect("search failed");
+            println!("{country}/{language}: {} results, first {:?}", tracks.len(), tracks.first().map(|t| t.display_name()));
+            assert!(!tracks.is_empty(), "no results for {country}/{language}");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn a_typo_still_finds_the_song() {
+        let meta = super::YouTubeMetadata::new(&crate::config::BotConfig::default()).unwrap();
+        let top = meta.search_top_track("believr imagine dragon").await.expect("top");
+        assert!(
+            top[0].name.to_lowercase().contains("believer"),
+            "got {} - {}",
+            top[0].artists.join(", "),
+            top[0].name
+        );
+    }
+
+    #[test]
+    fn locale_codes_are_parsed_case_insensitively() {
+        use rustypipe::param::{Country, Language};
+        assert_eq!(super::parse_country("in"), Some(Country::In));
+        assert_eq!(super::parse_country("IN"), Some(Country::In));
+        assert_eq!(super::parse_language("EN"), Some(Language::En));
+    }
+
+    #[test]
+    fn an_unset_locale_leaves_the_library_default_alone() {
+        assert_eq!(super::parse_country(""), None);
+        assert_eq!(super::parse_country("   "), None);
+        assert_eq!(super::parse_language(""), None);
+    }
+
+    #[test]
+    fn a_typo_is_ignored_rather_than_fatal() {
+        // A bad code in a config file must not stop the bot starting.
+        assert_eq!(super::parse_country("XX"), None);
+        assert_eq!(super::parse_country("not a country"), None);
+        assert_eq!(super::parse_language("zzz"), None);
+    }
+
+    /// A YouTube Music search item as rustypipe deserializes it.
+    fn item(id: &str, track_type: &str) -> rustypipe::model::MusicItem {
+        serde_json::from_value(serde_json::json!({
+            "Track": {
+                "id": id,
+                "name": format!("name of {id}"),
+                "duration": 200,
+                "cover": [],
+                "artists": [{ "id": null, "name": "someone" }],
+                "artist_id": null,
+                "album": null,
+                "view_count": null,
+                "track_type": track_type,
+                "track_nr": null,
+                "by_va": false,
+                "unavailable": false
+            }
+        }))
+        .expect("a valid search item")
+    }
+
+    #[test]
+    fn a_bare_play_takes_the_first_song_not_an_uploaded_video() {
+        let items = vec![item("video1", "video"), item("song1", "track"), item("song2", "track")];
+        assert_eq!(super::top_song(items).map(|t| t.id), Some("song1".to_string()));
+    }
+
+    #[test]
+    fn results_holding_only_videos_give_no_song() {
+        let items = vec![item("video1", "video"), item("episode1", "episode")];
+        assert!(super::top_song(items).is_none(), "the caller falls back to the songs shelf");
     }
 
     #[tokio::test]

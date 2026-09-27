@@ -58,7 +58,7 @@ impl BotInstance {
         Self {
             name,
             config_path,
-            audio_key_id: crate::spotify::audio_key::next_bot_id(),
+            audio_key_id: crate::bot::identity::next_bot_id(),
             status: Arc::new(Mutex::new(BotStatus::Stopped)),
             thread: None,
             shutdown: None,
@@ -414,14 +414,11 @@ fn run_bot_instance(
     name: String,
     bot_id: u64,
 ) {
-    // Per-instance log file (e.g. logs/myserver.log)
-    let log_dir = crate::paths::logs_dir();
-    let (dispatch, _log_guard) = crate::logging::create_instance_logging(&log_dir, &name);
-    let _dispatch_guard = tracing::dispatcher::set_default(&dispatch);
-
-    // Tag every thread this bot runs on, so a Spotify audio-key failure is
-    // attributed to this bot and not to a sibling in the same tray process.
-    crate::spotify::audio_key::set_current_bot(bot_id);
+    // Tag every thread this bot runs on. Its log lines are routed by that tag,
+    // and so is a Spotify audio-key failure, which must be attributed to this
+    // bot and not to a sibling in the same tray process.
+    crate::bot::identity::set_current_bot(bot_id);
+    let _bot_log = crate::logging::register_bot_log(bot_id, &crate::paths::logs_dir(), &name);
 
     let update_status = |new_status: BotStatus| {
         *status.lock() = new_status.clone();
@@ -430,9 +427,9 @@ fn run_bot_instance(
 
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        // librespot logs the key failure from a runtime worker, and the skip
-        // is handled on this runtime too, so both ends need the tag.
-        .on_thread_start(move || crate::spotify::audio_key::set_current_bot(bot_id))
+        // Everything the bot does happens on these threads: its log lines,
+        // and librespot's key failure, which is logged from a runtime worker.
+        .on_thread_start(move || crate::bot::identity::set_current_bot(bot_id))
         .build()
     {
         Ok(rt) => rt,

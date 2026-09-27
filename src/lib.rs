@@ -31,6 +31,7 @@ pub mod settings;
 pub mod track;
 pub mod update;
 pub mod tt;
+pub mod terminal_copy;
 pub mod wizard;
 pub mod youtube;
 

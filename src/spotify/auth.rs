@@ -15,6 +15,36 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-currently-playing",
 ];
 
+/// How an explicit sign-in reaches Spotify.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SignInMethod {
+    /// Authorize in a browser on this machine, which returns to a local port.
+    #[default]
+    Browser,
+    /// Confirm a short code at Spotify's pairing page, on any device. Nothing
+    /// listens here and no browser is needed on this machine.
+    Code,
+}
+
+/// What a person needs to finish a pair-code sign-in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairCode {
+    pub user_code: String,
+    /// The pairing page with the code already filled in when Spotify supplies
+    /// one, so opening it means typing nothing.
+    pub url: String,
+    /// The plain pairing page, where the code is typed by hand.
+    pub page: String,
+}
+
+/// A pair code handed out and not yet confirmed. Dropping the future that
+/// finishes it is the cancellation.
+pub struct PendingPair {
+    client: librespot_oauth::DeviceAuthClient,
+    authorization: librespot_oauth::DeviceAuthorization,
+    pub code: PairCode,
+}
+
 pub struct SpotifyAuth {
     session: Option<Session>,
     cache: Option<Cache>,
@@ -147,6 +177,11 @@ impl SpotifyAuth {
         )
     }
 
+    /// Whether a browser can be opened on this machine.
+    pub fn can_open_browser(&self) -> bool {
+        !self.headless
+    }
+
     /// Whether an interactive OAuth flow could succeed in this process.
     /// See [`oauth_is_feasible`].
     pub fn oauth_feasible(&self) -> bool {
@@ -240,10 +275,56 @@ impl SpotifyAuth {
     /// Force a fresh OAuth login, ignoring any cached credentials, and store
     /// the new credentials in the cache. Opens the browser for authorization.
     pub async fn reauthenticate(&mut self) -> Result<Session, BotError> {
-        let session = Session::new(self.config.clone(), self.cache.clone());
         let credentials = self.oauth_login().await?;
+        self.connect_fresh(credentials).await
+    }
+
+    /// Ask Spotify for a pair code. Show `code` to the person, then hand the
+    /// result to [`Self::finish_pair`].
+    pub async fn request_pair_code(&self) -> Result<PendingPair, BotError> {
+        let client = librespot_oauth::DeviceAuthClientBuilder::new(
+            SPOTIFY_CLIENT_ID,
+            OAUTH_SCOPES.to_vec(),
+        )
+        .build()
+        .map_err(|e| BotError::SpotifyAuth(format!("could not start a pair-code sign-in: {e}")))?;
+        let authorization = client
+            .request_device_code_async()
+            .await
+            .map_err(|e| BotError::SpotifyAuth(format!("Spotify did not hand out a pair code: {e}")))?;
+        let code = PairCode {
+            user_code: authorization.user_code().to_string(),
+            url: authorization.url().to_string(),
+            page: authorization.verification_uri().to_string(),
+        };
+        Ok(PendingPair { client, authorization, code })
+    }
+
+    /// Wait for the pair code to be confirmed, then sign in with it and store
+    /// the login. Waits until the person confirms or declines, or the code
+    /// expires.
+    pub async fn finish_pair(&mut self, pending: PendingPair) -> Result<Session, BotError> {
+        let credentials = self.confirm_pair(pending).await?;
+        self.connect_fresh(credentials).await
+    }
+
+    /// Wait for the pair code to be confirmed, and return the credentials it
+    /// grants without signing in yet.
+    pub async fn confirm_pair(&self, pending: PendingPair) -> Result<Credentials, BotError> {
+        let token = pending
+            .client
+            .poll_for_token_async(&pending.authorization)
+            .await
+            .map_err(|e| BotError::SpotifyAuth(format!("the pair code was not confirmed: {e}")))?;
+        tracing::info!("Pair code confirmed");
+        Ok(Credentials::with_access_token(&token.access_token))
+    }
+
+    /// Sign in with new credentials, ignoring any cached ones, and store them.
+    pub async fn connect_fresh(&mut self, credentials: Credentials) -> Result<Session, BotError> {
+        let session = Session::new(self.config.clone(), self.cache.clone());
         session.connect(credentials, true).await
-            .map_err(|e| BotError::SpotifyAuth(format!("OAuth login failed: {e}")))?;
+            .map_err(|e| BotError::SpotifyAuth(format!("could not sign in to Spotify: {e}")))?;
         log_account_type(&session);
         self.session = Some(session.clone());
         Ok(session)
@@ -274,7 +355,7 @@ impl SpotifyAuth {
             return Err(BotError::SpotifyAuth(format!(
                 "no cached Spotify credentials and no way to log in interactively here; \
                  on this machine, {}, then restart the bot",
-                crate::hints::sign_in_spotify()
+                crate::hints::sign_in_spotify_without_browser()
             )));
         }
 
@@ -437,6 +518,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits Spotify: asks for a pair code, never confirms it"]
+    async fn spotify_hands_out_a_pair_code_for_our_client_id() {
+        let pending = super::SpotifyAuth::new()
+            .request_pair_code()
+            .await
+            .expect("Spotify should hand out a pair code");
+        assert!(!pending.code.user_code.is_empty());
+        assert!(pending.code.url.starts_with("https://"), "{}", pending.code.url);
+        println!("{:?}", pending.code);
     }
 
     #[test]

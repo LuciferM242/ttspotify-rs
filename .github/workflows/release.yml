@@ -54,7 +54,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Stage artifact
         run: |
           mkdir -p dist
@@ -75,7 +75,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang libclang-dev
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Stage artifact
         run: |
           mkdir -p dist
@@ -101,7 +101,7 @@ jobs:
       # by later tags (only default-branch caches are shared), so in a tag-only
       # workflow they always miss and just add minutes of cache upload.
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Stage artifact
         shell: pwsh
         run: |

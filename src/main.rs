@@ -373,7 +373,7 @@ enum ServiceAction {
 #[cfg(not(windows))]
 #[derive(clap::Subcommand)]
 enum YoutubeAction {
-    /// Download yt-dlp, bgutil-pot and a JavaScript runtime
+    /// Download the JavaScript runtime YouTube playback needs
     Install,
     /// Update those tools in place
     Update,
@@ -392,6 +392,10 @@ enum CacheAction {
 enum AuthAction {
     /// Say whether a Spotify login is already cached
     Status,
+    /// Sign in by authorizing in a browser on this machine
+    Browser,
+    /// Sign in by confirming a short code on any device
+    Code,
 }
 
 #[cfg(not(windows))]
@@ -477,10 +481,15 @@ async fn main() -> Result<(), BotError> {
     // real bots — and only then report the error. This also means the
     // first-run wizard (which a missing --config triggers when someone is at
     // the keyboard) has created the file before anything logs.
-    if let Err(e) = BotConfig::load(&config_path) {
-        eprintln!("{e}");
-        std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
-    }
+    // The path to carry on with, which is the wizard's file when it just made
+    // one: keeping the missing path asked for the wizard a second time.
+    let config_path = match BotConfig::load_or_setup(&config_path) {
+        Ok((_, path)) => path.to_string_lossy().into_owned(),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(tt_spotify_bot::config::EXIT_CONFIG_ERROR);
+        }
+    };
 
     // One bot per config: a manual run while the service has the same bot
     // running would put two sessions on one TeamTalk account, each knocking the
@@ -637,12 +646,7 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
     // about access points either side of the answer is not what somebody asking
     // a yes-or-no question wants to read.
     let quiet = matches!(command, Commands::Auth { action: Some(AuthAction::Status) });
-    let _ = tracing_subscriber::fmt()
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .without_time()
-        .with_max_level(if quiet { tracing::Level::ERROR } else { tracing::Level::INFO })
-        .try_init();
+    tt_spotify_bot::logging::init_cli_logging(quiet);
 
     match command {
         // Intercepted by the caller, which needs the config path rather than
@@ -749,18 +753,20 @@ async fn run_command(command: Commands) -> Result<(), BotError> {
                 }
             }
         }
-        Commands::Auth { action: None } => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-                )
-                .init();
-
-            let mut auth = tt_spotify_bot::spotify::auth::SpotifyAuth::new();
-            match auth.connect().await {
-                Ok(_) => {
+        Commands::Auth { action } => {
+            use tt_spotify_bot::spotify::auth::SignInMethod;
+            let method = match action {
+                Some(AuthAction::Code) => SignInMethod::Code,
+                Some(AuthAction::Browser) => SignInMethod::Browser,
+                // Status is answered above; nobody to ask means the default.
+                _ if !std::io::IsTerminal::is_terminal(&std::io::stdin()) => SignInMethod::default(),
+                _ => match tt_spotify_bot::wizard::ask_sign_in_method() {
+                    Some(method) => method,
+                    None => std::process::exit(1),
+                },
+            };
+            match tt_spotify_bot::wizard::sign_in_spotify(method) {
+                Ok(()) => {
                     println!("Signed in to Spotify. The login is cached for every bot here.");
                     std::process::exit(0);
                 }
@@ -806,7 +812,24 @@ fn first_run_or_help() -> Result<Option<String>, BotError> {
     tt_spotify_bot::install::offer_first_run_install();
 
     match tt_spotify_bot::wizard::run_wizard(None, true)? {
-        Some(path) => Ok(Some(path.to_string_lossy().into_owned())),
+        Some(path) => {
+            // The wizard may have started this bot as a service. Running it here
+            // too put two copies on one account, and the one that lost the lock
+            // exited, leaving the service failed.
+            #[cfg(target_os = "linux")]
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                use tt_spotify_bot::service;
+                if service::systemd_booted()
+                    && service::unit_health(&tt_spotify_bot::control::unit_for(name)).is_up()
+                {
+                    let prog = tt_spotify_bot::paths::program_name();
+                    println!("\"{name}\" is running in the background.");
+                    println!("To follow its log: {prog} watch {name}");
+                    return Ok(None);
+                }
+            }
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
         None => Ok(None),
     }
 }
@@ -1004,9 +1027,22 @@ fn main() {
         let (config, path) = if let Some(name) = name_arg {
             let p = tt_spotify_bot::paths::config_file(name);
             if p.exists() {
-                let cfg = tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or(""))
-                    .unwrap_or_default();
-                (cfg, Some(p))
+                match tt_spotify_bot::config::BotConfig::load(p.to_str().unwrap_or("")) {
+                    Ok(cfg) => (cfg, Some(p)),
+                    // Opening the editor on defaults over a file it could not
+                    // read, then saving, replaced every setting in that file.
+                    Err(e) => {
+                        let _ = winsafe::HWND::NULL.MessageBox(
+                            &format!(
+                                "Could not read {}: {e}\n\nFix the file, or remove it and add the bot again.",
+                                p.display()
+                            ),
+                            "TT Spotify",
+                            winsafe::co::MB::OK | winsafe::co::MB::ICONERROR,
+                        );
+                        return;
+                    }
+                }
             } else {
                 (tt_spotify_bot::config::BotConfig::default(), None)
             }

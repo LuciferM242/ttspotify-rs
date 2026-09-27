@@ -169,7 +169,12 @@ END
 #define IDC_SP_ENABLED    629
 #define IDC_YT_ENABLED    630
 #define IDC_SERVICE_LABEL 631
+#define IDC_COOKIES_LABEL 632
 #define IDC_KICK_SECS     634
+#define IDC_YT_COUNTRY_LABEL  635
+#define IDC_YT_COUNTRY        636
+#define IDC_YT_LANGUAGE_LABEL 637
+#define IDC_YT_LANGUAGE       638
 
 #define IDD_CFG_AUDIO     640
 #define IDC_QUALITY       641
@@ -190,21 +195,21 @@ END
 #define IDC_RADIO_DELAY   663
 #define IDC_SEARCH_LIMIT  664
 
-IDD_CONFIG DIALOGEX 0, 0, 330, 410
+IDD_CONFIG DIALOGEX 0, 0, 330, 442
 STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
 CAPTION "Configuration"
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
-    CONTROL         "", IDC_CFG_TAB, "SysTabControl32", 0x00010000, 6, 6, 318, 370
-    DEFPUSHBUTTON   "Save",   IDOK,     216, 386, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 272, 386, 50, 14
+    CONTROL         "", IDC_CFG_TAB, "SysTabControl32", 0x00010000, 6, 6, 318, 402
+    DEFPUSHBUTTON   "Save",   IDOK,     216, 418, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 272, 418, 50, 14
 END
 
 // WS_CHILD 0x40000000 | DS_CONTROL 0x0400 | DS_SETFONT 0x40 | WS_TABSTOP 0x00010000
 // Edit styles: ES_AUTOHSCROLL 0x0080, ES_PASSWORD 0x0020, ES_NUMBER 0x2000,
 // ES_MULTILINE 0x0004, ES_AUTOVSCROLL 0x0040. Common: WS_TABSTOP 0x00010000,
 // WS_BORDER 0x00800000, WS_VSCROLL 0x00200000. Combo: CBS_DROPDOWNLIST 0x0003.
-IDD_CFG_SERVER DIALOGEX 0, 0, 306, 348
+IDD_CFG_SERVER DIALOGEX 0, 0, 306, 380
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
@@ -238,19 +243,23 @@ BEGIN
     EDITTEXT        IDC_LICNAME,               106, 212, 194, 13, 0x0080 | 0x00010000 | 0x00800000
     LTEXT           "License &key:",       -1,  6, 230, 96, 10
     EDITTEXT        IDC_LICKEY,                106, 228, 194, 13, 0x0080 | 0x00010000 | 0x00800000
-    LTEXT           "YouTube c&ookies file:", -1, 6, 246, 96, 10
+    LTEXT           "YouTube c&ookies file:", IDC_COOKIES_LABEL, 6, 246, 96, 10
     EDITTEXT        IDC_COOKIES,               106, 244, 148, 13, 0x0080 | 0x00010000 | 0x00800000
     PUSHBUTTON      "B&rowse...", IDC_COOKIES_BROWSE, 258, 244, 42, 13
-    LTEXT           "&Admin mode:",        -1,  6, 262, 96, 10
-    COMBOBOX        IDC_ADMIN_MODE,            106, 260, 194, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Re&join after a kick:", -1,  6, 281, 96, 10
-    COMBOBOX        IDC_KICK_SECS,             106, 279, 194, 90, 0x0003 | 0x00200000 | 0x00010000
-    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 298, 294, 10
-    EDITTEXT        IDC_ADMIN_USERS,             6, 310, 294, 32,
+    LTEXT           "YouTube locat&ion:",  IDC_YT_COUNTRY_LABEL,  6, 262, 96, 10
+    COMBOBOX        IDC_YT_COUNTRY,            106, 260, 194, 120, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "YouTube language:",   IDC_YT_LANGUAGE_LABEL, 6, 278, 96, 10
+    COMBOBOX        IDC_YT_LANGUAGE,           106, 276, 194, 120, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "&Admin mode:",        -1,  6, 294, 96, 10
+    COMBOBOX        IDC_ADMIN_MODE,            106, 292, 194, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Re&join after a kick:", -1,  6, 313, 96, 10
+    COMBOBOX        IDC_KICK_SECS,             106, 311, 194, 90, 0x0003 | 0x00200000 | 0x00010000
+    LTEXT           "Admin &usernames (comma or newline separated):", -1, 6, 330, 294, 10
+    EDITTEXT        IDC_ADMIN_USERS,             6, 342, 294, 32,
                     0x0004 | 0x0040 | 0x00200000 | 0x00010000 | 0x00800000
 END
 
-IDD_CFG_AUDIO DIALOGEX 0, 0, 306, 348
+IDD_CFG_AUDIO DIALOGEX 0, 0, 306, 380
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
@@ -277,7 +286,7 @@ BEGIN
     EDITTEXT        IDC_RAMP,                  106, 166,  60, 13, 0x0080 | 0x00010000 | 0x00800000
 END
 
-IDD_CFG_RADIO DIALOGEX 0, 0, 306, 348
+IDD_CFG_RADIO DIALOGEX 0, 0, 306, 380
 STYLE 0x40000000 | 0x00000400 | 0x00000040 | 0x00010000
 FONT 9, "Segoe UI", 400, 0, 1
 BEGIN
@@ -288,4 +297,51 @@ BEGIN
     EDITTEXT        IDC_RADIO_DELAY,           106,  38,  60, 13, 0x0080 | 0x00010000 | 0x00800000
     LTEXT           "&Search limit:",      -1,  6,  56, 96, 10
     EDITTEXT        IDC_SEARCH_LIMIT,          106,  54,  60, 13, 0x0080 | 0x2000 | 0x00010000 | 0x00800000
+END
+
+// --- Spotify sign-in: choose how ------------------------------------------
+#define IDD_SIGNIN          800
+#define IDC_SIGNIN_BROWSER  801
+#define IDC_SIGNIN_CODE     802
+
+IDD_SIGNIN DIALOGEX 0, 0, 250, 86
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Sign in to Spotify"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "How do you want to sign in?", -1, 10, 10, 230, 10
+    // WS_GROUP 0x00020000 | WS_TABSTOP 0x00010000 on the first button makes
+    // the pair one group that the arrow keys move within.
+    AUTORADIOBUTTON "&Browser: authorize in a browser on this PC", IDC_SIGNIN_BROWSER, 10, 26, 230, 12, 0x00020000 | 0x00010000
+    AUTORADIOBUTTON "&Pair code: confirm a short code on any device", IDC_SIGNIN_CODE, 10, 40, 230, 12
+    DEFPUSHBUTTON   "&Continue", IDOK,     136, 64, 50, 14
+    PUSHBUTTON      "Cancel",    IDCANCEL, 190, 64, 50, 14
+END
+
+// --- Spotify sign-in: the pair code ---------------------------------------
+// The code and link sit in read-only edits, so a screen reader can read them
+// character by character and they can be selected and copied by hand.
+#define IDD_PAIR            810
+#define IDC_PAIR_CODE       811
+#define IDC_PAIR_URL        812
+#define IDC_PAIR_COPY_CODE  813
+#define IDC_PAIR_COPY_URL   814
+#define IDC_PAIR_OPEN       815
+#define IDC_PAIR_STATUS     816
+
+IDD_PAIR DIALOGEX 0, 0, 300, 120
+STYLE 0x80000000 | 0x00C00000 | 0x00080000 | 0x00000080 | 0x00000800 | 0x00000040
+CAPTION "Spotify pair code"
+FONT 9, "Segoe UI", 400, 0, 1
+BEGIN
+    LTEXT           "Pair &code:", -1, 10, 11, 56, 10
+    // ES_AUTOHSCROLL 0x0080 | ES_READONLY 0x0800
+    EDITTEXT        IDC_PAIR_CODE, 70, 9, 220, 13, 0x0080 | 0x0800 | 0x00010000 | 0x00800000
+    LTEXT           "Pairing &link:", -1, 10, 29, 56, 10
+    EDITTEXT        IDC_PAIR_URL,  70, 27, 220, 13, 0x0080 | 0x0800 | 0x00010000 | 0x00800000
+    PUSHBUTTON      "C&opy code",      IDC_PAIR_COPY_CODE, 10,  48, 70, 14
+    PUSHBUTTON      "Copy &link",      IDC_PAIR_COPY_URL,  86,  48, 70, 14
+    PUSHBUTTON      "Open page &again", IDC_PAIR_OPEN,     162, 48, 80, 14
+    LTEXT           "", IDC_PAIR_STATUS, 10, 70, 280, 20
+    PUSHBUTTON      "Cancel", IDCANCEL, 240, 98, 50, 14
 END

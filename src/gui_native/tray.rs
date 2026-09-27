@@ -61,6 +61,10 @@ struct Tray {
     /// Set once shutdown begins, so a dialog dismissed during exit cannot
     /// start bots into a closing app.
     exiting: Cell<bool>,
+    /// Whether an update left only the old YouTube tools, worked out off the
+    /// message loop. The offer is made once.
+    tools_offer_rx: crossbeam_channel::Receiver<bool>,
+    tools_offer_done: Cell<bool>,
 }
 
 /// Run the tray. Blocks until the user exits.
@@ -110,6 +114,14 @@ pub fn run() {
     // Only gate startup on an update check when there is something to gate:
     // a fresh install has no bots to delay, so it goes straight to the
     // "create a config?" prompt with no network wait.
+    // Ask a Deno on PATH its version now, off the message loop, so the first
+    // menu does not launch it there. The answer is remembered per binary.
+    // The same check also says whether to offer the new YouTube tools.
+    let (tools_tx, tools_offer_rx) = crossbeam_channel::bounded::<bool>(1);
+    std::thread::spawn(move || {
+        let _ = tools_tx.send(crate::gui_native::youtube_tools::offer_after_upgrade());
+    });
+
     let has_configs = !crate::config::list_configs().is_empty();
     let update_rx = if has_configs && crate::settings::load().check_updates_on_startup {
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -132,6 +144,8 @@ pub fn run() {
         update_rx,
         update_done: Cell::new(false),
         exiting: Cell::new(false),
+        tools_offer_rx,
+        tools_offer_done: Cell::new(false),
     });
 
     {
@@ -238,6 +252,7 @@ fn register_events(wnd: &gui::WindowMain, tray: &Rc<Tray>, taskbar_created: u32)
             if let Some(_guard) = ModalGuard::acquire() {
                 poll_startup_update(&wnd2, &tray);
                 report_auth_outcome(wnd2.hwnd(), &tray);
+                poll_tools_offer(&wnd2, &tray);
             }
             Ok(())
         });
@@ -348,6 +363,9 @@ fn show_menu(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>, at: w::POIN
     // editor over the first, or a second YouTube install racing the same
     // temp paths) was reachable mid-modal.
     let Some(_guard) = ModalGuard::acquire() else {
+        // Doing nothing here read as a dead icon while the update window was
+        // up. Focus the open window instead, so the icon still leads somewhere.
+        focus_open_window(hwnd);
         return;
     };
     let statuses = tray.manager.borrow().statuses();
@@ -465,9 +483,7 @@ fn handle_action(
             BotAction::Config => edit_config(wnd, tray, &name),
             BotAction::Remove => remove_server(wnd, tray, &name),
         },
-        MenuAction::SpotifyAuth => {
-            spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
-        }
+        MenuAction::SpotifyAuth => sign_in_spotify(hwnd, wnd, tray),
         MenuAction::CheckUpdates => check_for_updates_now(hwnd, wnd),
         MenuAction::AddServer => add_server(wnd, tray),
         MenuAction::YoutubeInstall => {
@@ -712,6 +728,23 @@ fn pump_until_ready<T>(_hwnd: &w::HWND, rx: &crossbeam_channel::Receiver<T>) -> 
     }
 }
 
+/// Bring the window this thread has open to the front: the topmost visible,
+/// enabled top-level window other than the hidden tray window. While a modal
+/// is up its owner is disabled, so that is the dialog the user must answer.
+fn focus_open_window(tray_hwnd: &w::HWND) {
+    let mut target: Option<w::HWND> = None;
+    let _ = w::EnumThreadWindows(w::GetCurrentThreadId(), |hwnd: w::HWND| {
+        if hwnd.ptr() != tray_hwnd.ptr() && hwnd.IsWindowVisible() && hwnd.IsWindowEnabled() {
+            target = Some(hwnd);
+            return false;
+        }
+        true
+    });
+    if let Some(window) = target {
+        window.SetForegroundWindow();
+    }
+}
+
 thread_local! {
     /// True while a menu action (possibly a modal dialog) is executing on the
     /// GUI thread. The tray menu stays reachable during a modal's message
@@ -785,6 +818,11 @@ fn start_bots(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
     }
     let names = { tray.manager.borrow_mut().load_configs() };
     if names.is_empty() {
+        // Held through the prompt and the editor it opens: without it the icon
+        // opened the menu over them, and Add Server there started a second editor.
+        let Some(_guard) = ModalGuard::acquire() else {
+            return;
+        };
         let answer = hwnd.MessageBox(
             "No config files found.\n\nWould you like to create one now?\n\n\
              You can also create one later from the tray menu (Add Server).",
@@ -832,6 +870,39 @@ fn poll_startup_update(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
     }
 }
 
+/// Offer the new YouTube tools once, when an update left only the old ones.
+/// The tray relaunches into a new version with no terminal to prompt in, so
+/// this is the only place an upgraded Windows install hears about it.
+fn poll_tools_offer(wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    if tray.tools_offer_done.get() || tray.exiting.get() {
+        return;
+    }
+    // After the update offer: accepting an update relaunches the tray anyway.
+    if tray.update_rx.is_some() && !tray.update_done.get() {
+        return;
+    }
+    let offer = match tray.tools_offer_rx.try_recv() {
+        Ok(offer) => offer,
+        Err(crossbeam_channel::TryRecvError::Empty) => return,
+        Err(crossbeam_channel::TryRecvError::Disconnected) => false,
+    };
+    tray.tools_offer_done.set(true);
+    if !offer {
+        return;
+    }
+    let answer = wnd.hwnd().MessageBox(
+        crate::gui_native::youtube_tools::UPGRADE_OFFER,
+        "YouTube tools",
+        co::MB::YESNO | co::MB::ICONQUESTION,
+    );
+    if matches!(answer, Ok(co::DLGID::YES)) {
+        crate::gui_native::progress_dialog::run(wnd, "Install YouTube tools", |p| {
+            crate::gui_native::progress_dialog::youtube_install(p)
+        });
+        tray.facts.borrow().mark_stale();
+    }
+}
+
 /// Blocking startup update check on a fresh runtime, capped so a slow network
 /// cannot stall bot startup.
 fn check_for_update() -> Option<crate::update::UpdateInfo> {
@@ -864,6 +935,41 @@ fn report_auth_outcome(hwnd: &w::HWND, tray: &Rc<Tray>) {
                 co::MB::OK | co::MB::ICONERROR,
             );
         }
+    }
+}
+
+/// Ask how to sign in to Spotify, then sign in that way.
+fn sign_in_spotify(hwnd: &w::HWND, wnd: &gui::WindowMain, tray: &Rc<Tray>) {
+    use crate::gui_native::signin_dialog::{self, PairOutcome};
+    use crate::spotify::auth::SignInMethod;
+    match signin_dialog::choose(wnd) {
+        Some(SignInMethod::Browser) => {
+            spawn_spotify_auth(tray.facts.borrow().staleness_flag(), tray.auth_tx.clone())
+        }
+        Some(SignInMethod::Code) => {
+            let outcome = signin_dialog::pair(wnd);
+            tray.facts.borrow().mark_stale();
+            match outcome {
+                PairOutcome::SignedIn => {
+                    let _ = hwnd.MessageBox(
+                        "Signed in to Spotify. The login is saved for every bot here.",
+                        "TT Spotify",
+                        co::MB::OK | co::MB::ICONINFORMATION,
+                    );
+                }
+                PairOutcome::Failed(e) => {
+                    let _ = hwnd.MessageBox(
+                        &format!("Could not sign in to Spotify.
+
+{e}"),
+                        "TT Spotify",
+                        co::MB::OK | co::MB::ICONERROR,
+                    );
+                }
+                PairOutcome::Cancelled => {}
+            }
+        }
+        None => {}
     }
 }
 

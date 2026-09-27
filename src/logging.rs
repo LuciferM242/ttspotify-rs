@@ -302,6 +302,71 @@ impl<S: tracing::Subscriber> Layer<S> for AudioKeyWatch {
     }
 }
 
+/// Per-bot log files, keyed by the id their threads carry.
+///
+/// The tray runs every bot in one process. A thread-local subscriber only
+/// covers the thread that set it, and a bot does its work on a tokio runtime
+/// and its own threads, so routing per line - on the thread that emitted it -
+/// is what actually keeps one bot's log to itself.
+static BOT_LOGS: parking_lot::Mutex<Vec<(u64, tracing_appender::non_blocking::NonBlocking)>> =
+    parking_lot::Mutex::new(Vec::new());
+
+/// A bot's claim on its own log file. Dropping it flushes what is buffered and
+/// gives the bot's threads back to the tray log.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct BotLog {
+    id: u64,
+    _guard: WorkerGuard,
+}
+
+impl Drop for BotLog {
+    fn drop(&mut self) {
+        BOT_LOGS.lock().retain(|(id, _)| *id != self.id);
+    }
+}
+
+/// Send what `id`'s threads log to `<log_dir>/<name>/<date>.log`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn register_bot_log(id: u64, log_dir: &Path, name: &str) -> BotLog {
+    let (writer, guard) = create_file_writer(&log_dir.join(name), "log");
+    BOT_LOGS.lock().push((id, writer));
+    BotLog { id, _guard: guard }
+}
+
+/// Writes each line to the log of the bot whose thread produced it, or to the
+/// tray's own log when the thread belongs to no bot.
+///
+/// A library that spawns threads of its own is the exception: librespot's
+/// player thread carries no tag, so what it logs lands in the tray's log. The
+/// bot's own threads - its runtime, including the blocking pool, and the audio
+/// pipeline - are all tagged.
+#[derive(Clone)]
+pub struct BotRouter {
+    tray: tracing_appender::non_blocking::NonBlocking,
+}
+
+impl BotRouter {
+    /// The file this thread's lines belong in, chosen fresh each time: a
+    /// thread's bot is fixed, but a bot's log comes and goes with the bot.
+    pub fn writer_for_this_thread(&self) -> tracing_appender::non_blocking::NonBlocking {
+        let id = crate::bot::identity::current_bot();
+        if id != 0 {
+            if let Some((_, writer)) = BOT_LOGS.lock().iter().find(|(bot, _)| *bot == id) {
+                return writer.clone();
+            }
+        }
+        self.tray.clone()
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BotRouter {
+    type Writer = tracing_appender::non_blocking::NonBlocking;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.writer_for_this_thread()
+    }
+}
+
 /// Initialize logging with both stdout and file output.
 /// Returns a guard that must be kept alive for the file logger to flush.
 pub fn init_logging(config_path: &str) -> WorkerGuard {
@@ -329,18 +394,35 @@ pub fn init_logging(config_path: &str) -> WorkerGuard {
     guard
 }
 
+/// Logging for the one-shot CLI commands: plain lines on stderr, no file.
+///
+/// A second call is a no-op rather than a panic. `auth` set up its own
+/// subscriber on top of this one with `init()`, which aborts the process when
+/// a global subscriber already exists.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn init_cli_logging(quiet: bool) {
+    let _ = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .with_max_level(if quiet { tracing::Level::ERROR } else { tracing::Level::INFO })
+        .try_init();
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
-/// Initialize file-only logging (no stdout) as the global subscriber. Used by tray app.
-/// Logs to {log_dir}/{name}.log with thread names for per-instance identification.
+/// Initialize file-only logging (no stdout) as the global subscriber. Used by
+/// the tray app. `<log_dir>/<name>/<date>.log` keeps the tray's own doings -
+/// bots started and stopped, update checks, config saves. A line from a bot's
+/// thread is routed to that bot's log instead (see `BotRouter`).
 /// Returns a guard that must be kept alive for the file logger to flush.
 pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
-    let (file_writer, guard) = create_file_writer(&log_dir.join(name), "log");
+    let (tray_writer, guard) = create_file_writer(&log_dir.join(name), "log");
 
     let file_layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_ansi(false)
         .with_thread_names(true)
-        .with_writer(file_writer);
+        .with_writer(BotRouter { tray: tray_writer });
 
     tracing_subscriber::registry()
         .with(default_env_filter())
@@ -351,31 +433,95 @@ pub fn init_file_logging(log_dir: &Path, name: &str) -> WorkerGuard {
     guard
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-/// Create a per-instance file logger without setting it as the global subscriber.
-/// Returns a Dispatch and guard. Use `tracing::dispatcher::set_default()` on the
-/// target thread to activate it. Threads without a thread-local subscriber fall
-/// back to the global one (tray.log).
-pub fn create_instance_logging(log_dir: &Path, name: &str) -> (tracing::Dispatch, WorkerGuard) {
-    let (file_writer, guard) = create_file_writer(&log_dir.join(name), "log");
-
-    let subscriber = tracing_subscriber::registry()
-        .with(default_env_filter())
-        .with(AudioKeyWatch)
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_ansi(false)
-                .with_thread_names(true)
-                .with_writer(file_writer),
-        );
-
-    (tracing::Dispatch::new(subscriber), guard)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A router with nothing registered: everything lands in the tray log.
+    /// Drop the guard before reading the file: the writer is a background
+    /// thread, and only the guard waits for it to finish writing.
+    fn tray_only_router(dir: &Path) -> (BotRouter, WorkerGuard) {
+        let (tray, guard) = create_file_writer(&dir.join("tray"), "log");
+        (BotRouter { tray }, guard)
+    }
+
+    #[test]
+    fn a_line_goes_to_the_log_of_the_bot_whose_thread_wrote_it() {
+        use std::io::Write as _;
+
+        let dir = scratch("routing");
+        let (tray, tray_guard) = tray_only_router(&dir);
+        let alpha = crate::bot::identity::next_bot_id();
+        let beta = crate::bot::identity::next_bot_id();
+        let alpha_log = register_bot_log(alpha, &dir, "alpha");
+        let beta_log = register_bot_log(beta, &dir, "beta");
+
+        for (id, line) in [(alpha, "alpha speaking
+"), (beta, "beta speaking
+")] {
+            std::thread::spawn({
+                let tray = tray.clone();
+                move || {
+                    crate::bot::identity::set_current_bot(id);
+                    tray.writer_for_this_thread().write_all(line.as_bytes()).unwrap();
+                }
+            })
+            .join()
+            .unwrap();
+        }
+        // Untagged: nobody's bot, so it belongs to the tray.
+        tray.writer_for_this_thread().write_all(b"tray speaking
+").unwrap();
+
+        drop(alpha_log);
+        drop(beta_log);
+        drop(tray);
+        drop(tray_guard);
+
+        let read = |name: &str| {
+            let dir = dir.join(name);
+            let file = std::fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
+            std::fs::read_to_string(file).unwrap()
+        };
+        assert_eq!(read("alpha"), "alpha speaking
+");
+        assert_eq!(read("beta"), "beta speaking
+");
+        assert_eq!(read("tray"), "tray speaking
+");
+        crate::bot::identity::set_current_bot(0);
+    }
+
+    #[test]
+    fn a_stopped_bot_stops_claiming_its_lines() {
+        use std::io::Write as _;
+
+        let dir = scratch("routing_after_stop");
+        let (tray, tray_guard) = tray_only_router(&dir);
+        let id = crate::bot::identity::next_bot_id();
+        let bot_log = register_bot_log(id, &dir, "gone");
+        crate::bot::identity::set_current_bot(id);
+        drop(bot_log);
+
+        // The thread keeps its tag after the bot is gone; without the
+        // unregister its lines would be written to a file nothing flushes.
+        tray.writer_for_this_thread().write_all(b"after the bot stopped
+").unwrap();
+        drop(tray);
+        drop(tray_guard);
+
+        let tray_dir = dir.join("tray");
+        let file = std::fs::read_dir(&tray_dir).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "after the bot stopped
+");
+        crate::bot::identity::set_current_bot(0);
+    }
+
+    #[test]
+    fn cli_logging_can_be_set_up_twice() {
+        init_cli_logging(false);
+        init_cli_logging(true);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()

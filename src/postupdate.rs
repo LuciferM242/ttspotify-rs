@@ -2,8 +2,8 @@
 //! binary that arrived rather than the one it replaced.
 //!
 //! Every step here compares something on disk against a constant compiled into
-//! this build: the config schema, the systemd unit template, the tools yt-dlp
-//! now needs. That comparison only means anything in the new binary. It used to
+//! this build: the config schema, the systemd unit template, the YouTube tools
+//! this build plays with. That comparison only means anything in the new binary. It used to
 //! run in the old one — `self_replace` swaps the file on disk, but the process
 //! already in memory keeps its own code and its own constants, so a v0.7.0 bot
 //! updating to v1.0.0 compared v0.7.0's unit stamp against v0.7.0's version
@@ -36,7 +36,10 @@ pub fn reconcile(mode: Mode) {
     crate::config::top_up_configs();
 
     #[cfg(target_os = "linux")]
-    reconcile_unit(mode);
+    {
+        reconcile_unit(mode);
+        repoint_unit(mode);
+    }
 
     check_youtube_tools(mode);
 }
@@ -75,31 +78,101 @@ fn reconcile_unit(mode: Mode) {
     }
 }
 
-/// A YouTube install from before yt-dlp needed a JavaScript runtime looks
-/// complete and plays badly: formats go missing and streams 403. The tools
-/// themselves know how to fix it, so this only has to notice and say so.
+/// Point the service at this binary when it still runs another copy.
+///
+/// A bot set up from a download ran its service from the download, and an
+/// update replaces only the installed copy, so after an update the bots stayed
+/// on the old version while `--version` reported the new one.
+#[cfg(target_os = "linux")]
+fn repoint_unit(mode: Mode) {
+    let Some(unit) = crate::service::installed_unit() else {
+        return;
+    };
+    let Some(runs) = crate::service::exec_start_binary(&unit) else {
+        return;
+    };
+    let Ok(this) = std::env::current_exe() else {
+        return;
+    };
+    let installed = crate::install::installed_binary();
+    if !needs_repoint(std::path::Path::new(&runs), &this, installed.as_deref()) {
+        return;
+    }
+    let shown = this.display();
+    match mode {
+        Mode::Startup => tracing::warn!(
+            "The systemd service runs {runs}, not this copy ({shown}), so bots started by it do \
+             not get this version. To point it here, {}",
+            crate::hints::install_service()
+        ),
+        Mode::Interactive => {
+            println!();
+            println!("Your systemd service runs {runs},");
+            println!("not {shown}, the copy that was just updated, so your bots would stay on the old version.");
+            if prompt_yes_no("Point the service at the updated copy?") {
+                match crate::service::write_unit_file_for(&this) {
+                    Ok(_) => println!("Service file updated."),
+                    Err(e) => println!(
+                        "Could not update the service file: {e}. To do it later, {}",
+                        crate::hints::install_service()
+                    ),
+                }
+            } else {
+                println!("Left as it is. To do it later, {}", crate::hints::install_service());
+            }
+        }
+    }
+}
+
+/// Whether a service running `unit_binary` should be pointed at `this`: only
+/// when they differ and `this` is the installed copy, never a download that
+/// happened to run the update.
+#[cfg(target_os = "linux")]
+fn needs_repoint(unit_binary: &std::path::Path, this: &std::path::Path, installed: Option<&std::path::Path>) -> bool {
+    let same = |a: &std::path::Path, b: &std::path::Path| {
+        a == b || std::fs::canonicalize(a).ok().is_some_and(|a| std::fs::canonicalize(b).ok() == Some(a))
+    };
+    !same(unit_binary, this) && installed.is_some_and(|installed| same(installed, this))
+}
+
+/// YouTube tools installed by a version that played through yt-dlp do not
+/// include the Deno sidecar, so YouTube is silent until they are installed.
 fn check_youtube_tools(mode: Mode) {
-    let tools = crate::youtube::setup::installed_tool_versions();
-    if tools.yt_dlp.is_none() || tools.js_runtime.is_some() {
+    use crate::youtube::setup;
+    let Ok(paths) = setup::resolve_paths() else {
+        return;
+    };
+    if setup::is_installed(&paths) {
+        // The yt-dlp tools can outlive the upgrade: they stay while a bot is
+        // still on the old version, and a bot starting on this one is what
+        // notices they are free to go.
+        match mode {
+            Mode::Startup => setup::drop_old_tools(&paths.lib_dir, &|line| tracing::info!("{}", line.trim())),
+            Mode::Interactive => setup::drop_old_tools(&paths.lib_dir, &|line| println!("{line}")),
+        }
+        return;
+    }
+    if !setup::has_legacy_tools(&paths) {
         return;
     }
     match mode {
         Mode::Startup => tracing::warn!(
-            "The YouTube tools are installed without a JavaScript runtime, which YouTube now \
-             needs; some tracks will fail to play. To fix it, {}",
-            crate::hints::update_youtube_tools()
+            "YouTube playback now runs on Deno, which the YouTube tools installed by an older \
+             version do not include; YouTube tracks will not play until they are installed. \
+             To install them, {}",
+            crate::hints::install_youtube_tools()
         ),
         Mode::Interactive => {
             println!();
-            println!("Your YouTube tools predate the JavaScript runtime YouTube now requires,");
-            println!("so some tracks would fail to play. Updating them also refreshes yt-dlp.");
-            if prompt_yes_no("Update the YouTube tools now?") {
-                if let Err(e) = crate::wizard::run_update_tools() {
-                    println!("  Could not update the YouTube tools: {e}");
-                    println!("  To try again later, {}", crate::hints::update_youtube_tools());
+            println!("YouTube playback now runs on Deno, which your YouTube tools do not include yet,");
+            println!("so YouTube tracks would not play.");
+            if prompt_yes_no("Install the YouTube tools now?") {
+                if let Err(e) = crate::wizard::run_youtube_setup() {
+                    println!("  Could not install the YouTube tools: {e}");
+                    println!("  To try again later, {}", crate::hints::install_youtube_tools());
                 }
             } else {
-                println!("  Skipped. To do it later, {}", crate::hints::update_youtube_tools());
+                println!("  Skipped. To do it later, {}", crate::hints::install_youtube_tools());
             }
         }
     }
@@ -116,4 +189,30 @@ fn prompt_yes_no(message: &str) -> bool {
         return false;
     }
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::needs_repoint;
+    use std::path::Path;
+
+    #[test]
+    fn a_service_on_a_download_is_pointed_at_the_updated_install() {
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(needs_repoint(Path::new("/home/u/Downloads/tt-spotify-bot"), installed, Some(installed)));
+    }
+
+    #[test]
+    fn a_service_already_on_this_copy_is_left_alone() {
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(!needs_repoint(installed, installed, Some(installed)));
+    }
+
+    #[test]
+    fn a_download_that_ran_the_update_is_never_made_the_service() {
+        let download = Path::new("/home/u/Downloads/tt-spotify-bot");
+        let installed = Path::new("/home/u/.local/bin/ttspotify");
+        assert!(!needs_repoint(installed, download, Some(installed)));
+        assert!(!needs_repoint(Path::new("/opt/old"), download, None));
+    }
 }

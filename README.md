@@ -18,10 +18,17 @@ Tracks, albums, playlists, search, and radio recommendations.
 
 ### YouTube
 
-Videos, Shorts, playlists, albums, and search, played through
-[yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Videos, Shorts, playlists, albums, search, and autoplay. "Start radio" and mix
+links play as the station they name, and a link with a time (`t=90`) starts
+there. Audio is fetched by a small
+helper built on [youtubei.js](https://github.com/LuanRT/YouTube.js), which the
+YouTube tools install sets up.
 
-YouTube requires **cookies** to play reliably. Export them with a browser extension:
+**Cookies** are optional. Most tracks play without an account. When YouTube
+refuses one without a sign-in, such as an age-restricted video, the bot tries it
+again signed in with your cookies. They also let `liked` play your YouTube Music
+liked songs; search and autoplay never use them. Export them with a browser
+extension:
 
 1. Install a cookies-export extension — **Get cookies.txt LOCALLY** ([Chrome / Edge](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc), or the equivalent for Firefox).
 2. Open a **private / incognito** window and sign in to YouTube.
@@ -48,16 +55,23 @@ Download the latest build from the [**Releases page**](https://github.com/Lucife
 
 1. Download `tt-spotify-bot-windows-x86_64.zip`, extract it, and run the `.exe` — a tray icon appears.
 2. On first run it prompts you to create a config (a setup dialog). Fill it in and the bot connects.
-3. Use the tray menu for **Spotify auth**, **Install YouTube tools**, and each bot's start / stop / restart / logs / edit / **Remove Server**.
+3. Open the tray menu with a right click or Enter on the icon. **Sign in / re-authenticate**, under the Spotify submenu, signs in, in a browser or with a pair code confirmed on any device; **Install tools**, under the YouTube tools submenu, sets up YouTube; and each bot has **Start**, **Stop**, **Restart**, **View Logs**, **Edit Config** and **Remove Server**. **Settings** covers update checks, launching on Windows startup and the saved-music limits.
 
 ### Linux (x86_64, Ubuntu 22.04+ / glibc)
 
-Install the one runtime dependency — `libpulse0`, a shared library the TeamTalk
-SDK links against (the bot tells you if it is missing, and `ttspotify doctor`
-checks for it):
+Install the two runtime dependencies — the PulseAudio and ALSA libraries the
+TeamTalk SDK links against (the bot tells you if one is missing, and
+`ttspotify doctor` checks for both and names the right package). On Ubuntu
+24.04 and Debian 13 or newer:
 
 ```bash
-sudo apt install -y libpulse0
+sudo apt install -y libpulse0 libasound2t64
+```
+
+On Ubuntu 22.04 and Debian 12, the ALSA package is still called `libasound2`:
+
+```bash
+sudo apt install -y libpulse0 libasound2
 ```
 
 Extract the archive:
@@ -73,15 +87,28 @@ that is writable, and tells you if that directory is not on your `PATH` yet:
 ./tt-spotify-bot install
 ```
 
-Run it — on first launch, with nothing configured yet, it offers to install
-itself on your `PATH`, walks you through the **setup wizard**, then connects:
+Run it — on first launch, with nothing configured yet, it walks you through the
+**setup wizard** (offering to install itself on your `PATH` first if you skipped
+the step above), then runs the bot, or leaves it to the service when you enabled
+one during setup:
 
 ```bash
 ttspotify
 ```
 
-To install the YouTube tools (yt-dlp, bgutil-pot, and Deno — the JavaScript
-runtime YouTube playback now needs; an existing Deno is used as-is):
+To sign in to Spotify, or switch accounts. It asks how: in a browser on this
+machine, or with a pair code you confirm at spotify.com/pair on any device,
+such as a phone, which suits a server with no browser. `ttspotify auth code`
+and `ttspotify auth browser` skip the question, and `ttspotify auth status`
+checks the saved login:
+
+```bash
+ttspotify auth
+```
+
+To install the YouTube tools (Deno, the JavaScript runtime YouTube playback
+runs on, and the small helper it runs; a Deno 2.3 or newer already on your
+system is used as it is):
 
 ```bash
 ttspotify yt install
@@ -112,10 +139,17 @@ is running, and the command that fixes whatever looks wrong.
 
 Runs on a Raspberry Pi (Pi Zero 2 W through Pi 5) on **64-bit Raspberry Pi OS**
 (Debian 12 / bookworm or newer). 32-bit boards (Pi Zero / 1 / 2) are not
-supported. Same steps as x86_64, using the aarch64 archive:
+supported. Same steps as x86_64, using the aarch64 archive. On Raspberry Pi OS
+bookworm (Debian 12):
 
 ```bash
-sudo apt install -y libpulse0
+sudo apt install -y libpulse0 libasound2
+```
+
+On Raspberry Pi OS trixie (Debian 13):
+
+```bash
+sudo apt install -y libpulse0 libasound2t64
 ```
 
 ```bash
@@ -137,18 +171,22 @@ binary in place. No manual re-download needed.
 
 - **Windows:** the tray checks on startup and offers the update; there's also
   a **Check for updates** item in the tray menu.
-- **Linux:** run `ttspotify update`. If bots are running as systemd
-  services, it offers to restart them on the new version — and to refresh
-  your service file when a release improves it.
+- **Linux:** run `ttspotify update`. It brings your service file up to date,
+  offers to point a bot that still runs from its download at the updated copy,
+  and if bots are running as systemd services, offers to restart them on the
+  new version.
 
-Updating the YouTube tools (yt-dlp and friends) is separate:
-`ttspotify yt update`, or **Update tools** in the tray menu.
+Updating the YouTube tools (Deno) is separate: `ttspotify yt update`, or
+**Update tools** under the YouTube tools submenu of the tray menu. Coming from a version
+that played YouTube through yt-dlp, install the new tools once with
+`ttspotify yt install`; `ttspotify update` offers to, and the Windows tray asks
+after updating. Until then, a YouTube request says the tools are missing.
 
 ## Running multiple bots
 
 Multiple instances are supported out of the box — one per config file, each with its own server and account.
 
-**Windows:** the tray manages them all. Right-click → **Add Server** once per bot; every config shows up in the tray menu with its own start / stop / restart / logs, and a **Remove Server** that asks before deleting anything.
+**Windows:** the tray manages them all. Use **Add Server** in the tray menu once per bot; every config shows up in the tray menu with its own start / stop / restart / logs, and a **Remove Server** that asks before deleting anything.
 
 **Linux:** create each bot's config with the wizard, giving it a name:
 
@@ -223,6 +261,10 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 |---|---|
 | `host` | TeamTalk server address |
 | `tcpPort` / `udpPort` | server ports (usually both `10333`) |
+| `encrypted` | `true` for a server that uses an encrypted connection |
+| `botGender` | `neutral`, `male` or `female` |
+| `rejoinAfterKickSeconds` | after a server kick, wait this many seconds and rejoin; leave it out to stay out until the bot is started again |
+| `licenseName` / `licenseKey` | a TeamTalk SDK license, if you have one |
 | `botName` | the bot's display name in the channel |
 | `username` / `password` | the bot's TeamTalk login |
 | `ChannelName` | channel to join, e.g. `/Music` |
@@ -232,6 +274,8 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 | `defaultService` | `Spotify` or `YouTube` on startup (capitalisation does not matter) |
 | `enabledServices` | which services this bot may use at all, e.g. `["youtube"]`. Missing means both |
 | `youtubeCookiesFile` | path to your YouTube `cookies.txt` (optional) |
+| `youtubeCountry` | location YouTube searches are made from, e.g. `"IN"`. Empty is YouTube's default, the United States |
+| `youtubeLanguage` | language YouTube answers in, e.g. `"en-GB"`. Empty is YouTube's default, English (US) |
 | `adminMode` | who may use admin commands: `Everyone`, `TtRights`, `List`, or `Both` (default) |
 | `admins` | usernames treated as admins (used by `List` / `Both`) |
 | `defaultLanguage` | language code for bot replies, e.g. `en` (default) or `pt` |
@@ -240,7 +284,7 @@ Common fields you might edit (the wizard sets sensible defaults for the rest):
 
 The `q` (quit), `rs` (restart), `jc` (join channel), and `glang` (default
 language) commands can be limited to admins. Pick who counts as an admin in the
-config editor (Windows) or setup wizard (Linux):
+config editor (Windows), or the setup wizard or `ttspotify edit` (Linux):
 
 - **Everyone** — no restrictions; any user can run every command.
 - **TeamTalk server admins** — accounts your TeamTalk server marks as admin.
@@ -292,10 +336,12 @@ Send these to the bot in a **private message** — it only responds to PMs, not 
 | `shuffle [on\|off]` | Shuffle what is coming; no argument toggles it. Works alongside repeat |
 | `v [0-100]` | Get or set volume |
 | `sf [N]` / `sb [N]` | Seek forward / backward N seconds (default 10) |
+| `seek <N>` | Go to N seconds into the track |
 | `search <query>` | Search, then type a number to pick (`a` to cancel) |
 | `pick <N>` | Pick from the last search by number |
-| `radio [on\|off]` | Toggle Spotify recommendations (Spotify only) |
-| `liked` | Play your Spotify Liked Songs (alias: `fav`, Spotify only) |
+| `radio [on\|off]` | Toggle recommendations when the queue runs out (autoplay on YouTube) |
+| `liked` | Play your liked songs: Spotify Liked Songs, or YouTube Music liked songs when a cookies file is set (alias: `fav`) |
+| `library [words]` | List your Spotify playlists, then type a number to play one; with words, only the playlists matching them, and a single match plays straight away (alias: `lib`, Spotify only) |
 | `sp` / `yt` | Switch between Spotify and YouTube |
 | `link` | URL of the current track |
 | `lang [code]` | Show available languages, or set yours (`lang clear` to reset) |
@@ -316,7 +362,11 @@ Admin-only (see [Admin permissions](#admin-permissions)):
 
 ## Building from source
 
-Build prerequisites — **Linux:** gcc, pkg-config, libssl-dev, libclang-dev.
+Building needs Rust 1.88 or newer. A distribution's packaged Rust is often
+older, so the setup scripts below install or update it through rustup.
+
+Build prerequisites — **Linux:** gcc, pkg-config, libssl-dev, libclang-dev, and
+the runtime libraries listed under Installation (libpulse and ALSA).
 **Windows:** Visual Studio Build Tools with the **Desktop development with C++**
 workload, plus LLVM.
 

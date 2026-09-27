@@ -1,54 +1,15 @@
-//! `--edit`: change a config that already exists.
-//!
-//! Windows has a tabbed editor with every field on it. Linux had `--setup`,
-//! which builds a config from scratch from the defaults — so changing one
-//! number meant retyping the server, the login and the channel, and the fields
-//! the wizard never asks about (audio quality, normalisation, jitter buffer,
-//! radio batching) could only be changed by hand-editing JSON.
-//!
-//! This is the same set of fields as the Windows editor, as a numbered menu.
-//! Every prompt is seeded with the current value and Enter keeps it, so the
-//! cost of changing one setting is one number and one answer.
+//! `edit`: change an existing config through a numbered menu. Every prompt
+//! starts at the current value, and Enter keeps it.
 
-use crate::config::{kick_delay_label, kick_delay_options, AdminMode, BotConfig, EnabledServices};
+use crate::config::{AdminMode, BotConfig, EnabledServices};
 use crate::error::BotError;
 use crate::services::Service;
-use crate::wizard::ask;
+use crate::wizard::{ask, ask_bool, ask_choice, ask_kick_delay, ask_locale, GENDERS};
+use crate::youtube::locale;
 
-const GENDERS: [&str; 3] = ["neutral", "male", "female"];
 const QUALITIES: [&str; 3] = ["VERY_HIGH", "HIGH", "NORMAL"];
 const NORM_TYPES: [&str; 3] = ["auto", "album", "track"];
 const NORM_METHODS: [&str; 2] = ["dynamic", "basic"];
-
-/// Read a yes/no answer, where empty means "leave it as it is".
-pub fn answer_bool(input: &str, current: bool) -> Option<bool> {
-    match input.trim().to_lowercase().as_str() {
-        "" => Some(current),
-        "y" | "yes" | "on" | "true" => Some(true),
-        "n" | "no" | "off" | "false" => Some(false),
-        _ => None,
-    }
-}
-
-/// Read a choice from a fixed list, by number or by name. Empty keeps the
-/// current value, and an answer that matches nothing is rejected rather than
-/// quietly writing an invalid setting into the config.
-pub fn answer_choice(input: &str, options: &[&str], current: &str) -> Option<String> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Some(current.to_string());
-    }
-    if let Ok(number) = input.parse::<usize>() {
-        return number
-            .checked_sub(1)
-            .and_then(|i| options.get(i))
-            .map(|s| s.to_string());
-    }
-    options
-        .iter()
-        .find(|o| o.eq_ignore_ascii_case(input))
-        .map(|s| s.to_string())
-}
 
 /// Read a number, where empty keeps the current one.
 pub fn answer_number<T: std::str::FromStr>(input: &str, current: T) -> Option<T> {
@@ -57,31 +18,6 @@ pub fn answer_number<T: std::str::FromStr>(input: &str, current: T) -> Option<T>
         return Some(current);
     }
     input.parse().ok()
-}
-
-/// Prompt until the answer parses, or the user gives up (EOF).
-fn ask_bool(prompt: &str, current: bool) -> Option<bool> {
-    loop {
-        let raw = ask(&format!("{prompt} (y/n)"), if current { "y" } else { "n" }, false)?;
-        match answer_bool(&raw, current) {
-            Some(value) => return Some(value),
-            None => println!("    Answer y or n."),
-        }
-    }
-}
-
-fn ask_choice(prompt: &str, options: &[&str], current: &str) -> Option<String> {
-    println!("  {prompt}:");
-    for (i, option) in options.iter().enumerate() {
-        println!("    {}. {option}", i + 1);
-    }
-    loop {
-        let raw = ask("Number or name", current, false)?;
-        match answer_choice(&raw, options, current) {
-            Some(value) => return Some(value),
-            None => println!("    Not one of the choices."),
-        }
-    }
 }
 
 fn ask_number<T>(prompt: &str, current: T) -> Option<T>
@@ -102,14 +38,25 @@ where
 fn ask_secret(prompt: &str, current: &str) -> Option<String> {
     let shown = if current.is_empty() { "none set" } else { "unchanged" };
     let raw = ask(&format!("{prompt} [Enter keeps {shown}, - clears it]"), "", false)?;
-    match raw.trim() {
-        "" => Some(current.to_string()),
-        "-" => Some(String::new()),
-        other => Some(other.to_string()),
+    Some(answer_clearable(&raw, current))
+}
+
+/// An optional field: Enter keeps it and `-` empties it.
+fn ask_clearable(prompt: &str, current: &str) -> Option<String> {
+    let prompt = if current.is_empty() { format!("{prompt} (optional)") } else { format!("{prompt} (- clears it)") };
+    let raw = ask(&prompt, current, false)?;
+    Some(answer_clearable(&raw, current))
+}
+
+pub fn answer_clearable(input: &str, current: &str) -> String {
+    match input.trim() {
+        "" => current.to_string(),
+        "-" => String::new(),
+        other => other.to_string(),
     }
 }
 
-/// `--edit [name]`.
+/// `edit [name]`.
 pub fn run(name: Option<&str>) -> Result<(), BotError> {
     let configs = crate::config::list_configs();
     if configs.is_empty() {
@@ -137,20 +84,20 @@ pub fn run(name: Option<&str>) -> Result<(), BotError> {
     };
 
     let mut config = BotConfig::load_noninteractive(&path.to_string_lossy())?;
+    let original = config.clone();
     println!();
     println!("Editing \"{name}\" ({})", path.display());
 
-    // Reprinting the eight items after every mistyped answer turned one stray
-    // Enter into eight lines to listen through again. The menu is shown when
-    // it changes what you can do; a bad answer only re-asks.
+    // The menu is shown when it changes what you can do; a bad answer only
+    // re-asks, so one stray Enter is not eight lines to listen through again.
     let mut show_menu = true;
     loop {
         if show_menu {
             println!();
-            println!("  1. Server and login");
-            println!("  2. Bot name, channel and language");
+            println!("  1. Server, login and license");
+            println!("  2. Bot name, channel, language and kicks");
             println!("  3. Who may run admin commands");
-            println!("  4. Services and cookies");
+            println!("  4. Services and YouTube");
             println!("  5. Audio");
             println!("  6. Radio and search");
             println!("  7. Save and quit");
@@ -172,8 +119,10 @@ pub fn run(name: Option<&str>) -> Result<(), BotError> {
             "6" => edit_radio(&mut config),
             "7" => return save(&mut config, &name, &path),
             "8" => {
-                println!("Nothing saved.");
-                return Ok(());
+                if config == original || ask_bool("Leave without saving your changes", false) != Some(false) {
+                    println!("Nothing saved.");
+                    return Ok(());
+                }
             }
             "" => {
                 println!("  Type a number from 1 to 8, or 8 to leave without saving.");
@@ -203,14 +152,17 @@ fn pick_config(configs: &[(String, std::path::PathBuf)]) -> Option<(String, std:
     None
 }
 
-/// Write the file, then offer to restart the bot: an edited config does
-/// nothing until the bot rereads it, which is not obvious from the outside.
+/// Write the file, then offer what the bot still needs: tools or a sign-in
+/// for a service it now offers, and a restart, since a running bot keeps the
+/// settings it started with.
 fn save(config: &mut BotConfig, name: &str, path: &std::path::Path) -> Result<(), BotError> {
     for warning in config.validate() {
         println!("  Adjusted: {warning}");
     }
     config.save(path)?;
     println!("Saved to {}", path.display());
+
+    offer_missing_setup(config);
 
     let unit = format!("ttspotify@{}.service", crate::service::systemd_escape_instance(name));
     if crate::service::running_bot_units().contains(&unit) {
@@ -219,52 +171,64 @@ fn save(config: &mut BotConfig, name: &str, path: &std::path::Path) -> Result<()
         if crate::service::prompt_yes_no("Restart it now?") {
             crate::control::control("restart", name)?;
         } else {
-            println!(
-                "To restart it later, {}",
-                crate::hints::restart_bot(name)
-            );
+            println!("To restart it later, {}", crate::hints::restart_bot(name));
         }
     }
     Ok(())
 }
 
+fn offer_missing_setup(config: &BotConfig) {
+    let youtube_installed = crate::youtube::setup::resolve_paths()
+        .map(|p| crate::youtube::setup::is_installed(&p))
+        .unwrap_or(false);
+    if config.enabled_services.youtube && !youtube_installed {
+        println!();
+        if ask_bool("YouTube tools are not installed, so YouTube cannot play. Install them now", true) == Some(true) {
+            if let Err(e) = crate::wizard::run_youtube_setup() {
+                println!("  YouTube setup failed: {e}");
+                println!("  To retry later, {}", crate::hints::install_youtube_tools());
+            }
+        } else {
+            println!("  To install them later, {}", crate::hints::install_youtube_tools());
+        }
+    }
+    if config.enabled_services.spotify && !crate::spotify::auth::SpotifyAuth::new().has_cached_credentials() {
+        println!();
+        println!("Spotify is not signed in on this machine. To sign in, {}", crate::hints::sign_in_spotify());
+    }
+}
+
+// Each section edits a copy and writes it back only once every question is
+// answered, so backing out part way leaves the config as it was.
+
 fn edit_server(config: &mut BotConfig) {
+    let mut edited = config.clone();
     let Some(host) = ask("Server address", &config.host, true) else { return };
     let Some(tcp) = ask_number("TCP port", config.tcp_port) else { return };
     let Some(udp) = ask_number("UDP port", config.udp_port) else { return };
     let Some(encrypted) = ask_bool("Encrypted connection", config.encrypted) else { return };
     let Some(username) = ask("Bot username", &config.username, true) else { return };
     let Some(password) = ask_secret("Bot password", &config.password) else { return };
-    let kicked = config.rejoin_after_kick_seconds;
-    let Some(rejoin) = ask_bool("Rejoin after a server kick", kicked.is_some()) else { return };
-    let rejoin_after = if rejoin {
-        let current = kicked.unwrap_or(0);
-        let delays = kick_delay_options(current);
-        let labels: Vec<String> = delays.iter().map(|s| kick_delay_label(*s)).collect();
-        let options: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let Some(picked) = ask_choice("Wait first", &options, &kick_delay_label(current)) else {
-            return;
-        };
-        Some(
-            delays
-                .get(options.iter().position(|o| *o == picked).unwrap_or(0))
-                .copied()
-                .unwrap_or(0),
-        )
-    } else {
-        None
+    let Some(license_name) = ask_clearable("License name", config.license_name.as_deref().unwrap_or("")) else {
+        return;
+    };
+    let Some(license_key) = ask_clearable("License key", config.license_key.as_deref().unwrap_or("")) else {
+        return;
     };
 
-    config.host = host;
-    config.tcp_port = tcp;
-    config.udp_port = udp;
-    config.encrypted = encrypted;
-    config.username = username;
-    config.password = password;
-    config.rejoin_after_kick_seconds = rejoin_after;
+    edited.host = host;
+    edited.tcp_port = tcp;
+    edited.udp_port = udp;
+    edited.encrypted = encrypted;
+    edited.username = username;
+    edited.password = password;
+    edited.license_name = Some(license_name).filter(|s| !s.is_empty());
+    edited.license_key = Some(license_key).filter(|s| !s.is_empty());
+    *config = edited;
 }
 
 fn edit_identity(config: &mut BotConfig) {
+    let mut edited = config.clone();
     let Some(bot_name) = ask("Bot nickname", &config.bot_name, true) else { return };
     let Some(gender) = ask_choice("Bot gender", &GENDERS, &config.bot_gender) else { return };
     let Some(channel) = ask("Channel to join", &config.channel_name, false) else { return };
@@ -273,15 +237,18 @@ fn edit_identity(config: &mut BotConfig) {
     };
     let languages = crate::i18n::installed_language_codes(&crate::config::config_dir());
     let options: Vec<&str> = languages.iter().map(|s| s.as_str()).collect();
-    let Some(language) = ask_choice("Default language", &options, &config.default_language) else {
+    let Some(language) = ask_choice("Language the bot answers in", &options, &config.default_language) else {
         return;
     };
+    let Some(rejoin) = ask_kick_delay(config.rejoin_after_kick_seconds) else { return };
 
-    config.bot_name = bot_name;
-    config.bot_gender = gender;
-    config.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
-    config.channel_password = channel_password;
-    config.default_language = language;
+    edited.bot_name = bot_name;
+    edited.bot_gender = gender;
+    edited.channel_name = if channel.is_empty() { "/".to_string() } else { channel };
+    edited.channel_password = channel_password;
+    edited.default_language = language;
+    edited.rejoin_after_kick_seconds = rejoin;
+    *config = edited;
 }
 
 fn edit_admins(config: &mut BotConfig) {
@@ -294,14 +261,14 @@ fn edit_admins(config: &mut BotConfig) {
     let options = ["everyone", "teamtalk-admins", "list", "both"];
     let Some(mode) = ask_choice("Who may run admin commands", &options, current) else { return };
 
-    config.admin_mode = match mode.as_str() {
+    let mode = match mode.as_str() {
         "everyone" => AdminMode::Everyone,
         "teamtalk-admins" => AdminMode::TtRights,
         "list" => AdminMode::List,
         _ => AdminMode::Both,
     };
 
-    if matches!(config.admin_mode, AdminMode::List | AdminMode::Both) {
+    if matches!(mode, AdminMode::List | AdminMode::Both) {
         let current = config.admins.join(", ");
         let Some(list) = ask("Admin usernames (comma separated)", &current, false) else { return };
         config.admins = crate::bot::auth::parse_admin_list(&list);
@@ -310,9 +277,11 @@ fn edit_admins(config: &mut BotConfig) {
         // back should not cost you the names you typed.
         println!("  (the username list is kept, but not used in this mode)");
     }
+    config.admin_mode = mode;
 }
 
 fn edit_services(config: &mut BotConfig) {
+    let mut edited = config.clone();
     let current = match (config.enabled_services.spotify, config.enabled_services.youtube) {
         (true, false) => "spotify",
         (false, true) => "youtube",
@@ -322,7 +291,7 @@ fn edit_services(config: &mut BotConfig) {
     else {
         return;
     };
-    config.enabled_services = match enabled.as_str() {
+    edited.enabled_services = match enabled.as_str() {
         "spotify" => EnabledServices { spotify: true, youtube: false },
         "youtube" => EnabledServices { spotify: false, youtube: true },
         _ => EnabledServices::default(),
@@ -330,7 +299,7 @@ fn edit_services(config: &mut BotConfig) {
 
     // With one service enabled there is nothing to choose: validate() would
     // move the default onto it anyway.
-    config.default_service = match config.enabled_services.only() {
+    edited.default_service = match edited.enabled_services.only() {
         Some(only) => only,
         None => {
             let current = match config.default_service {
@@ -345,46 +314,70 @@ fn edit_services(config: &mut BotConfig) {
         }
     };
 
-    if config.enabled_services.youtube {
-        let Some(cookies) = ask("YouTube cookies file (blank for none)", &config.youtube_cookies_file, false)
-        else {
+    if edited.enabled_services.youtube {
+        let Some(cookies) = ask_clearable("YouTube cookies file", &config.youtube_cookies_file) else {
             return;
         };
         if !cookies.is_empty() && !std::path::Path::new(&cookies).is_file() {
             println!("  Warning: {cookies} does not exist yet.");
         }
-        config.youtube_cookies_file = cookies;
+        let Some(country) = ask_locale(
+            "YouTube search location",
+            crate::wizard::SEARCH_LOCATION_INTRO,
+            &config.youtube_country,
+            &locale::country_options(),
+            locale::search_countries,
+        ) else {
+            return;
+        };
+        let Some(language) = ask_locale(
+            "YouTube language",
+            "",
+            &config.youtube_language,
+            &locale::language_options(),
+            locale::search_languages,
+        ) else {
+            return;
+        };
+        edited.youtube_cookies_file = cookies;
+        edited.youtube_country = country;
+        edited.youtube_language = language;
     }
+    *config = edited;
 }
 
 fn edit_audio(config: &mut BotConfig) {
-    let Some(quality) = ask_choice("Spotify quality", &QUALITIES, &config.spotify_quality) else {
-        return;
-    };
-    let Some(normalize) = ask_bool("Volume normalisation", config.spotify_enable_normalization) else {
-        return;
-    };
-    config.spotify_quality = quality;
-    config.spotify_enable_normalization = normalize;
+    let mut edited = config.clone();
+    // Quality and normalisation only reach librespot.
+    if config.enabled_services.spotify {
+        let Some(quality) = ask_choice("Spotify quality", &QUALITIES, &config.spotify_quality) else {
+            return;
+        };
+        let Some(normalize) = ask_bool("Volume normalisation", config.spotify_enable_normalization) else {
+            return;
+        };
+        edited.spotify_quality = quality;
+        edited.spotify_enable_normalization = normalize;
 
-    if normalize {
-        let Some(kind) = ask_choice("Normalisation type", &NORM_TYPES, &config.normalisation_type) else {
-            return;
-        };
-        let Some(method) = ask_choice("Normalisation method", &NORM_METHODS, &config.normalisation_method)
-        else {
-            return;
-        };
-        let Some(pregain) = ask_number("Pregain (dB)", config.normalisation_pregain_db) else { return };
-        let Some(threshold) = ask_number("Threshold (dBFS)", config.normalisation_threshold_dbfs) else {
-            return;
-        };
-        let Some(knee) = ask_number("Knee (dB)", config.normalisation_knee_db) else { return };
-        config.normalisation_type = kind;
-        config.normalisation_method = method;
-        config.normalisation_pregain_db = pregain;
-        config.normalisation_threshold_dbfs = threshold;
-        config.normalisation_knee_db = knee;
+        if normalize {
+            let Some(kind) = ask_choice("Normalisation type", &NORM_TYPES, &config.normalisation_type) else {
+                return;
+            };
+            let Some(method) = ask_choice("Normalisation method", &NORM_METHODS, &config.normalisation_method)
+            else {
+                return;
+            };
+            let Some(pregain) = ask_number("Pregain (dB)", config.normalisation_pregain_db) else { return };
+            let Some(threshold) = ask_number("Threshold (dBFS)", config.normalisation_threshold_dbfs) else {
+                return;
+            };
+            let Some(knee) = ask_number("Knee (dB)", config.normalisation_knee_db) else { return };
+            edited.normalisation_type = kind;
+            edited.normalisation_method = method;
+            edited.normalisation_pregain_db = pregain;
+            edited.normalisation_threshold_dbfs = threshold;
+            edited.normalisation_knee_db = knee;
+        }
     }
 
     let Some(volume) = ask_number("Starting volume", config.volume) else { return };
@@ -392,25 +385,28 @@ fn edit_audio(config: &mut BotConfig) {
     let Some(jitter) = ask_number("Jitter buffer (ms)", config.jitter_buffer_ms) else { return };
     let Some(ramp) = ask_number("Volume ramp step", config.volume_ramp_step) else { return };
 
-    config.volume = volume;
-    config.max_volume = max_volume;
-    config.jitter_buffer_ms = jitter;
-    config.volume_ramp_step = ramp;
+    edited.volume = volume;
+    edited.max_volume = max_volume;
+    edited.jitter_buffer_ms = jitter;
+    edited.volume_ramp_step = ramp;
+    *config = edited;
 }
 
 fn edit_radio(config: &mut BotConfig) {
+    let mut edited = config.clone();
     let Some(enabled) = ask_bool("Radio enabled", config.radio_enabled) else { return };
-    config.radio_enabled = enabled;
+    edited.radio_enabled = enabled;
     if enabled {
         let Some(batch) = ask_number("Tracks per radio batch", config.radio_batch_size) else { return };
         let Some(delay) = ask_number("Delay between batches (seconds)", config.radio_delay) else {
             return;
         };
-        config.radio_batch_size = batch;
-        config.radio_delay = delay;
+        edited.radio_batch_size = batch;
+        edited.radio_delay = delay;
     }
     let Some(limit) = ask_number("Search results to show", config.search_limit) else { return };
-    config.search_limit = limit;
+    edited.search_limit = limit;
+    *config = edited;
 }
 
 #[cfg(test)]
@@ -419,39 +415,14 @@ mod tests {
 
     #[test]
     fn empty_answers_keep_what_is_already_there() {
-        // The whole point of the editor: Enter changes nothing.
-        assert_eq!(answer_bool("", true), Some(true));
-        assert_eq!(answer_bool("  \n", false), Some(false));
-        assert_eq!(answer_choice("", &QUALITIES, "HIGH").as_deref(), Some("HIGH"));
         assert_eq!(answer_number("", 42u8), Some(42));
+        assert_eq!(answer_clearable("", "cookies.txt"), "cookies.txt");
     }
 
     #[test]
-    fn yes_and_no_are_read_in_the_forms_people_type() {
-        for yes in ["y", "Y", "yes", "on", "true"] {
-            assert_eq!(answer_bool(yes, false), Some(true), "{yes}");
-        }
-        for no in ["n", "NO", "off", "false"] {
-            assert_eq!(answer_bool(no, true), Some(false), "{no}");
-        }
-        // Anything else is a question, not an answer.
-        assert_eq!(answer_bool("maybe", true), None);
-    }
-
-    #[test]
-    fn a_choice_can_be_its_number_or_its_name() {
-        assert_eq!(answer_choice("1", &QUALITIES, "HIGH").as_deref(), Some("VERY_HIGH"));
-        assert_eq!(answer_choice("normal", &QUALITIES, "HIGH").as_deref(), Some("NORMAL"));
-        assert_eq!(answer_choice("Album", &NORM_TYPES, "auto").as_deref(), Some("album"));
-    }
-
-    #[test]
-    fn an_invalid_choice_is_refused_rather_than_written_to_the_config() {
-        // A value outside the list reaches librespot as a setting it does not
-        // understand, so it must not survive the prompt.
-        assert_eq!(answer_choice("9", &QUALITIES, "HIGH"), None);
-        assert_eq!(answer_choice("0", &QUALITIES, "HIGH"), None);
-        assert_eq!(answer_choice("LOSSLESS", &QUALITIES, "HIGH"), None);
+    fn a_dash_clears_an_optional_field() {
+        assert_eq!(answer_clearable(" - ", "cookies.txt"), "");
+        assert_eq!(answer_clearable(" other.txt ", "cookies.txt"), "other.txt");
     }
 
     #[test]

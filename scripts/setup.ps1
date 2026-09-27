@@ -21,9 +21,30 @@ if (-not $hasWinget) {
     exit 1
 }
 
-# Rust
+# Rust. The oldest that builds the locked dependencies comes from Cargo.toml.
+$cargoToml = Join-Path $PSScriptRoot "..\Cargo.toml"
+$minRust = [version]((Select-String -Path $cargoToml -Pattern '^rust-version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value)
+function RustVersion {
+    $out = rustc --version 2>$null
+    if ($out -match '^rustc (\d+\.\d+\.\d+)') { return [version]$Matches[1] }
+    return $null
+}
 if (Get-Command rustc -ErrorAction SilentlyContinue) {
-    Info "Rust already installed: $(rustc --version)"
+    if ((RustVersion) -ge $minRust) {
+        Info "Rust already installed: $(rustc --version)"
+    } elseif (Get-Command rustup -ErrorAction SilentlyContinue) {
+        Warn "$(rustc --version) is too old; this needs Rust $minRust or newer. Updating..."
+        rustup update stable
+        if ((RustVersion) -lt $minRust) {
+            Error "Still on $(rustc --version). Run 'rustup default stable', then run this script again."
+            exit 1
+        }
+        Info "Rust updated: $(rustc --version)"
+    } else {
+        Error "$(rustc --version) is too old; this needs Rust $minRust or newer, and rustup is not installed."
+        Error "Uninstall that Rust, then run this script again to install rustup's."
+        exit 1
+    }
 } else {
     Info "Installing Rust..."
     winget install Rustlang.Rustup --silent --accept-package-agreements --accept-source-agreements

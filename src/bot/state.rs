@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 
 use crate::bot::queue::{PrevAction, Queue};
 use crate::services::Service;
+use crate::spotify::types::PlaylistEntry;
 use crate::track::Track;
 
 pub use crate::bot::queue::QueueEntry;
@@ -76,6 +77,10 @@ pub struct PlayerState {
     /// from a user who searched and walked away outlived their TTL until
     /// somebody else happened to search.
     pub search_results: Cache<i32, Vec<Track>>,
+
+    /// Pickable playlist lists from `library`, per user. A user has either
+    /// this or search results waiting, never both.
+    pub library_results: Cache<i32, Vec<PlaylistEntry>>,
 
     // Track position tracking
     pub position_ms: u32,
@@ -193,6 +198,10 @@ impl PlayerState {
                 .max_capacity(SEARCH_RESULT_CAPACITY)
                 .time_to_live(SEARCH_RESULT_TTL)
                 .build(),
+            library_results: Cache::builder()
+                .max_capacity(SEARCH_RESULT_CAPACITY)
+                .time_to_live(SEARCH_RESULT_TTL)
+                .build(),
             position_ms: 0,
             tracks_played: 0,
             active_service: Service::default(),
@@ -217,7 +226,33 @@ impl PlayerState {
 
     /// Store a user's pickable search results.
     pub fn insert_search_results(&mut self, user_id: i32, tracks: Vec<Track>) {
+        self.library_results.invalidate(&user_id);
         self.search_results.insert(user_id, tracks);
+    }
+
+    /// Store a user's pickable playlist list.
+    pub fn insert_library_results(&mut self, user_id: i32, playlists: Vec<PlaylistEntry>) {
+        self.search_results.invalidate(&user_id);
+        self.library_results.insert(user_id, playlists);
+    }
+
+    /// Remove a user's playlist list; returns whether one existed.
+    pub fn remove_library_results(&mut self, user_id: i32) -> bool {
+        let existed = self.library_results.get(&user_id).is_some();
+        self.library_results.invalidate(&user_id);
+        existed
+    }
+
+    /// `None` when the user has no playlist list waiting. Otherwise the uri of
+    /// the `pick`-th playlist, which clears the list, or `Some(None)` when the
+    /// number is past its end.
+    pub fn take_library_pick(&mut self, user_id: i32, pick: usize) -> Option<Option<String>> {
+        let playlists = self.library_results.get(&user_id)?;
+        let uri = playlists.get(pick).map(|p| p.uri.clone());
+        if uri.is_some() {
+            self.library_results.invalidate(&user_id);
+        }
+        Some(uri)
     }
 
     /// A user's current search results, if any.
@@ -242,22 +277,38 @@ impl PlayerState {
     /// Queue a track the user asked for by name: it plays before whatever
     /// source is being worked through, the way "next in queue" sits ahead of
     /// "next from" in Spotify.
-    pub fn enqueue_next(&mut self, track: Track, requester: String, allow_recommend: bool) {
-        self.queue.push_next(QueueEntry { track, requester, allow_recommend });
+    pub fn enqueue_next(&mut self, entry: QueueEntry) {
+        self.queue.push_next(entry);
     }
 
     /// Queue tracks from a source being played through: a playlist, an album,
     /// or radio.
     pub fn enqueue_source(&mut self, tracks: Vec<Track>, requester: String, allow_recommend: bool) {
+        self.enqueue_source_from(tracks, requester, allow_recommend, None);
+    }
+
+    /// `enqueue_source`, recording the album or playlist the tracks belong to.
+    pub fn enqueue_source_from(
+        &mut self,
+        tracks: Vec<Track>,
+        requester: String,
+        allow_recommend: bool,
+        context: Option<String>,
+    ) {
+        let before = self.queue.source_len();
         self.queue.push_source(tracks.into_iter().map(|track| QueueEntry {
             track,
             requester: requester.clone(),
             allow_recommend,
+            context: context.clone(),
+            start_ms: None,
         }));
         // With shuffle on, a playlist added now must land shuffled too —
-        // otherwise it plays in order and shuffle looks broken.
+        // otherwise it plays in order and shuffle looks broken. Only the new
+        // arrivals: re-shuffling the whole tier tore up the album already
+        // queued and interleaved the two.
         if self.shuffle {
-            self.queue.shuffle_source();
+            self.queue.shuffle_source_tail(before);
         }
     }
 
@@ -498,7 +549,66 @@ mod tests {
         state.enqueue_source(tracks, "tester".to_string(), true);
     }
 
+    #[test]
+    fn a_second_source_queued_with_shuffle_on_leaves_the_first_in_order() {
+        // Shuffle re-randomised the whole source tier on every add, so queueing
+        // a second album tore up what was left of the first and interleaved the
+        // two. Only the new arrivals are shuffled.
+        let mut state = PlayerState::new();
+        state.shuffle = true;
+        let ids = |s: &PlayerState| -> Vec<String> {
+            s.upcoming().map(|e| e.track.id().to_string()).collect()
+        };
+
+        state.enqueue_source(
+            vec![track("a0"), track("a1"), track("a2"), track("a3")],
+            "tester".to_string(),
+            true,
+        );
+        let first = ids(&state);
+
+        state.enqueue_source(
+            vec![track("b0"), track("b1"), track("b2"), track("b3")],
+            "tester".to_string(),
+            true,
+        );
+
+        let after = ids(&state);
+        assert_eq!(after[..first.len()], first[..], "the queued album keeps its order");
+        let mut tail = after[first.len()..].to_vec();
+        tail.sort();
+        assert_eq!(tail, ["b0", "b1", "b2", "b3"], "and the new one is all there");
+    }
+
     // -- search results --
+
+    #[test]
+    fn a_library_pick_answers_the_playlist_and_clears_the_list() {
+        let playlist = |id: &str| PlaylistEntry {
+            uri: format!("spotify:playlist:{id}"),
+            name: id.to_string(),
+            tracks: 1,
+        };
+        let mut state = PlayerState::new();
+        assert_eq!(state.take_library_pick(7, 0), None);
+
+        state.insert_library_results(7, vec![playlist("a"), playlist("b")]);
+        assert_eq!(state.take_library_pick(7, 5), Some(None));
+        assert_eq!(state.take_library_pick(7, 1), Some(Some("spotify:playlist:b".to_string())));
+        assert_eq!(state.take_library_pick(7, 0), None);
+    }
+
+    #[test]
+    fn a_library_list_and_search_results_replace_each_other() {
+        let playlist = PlaylistEntry { uri: "spotify:playlist:a".into(), name: "a".into(), tracks: 1 };
+        let mut state = PlayerState::new();
+        state.insert_search_results(7, vec![track("s")]);
+        state.insert_library_results(7, vec![playlist.clone()]);
+        assert!(state.get_search_results(7).is_none());
+
+        state.insert_search_results(7, vec![track("s")]);
+        assert!(!state.remove_library_results(7));
+    }
 
     #[test]
     fn insert_and_pick_search_results() {
@@ -964,7 +1074,13 @@ mod tests {
     fn apply(state: &mut PlayerState, op: &Op, next_id: &mut u32) {
         match op {
             Op::PlayNext => {
-                state.enqueue_next(track(&next_id.to_string()), "u".into(), true);
+                state.enqueue_next(QueueEntry {
+                    track: track(&next_id.to_string()),
+                    requester: "u".into(),
+                    allow_recommend: true,
+                    context: None,
+                    start_ms: None,
+                });
                 *next_id += 1;
             }
             Op::QueueSource(n) => {

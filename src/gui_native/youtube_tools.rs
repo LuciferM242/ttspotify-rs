@@ -4,6 +4,21 @@
 
 use crate::youtube::setup;
 
+/// What the tray asks when an update left only an older version's tools.
+pub const UPGRADE_OFFER: &str = "YouTube playback now runs on Deno. The YouTube tools on this computer are from an older version, so YouTube tracks will not play.\n\nInstall the new tools now? This downloads about 40 MB.";
+
+/// Whether to offer the new tools unprompted: only when an older version's
+/// yt-dlp tools are here and nothing that can play is.
+pub fn offer_after_upgrade() -> bool {
+    setup::resolve_paths()
+        .map(|p| upgrade_offer_needed(setup::has_legacy_tools(&p), setup::is_installed(&p)))
+        .unwrap_or(false)
+}
+
+fn upgrade_offer_needed(legacy: bool, installed: bool) -> bool {
+    legacy && !installed
+}
+
 /// Download and install the YouTube tools. Reports progress via `progress`.
 pub fn youtube_install(progress: &dyn Fn(&str)) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
@@ -16,7 +31,7 @@ pub fn youtube_install(progress: &dyn Fn(&str)) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Self-update yt-dlp, then re-download bgutil-pot if a newer release exists.
+/// Refresh the sidecar script and the JavaScript runtime it needs.
 pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
     let paths = setup::resolve_paths().map_err(|e| e.to_string())?;
@@ -24,87 +39,38 @@ pub fn youtube_update(progress: &dyn Fn(&str)) -> Result<(), String> {
         return Err("YouTube tools aren't installed yet. Install them first.".to_string());
     }
 
-    progress("Updating yt-dlp...");
-    // Snapshot the version before updating so we can report from -> to. Probing
-    // --version (not parsing --update's prose) keeps this robust across yt-dlp
-    // release-message changes.
-    let before = setup::installed_tool_versions().yt_dlp;
-    let mut update_cmd = std::process::Command::new(&paths.yt_dlp);
-    // The socket timeout bounds a dead network: this runs under the modal
-    // progress dialog, and yt-dlp waiting on a half-open socket held the
-    // whole tray hostage with no way to cancel.
-    update_cmd.args(["--update", "--socket-timeout", "30"]);
-    crate::proc::hide_console_window(&mut update_cmd);
-    match update_cmd.status() {
-        Ok(s) if s.success() => {
-            let after = setup::installed_tool_versions().yt_dlp;
-            progress(&ytdlp_update_summary(before, after));
-        }
-        Ok(s) => progress(&format!("yt-dlp --update exited with {s}")),
-        Err(e) => progress(&format!("Could not run yt-dlp --update: {e}")),
+    // The sidecar and its pinned dependencies ship inside this binary, so the
+    // only thing an update can refresh is the runtime and the written copy of
+    // the script.
+    match crate::youtube::sidecar::ensure_script(&paths.lib_dir) {
+        Ok(_) => progress("Sidecar script up to date."),
+        Err(e) => progress(&format!("Could not write the sidecar: {e}")),
     }
 
-    progress("Checking bgutil-pot for updates...");
-    let installed = setup::installed_bgutil_version(&paths);
-    let latest = rt
-        .block_on(setup::latest_bgutil_version())
-        .map_err(|e| e.to_string())?;
-    if latest == installed {
-        progress(&format!("bgutil-pot is up to date ({installed})."));
-    } else {
-        progress(&format!("Updating bgutil-pot {installed} -> {latest}..."));
-        rt.block_on(setup::install_bgutil_version(&paths, &latest, |l| progress(l)))
-            .map_err(|e| e.to_string())?;
-    }
-
-    // The JavaScript runtime yt-dlp needs for YouTube's player challenges.
+    // The runtime the sidecar runs on. Unlike the old setup, where a missing
+    // runtime merely cost some formats, this is what YouTube playback is.
     progress("Checking the JavaScript runtime (Deno)...");
     if let Err(e) = rt.block_on(setup::update_js_runtime(&paths, |l| progress(l))) {
-        // Not fatal: YouTube keeps working with fewer formats available.
         progress(&format!("Could not update Deno: {e}"));
     }
-    Ok(())
-}
 
-/// Build the user-facing line describing a yt-dlp `--update` outcome from the
-/// versions probed before and after. `None` means the version couldn't be read.
-fn ytdlp_update_summary(before: Option<String>, after: Option<String>) -> String {
-    match (before, after) {
-        (Some(b), Some(a)) if b != a => format!("yt-dlp updated: {b} -> {a}"),
-        (Some(_), Some(a)) => format!("yt-dlp already up to date ({a})"),
-        (None, Some(a)) => format!("yt-dlp is now at version {a}"),
-        (_, None) => "yt-dlp update check complete.".to_string(),
-    }
+    // A new bot version can ship a lockfile naming dependency versions the
+    // cache does not hold yet; fetch them now rather than on the first track.
+    setup::warm_dependency_cache(&paths, progress);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ytdlp_update_summary;
+    use super::upgrade_offer_needed;
 
     #[test]
-    fn reports_from_to_when_version_changes() {
-        let s = ytdlp_update_summary(Some("2025.11.01".into()), Some("2025.12.08".into()));
-        assert_eq!(s, "yt-dlp updated: 2025.11.01 -> 2025.12.08");
-    }
-
-    #[test]
-    fn reports_up_to_date_when_unchanged() {
-        let s = ytdlp_update_summary(Some("2025.12.08".into()), Some("2025.12.08".into()));
-        assert_eq!(s, "yt-dlp already up to date (2025.12.08)");
-    }
-
-    #[test]
-    fn reports_current_version_when_before_unknown() {
-        let s = ytdlp_update_summary(None, Some("2025.12.08".into()));
-        assert_eq!(s, "yt-dlp is now at version 2025.12.08");
-    }
-
-    #[test]
-    fn falls_back_when_after_unknown() {
-        assert_eq!(
-            ytdlp_update_summary(Some("2025.11.01".into()), None),
-            "yt-dlp update check complete."
-        );
-        assert_eq!(ytdlp_update_summary(None, None), "yt-dlp update check complete.");
+    fn the_new_tools_are_offered_only_to_an_old_install() {
+        assert!(upgrade_offer_needed(true, false));
+        // Already installed, or never used YouTube: nothing to nag about.
+        assert!(!upgrade_offer_needed(true, true));
+        assert!(!upgrade_offer_needed(false, false));
+        assert!(!upgrade_offer_needed(false, true));
     }
 }
+

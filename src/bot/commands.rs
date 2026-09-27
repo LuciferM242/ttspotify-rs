@@ -9,11 +9,33 @@ use crate::bot::state::{PlaybackStatus, SharedState};
 use crate::i18n::{I18n, Key};
 use crate::services::Service;
 
+/// What a play request asks for; each service resolves it its own way.
+#[derive(Debug)]
+pub enum PlayRequest {
+    /// Search text, a link or a URI.
+    Query(String),
+    /// The liked songs of the account signed in to the active service.
+    Liked,
+    /// A playlist uri from the library list. Always Spotify, even after a
+    /// switch to another service.
+    SpotifyPlaylist(String),
+}
+
+impl PlayRequest {
+    /// The service that resolves this request, given the active one.
+    pub fn service(&self, active: Service) -> Service {
+        match self {
+            Self::SpotifyPlaylist(_) => Service::Spotify,
+            Self::Query(_) | Self::Liked => active,
+        }
+    }
+}
+
 /// Commands sent from the bot thread to the async command processor.
 #[derive(Debug)]
 #[allow(dead_code)] // user_id fields kept for consistent command protocol + debug logging
 pub enum BotCommand {
-    SearchAndPlay { query: String, user_id: i32, user_name: String },
+    SearchAndPlay { request: PlayRequest, user_id: i32, user_name: String },
     Play { user_id: i32 },
     Pause { user_id: i32 },
     Stop { user_id: i32 },
@@ -33,6 +55,8 @@ pub enum BotCommand {
     PlaybackStarted,
     Prev { user_id: i32 },
     Seek { offset_ms: i32, user_id: i32 },
+    /// Jump to an absolute position, as `seek <seconds>` asks for.
+    SeekTo { position_ms: u32, user_id: i32 },
     SetVolume { percent: u8, user_id: i32 },
     SetMode { mode: PlaybackMode, user_id: i32 },
     SetShuffle { enable: bool, user_id: i32 },
@@ -41,6 +65,9 @@ pub enum BotCommand {
     QueueRemove { index: usize, expected_uri: String, user_id: i32 },
     SearchOnly { query: String, user_id: i32 },
     SearchPick { user_id: i32, pick: usize, user_name: String },
+    /// List the Spotify account's playlists to pick from, narrowed to those
+    /// matching `query` when it is not empty; a single match plays.
+    Library { query: String, user_id: i32, user_name: String },
     JoinChannel { path: String, user_id: i32 },
     ChangeNick { name: String, user_id: i32 },
     SetGender { gender: String, user_id: i32 },
@@ -49,8 +76,8 @@ pub enum BotCommand {
     SetService { service: Service, user_id: i32 },
     /// Admin: set the server-wide default language (glang). Persisted to config.
     SetDefaultLanguage { code: String, user_id: i32 },
-    /// Internal: pre-fetch radio recommendations for the given seed track
-    RadioPreFetch { seed_uri: String },
+    /// Internal: pre-fetch radio recommendations while `track_uri` is playing
+    RadioPreFetch { track_uri: String, seed_service: crate::services::Service },
     /// Internal: preload next track for gapless playback
     PreloadNext,
     /// Internal: start whatever the queue says is current. Sent when a
@@ -239,6 +266,25 @@ enum SeekParse {
     Usage,
 }
 
+/// Parsed `seek` argument: an absolute position, in seconds.
+#[derive(Debug, PartialEq)]
+enum SeekTo {
+    Seconds(u32),
+    Usage,
+}
+
+/// Parse the argument to `seek`: whole seconds from the start of the track.
+///
+/// Seconds only. `2:30` is rejected rather than guessed at, so there is one
+/// way of saying it and no reading of "2:30" as two seconds.
+fn parse_seek_to(args: &str) -> Option<SeekTo> {
+    let arg = args.trim();
+    if arg.is_empty() || !arg.chars().all(|c| c.is_ascii_digit()) {
+        return Some(SeekTo::Usage);
+    }
+    Some(arg.parse().map_or(SeekTo::Usage, SeekTo::Seconds))
+}
+
 /// Parse a seek command word + args. Matches bare `sf`/`sb` (default 10s) or
 /// `sf`/`sb` immediately followed by digits (`sf10`); a non-numeric explicit
 /// arg yields `Usage`. Returns `None` for anything that is not a seek command
@@ -285,6 +331,42 @@ fn parse_shuffle(args: &str, currently_on: bool) -> Option<bool> {
 /// Sanitize an error for display to a user: collapse to a single line and cap
 /// the length, so a raw multi-line `Display` (which may embed internal detail)
 /// doesn't flood a TeamTalk PM. Logs keep the full error.
+/// The repeat mode a `mode` argument names, or `None` when it names none.
+/// Shuffle is deliberately absent: it is a toggle of its own, so it can be
+/// combined with repeat. The usage line must list exactly these spellings.
+fn parse_mode(args: &str) -> Option<PlaybackMode> {
+    match args.trim() {
+        "r" | "repeat" => Some(PlaybackMode::RepeatTrack),
+        "rq" | "repeat_queue" => Some(PlaybackMode::RepeatQueue),
+        "off" | "o" | "none" => Some(PlaybackMode::Off),
+        _ => None,
+    }
+}
+
+/// What a `sp`/`yt` switch should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceSwitch {
+    /// The bot has this service turned off.
+    NotEnabled,
+    /// Already the active service.
+    Already,
+    /// Switch to it.
+    Switch,
+}
+
+/// Decide a service switch. Pure, so the outcome is testable without a
+/// TeamTalk client; every branch answers the user, because these are the
+/// commands someone discovers which services a bot has with.
+fn service_switch(target: Service, active: Service, enabled: bool) -> ServiceSwitch {
+    if !enabled {
+        ServiceSwitch::NotEnabled
+    } else if active == target {
+        ServiceSwitch::Already
+    } else {
+        ServiceSwitch::Switch
+    }
+}
+
 pub fn user_error(e: impl std::fmt::Display) -> String {
     const MAX: usize = 200;
     let one_line: String = e
@@ -312,6 +394,22 @@ pub fn format_search_results(
     for (i, track) in tracks.iter().enumerate() {
         let _ = writeln!(msg, "  {}: {} [{}]",
             i + 1, track.display_name(), track.duration_display());
+    }
+    msg.push_str(footer);
+    msg
+}
+
+/// Render the numbered playlist list. `line` renders one playlist (translated
+/// by the caller).
+pub fn format_library(
+    playlists: &[crate::spotify::types::PlaylistEntry],
+    header: &str,
+    line: impl Fn(&crate::spotify::types::PlaylistEntry) -> String,
+    footer: &str,
+) -> String {
+    let mut msg = format!("{header}\n");
+    for (i, playlist) in playlists.iter().enumerate() {
+        let _ = writeln!(msg, "  {}: {}", i + 1, line(playlist));
     }
     msg.push_str(footer);
     msg
@@ -357,6 +455,22 @@ impl CommandDispatcher {
         self.auth.is_admin(username, user_type)
     }
 
+    /// Act on a 1-based pick: a waiting playlist list takes it, otherwise the
+    /// search results do.
+    fn pick(&self, client: &Client, sender_id: i32, n: usize) {
+        let user_name = format!("User#{sender_id}");
+        let playlist = self.state.lock().take_library_pick(sender_id, n - 1);
+        match playlist {
+            Some(Some(uri)) => self.send(BotCommand::SearchAndPlay {
+                request: PlayRequest::SpotifyPlaylist(uri),
+                user_id: sender_id,
+                user_name,
+            }),
+            Some(None) => self.reply_t(client, sender_id, Key::InvalidPick, &[]),
+            None => self.send(BotCommand::SearchPick { user_id: sender_id, pick: n - 1, user_name }),
+        }
+    }
+
     /// Dispatch a text message as a command. Returns true if handled, false to stop the bot.
     pub fn dispatch(&self, client: &Client, text: &str, sender_id: i32, username: &str) -> bool {
         // Resolve and cache the sender's language first: every reply in this
@@ -367,7 +481,9 @@ impl CommandDispatcher {
             Input::Empty => return true,
             Input::Cancel => {
                 let mut state = self.state.lock();
-                let removed = state.remove_search_results(sender_id);
+                let removed_search = state.remove_search_results(sender_id);
+                let removed_library = state.remove_library_results(sender_id);
+                let removed = removed_search || removed_library;
                 drop(state);
                 if removed {
                     self.reply_t(client, sender_id, Key::SearchCancelled, &[]);
@@ -376,11 +492,7 @@ impl CommandDispatcher {
             }
             Input::Number(n) => {
                 if n > 0 {
-                    self.send(BotCommand::SearchPick {
-                        user_id: sender_id,
-                        pick: n - 1,
-                        user_name: format!("User#{sender_id}"),
-                    });
+                    self.pick(client, sender_id, n);
                 }
                 return true;
             }
@@ -450,7 +562,7 @@ impl CommandDispatcher {
             "p" | "play" => {
                 if !args.is_empty() {
                     self.send(BotCommand::SearchAndPlay {
-                        query: args.to_string(),
+                        request: PlayRequest::Query(args.to_string()),
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
@@ -478,6 +590,15 @@ impl CommandDispatcher {
                     }
                 }
             }
+            "seek" => match parse_seek_to(args) {
+                Some(SeekTo::Seconds(secs)) => {
+                    self.send(BotCommand::SeekTo {
+                        position_ms: secs.saturating_mul(1000),
+                        user_id: sender_id,
+                    });
+                }
+                _ => self.reply_t(client, sender_id, Key::SeekUsage, &[]),
+            },
             "s" | "stop" => {
                 self.send(BotCommand::Stop { user_id: sender_id });
             }
@@ -493,16 +614,23 @@ impl CommandDispatcher {
                 self.send(BotCommand::Seek { offset_ms: -86_400_000, user_id: sender_id });
                 self.reply_t(client, sender_id, Key::RestartingTrack, &[]);
             }
-            // Spotify-only: queue the user's Liked Songs. Silently no-ops on
-            // YouTube (service-private, same convention as radio).
             "liked" | "fav" => {
+                self.send(BotCommand::SearchAndPlay {
+                    request: PlayRequest::Liked,
+                    user_id: sender_id,
+                    user_name: format!("User#{sender_id}"),
+                });
+                self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
+            }
+            // Spotify-only: list the account's playlists to pick one by number.
+            "library" | "lib" => {
                 if self.state.lock().active_service == Service::Spotify {
-                    self.send(BotCommand::SearchAndPlay {
-                        query: "spotify:collection:liked".to_string(),
+                    self.send(BotCommand::Library {
+                        query: args.to_string(),
                         user_id: sender_id,
                         user_name: format!("User#{sender_id}"),
                     });
-                    self.reply_t(client, sender_id, Key::LoadingLiked, &[]);
+                    self.reply_t(client, sender_id, Key::LoadingLibrary, &[]);
                 }
             }
 
@@ -579,28 +707,23 @@ impl CommandDispatcher {
             }
 
             // -- Modes --
-            "mode" => {
-                match args.trim() {
-                    "r" | "repeat" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatTrack, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeRepeatTrack, &[]);
-                    }
-                    "rq" | "repeat_queue" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::RepeatQueue, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeRepeatQueue, &[]);
-                    }
-                    "off" | "o" | "none" => {
-                        self.send(BotCommand::SetMode { mode: PlaybackMode::Off, user_id: sender_id });
-                        self.reply_t(client, sender_id, Key::ModeOff, &[]);
-                    }
-                    _ => {
-                        let state = self.state.lock();
-                        let display = state.mode_display();
-                        drop(state);
-                        self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
-                    }
+            "mode" => match parse_mode(args) {
+                Some(mode) => {
+                    let key = match mode {
+                        PlaybackMode::RepeatTrack => Key::ModeRepeatTrack,
+                        PlaybackMode::RepeatQueue => Key::ModeRepeatQueue,
+                        PlaybackMode::Off => Key::ModeOff,
+                    };
+                    self.send(BotCommand::SetMode { mode, user_id: sender_id });
+                    self.reply_t(client, sender_id, key, &[]);
                 }
-            }
+                None => {
+                    let state = self.state.lock();
+                    let display = state.mode_display();
+                    drop(state);
+                    self.reply_t(client, sender_id, Key::ModeUsage, &[("modes", display)]);
+                }
+            },
 
             "shuffle" => {
                 // A toggle of its own rather than a mode, so it can be combined
@@ -645,11 +768,7 @@ impl CommandDispatcher {
                     self.reply_t(client, sender_id, Key::PickUsage, &[]);
                 } else if let Ok(n) = trimmed.parse::<usize>() {
                     if n > 0 {
-                        self.send(BotCommand::SearchPick {
-                            user_id: sender_id,
-                            pick: n - 1,
-                            user_name: format!("User#{sender_id}"),
-                        });
+                        self.pick(client, sender_id, n);
                     } else {
                         self.reply_t(client, sender_id, Key::PickTooLow, &[]);
                     }
@@ -658,11 +777,8 @@ impl CommandDispatcher {
                 }
             }
 
-            // -- Radio (Spotify-only; silently ignored on other services) --
+            // -- Radio / autoplay (both services) --
             "radio" => {
-                if self.state.lock().active_service != Service::Spotify {
-                    return true;
-                }
                 let arg = args.trim().to_lowercase();
                 if arg.starts_with("on") {
                     if self.state.lock().radio_enabled {
@@ -698,47 +814,29 @@ impl CommandDispatcher {
             }
 
             // -- Service switching --
-            "sp" | "spotify" => {
+            // One body for both switches: the command names the service. A
+            // refused switch is spoken, not silent — these are the commands a
+            // user finds out which services exist with, so staying quiet would
+            // leave a disabled service indistinguishable from a broken command.
+            "sp" | "spotify" | "yt" | "youtube" => {
+                // The arm patterns are exactly the spellings `parse` accepts.
+                let Some(target) = Service::parse(&cmd) else { return true };
                 let (active, enabled) = {
                     let s = self.state.lock();
-                    (s.active_service, s.enabled_services.allows(Service::Spotify))
+                    (s.active_service, s.enabled_services.allows(target))
                 };
-                // A refused switch is spoken, not silent: on a YouTube-only
-                // bot the user otherwise has no way to tell a disabled
-                // service from a broken command.
-                if !enabled {
-                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
-                } else if active == Service::Spotify {
-                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
-                } else {
-                    self.send(BotCommand::SetService { service: Service::Spotify, user_id: sender_id });
-                    self.reply_t(client, sender_id, Key::SwitchedService, &[
-                        ("service", "Spotify".to_string()),
-                    ]);
-                }
-            }
-            "yt" | "youtube" => {
-                let (active, enabled) = {
-                    let s = self.state.lock();
-                    (s.active_service, s.enabled_services.allows(Service::YouTube))
-                };
-                if !enabled {
-                    self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
-                } else if active == Service::YouTube {
-                    self.reply_t(client, sender_id, Key::AlreadyOnService, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
-                } else {
-                    self.send(BotCommand::SetService { service: Service::YouTube, user_id: sender_id });
-                    self.reply_t(client, sender_id, Key::SwitchedService, &[
-                        ("service", "YouTube".to_string()),
-                    ]);
+                let name = target.name().to_string();
+                match service_switch(target, active, enabled) {
+                    ServiceSwitch::NotEnabled => {
+                        self.reply_t(client, sender_id, Key::ServiceNotEnabled, &[("service", name)]);
+                    }
+                    ServiceSwitch::Already => {
+                        self.reply_t(client, sender_id, Key::AlreadyOnService, &[("service", name)]);
+                    }
+                    ServiceSwitch::Switch => {
+                        self.send(BotCommand::SetService { service: target, user_id: sender_id });
+                        self.reply_t(client, sender_id, Key::SwitchedService, &[("service", name)]);
+                    }
                 }
             }
 
@@ -906,8 +1004,10 @@ impl CommandDispatcher {
                         "v" | "volume" => Key::HelpVolume,
                         "sf" | "sb" | "seek" => Key::HelpSeek,
                         "search" => Key::HelpSearch,
-                        "radio" if active == Service::Spotify => Key::HelpRadio,
-                        "radio" => return true, // silent on non-Spotify
+                        // Autoplay works on both services now, so the topic
+                        // is no longer hidden from YouTube users.
+                        "radio" => Key::HelpRadio,
+                        "liked" | "fav" => Key::HelpLiked,
                         "link" | "url" => Key::HelpLink,
                         "stats" => Key::HelpStats,
                         "jc" => Key::HelpJc,
@@ -933,14 +1033,16 @@ impl CommandDispatcher {
 }
 
 /// Build help text for the currently active service, in the caller's language.
-/// Spotify-only sections (radio, liked) are omitted on YouTube.
 fn help_text(i18n: &I18n, user_id: i32, active: Service, is_admin: bool) -> String {
     let mut out = i18n.tr(user_id, Key::HelpOverviewPlayback, &[]);
-    if active == Service::Spotify {
-        out.push('\n');
-        out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
-    }
     out.push('\n');
+    out.push_str(&i18n.tr(user_id, Key::HelpOverviewSpotify, &[]));
+    out.push('\n');
+    // Spotify-only commands stay out of another service's help.
+    if active == Service::Spotify {
+        out.push_str(&i18n.tr(user_id, Key::HelpOverviewLibrary, &[]));
+        out.push('\n');
+    }
     out.push_str(&i18n.tr(user_id, Key::HelpOverviewRest, &[]));
     if is_admin {
         out.push('\n');
@@ -962,6 +1064,115 @@ mod tests {
         Input::Command { name: name.to_string(), args: args.to_string() }
     }
 
+    #[test]
+    fn help_lists_radio_and_liked_on_both_services() {
+        let i18n = test_i18n("en");
+        for service in [Service::Spotify, Service::YouTube] {
+            let help = help_text(&i18n, 0, service, false);
+            assert!(help.contains("radio [on|off]") && help.contains("liked"), "{service:?}");
+        }
+    }
+
+    #[test]
+    fn a_library_pick_resolves_on_spotify_after_a_switch() {
+        let pick = PlayRequest::SpotifyPlaylist("spotify:playlist:a".into());
+        assert_eq!(pick.service(Service::YouTube), Service::Spotify);
+        assert_eq!(PlayRequest::Query("x".into()).service(Service::YouTube), Service::YouTube);
+        assert_eq!(PlayRequest::Liked.service(Service::YouTube), Service::YouTube);
+    }
+
+    #[test]
+    fn help_lists_library_only_on_spotify() {
+        let i18n = test_i18n("en");
+        assert!(help_text(&i18n, 0, Service::Spotify, false).contains("library"));
+        assert!(!help_text(&i18n, 0, Service::YouTube, false).contains("library"));
+    }
+
+    // -- mode --
+
+    #[test]
+    fn mode_accepts_its_spellings_and_rejects_shuffle() {
+        assert!(matches!(parse_mode("r"), Some(PlaybackMode::RepeatTrack)));
+        assert!(matches!(parse_mode("repeat"), Some(PlaybackMode::RepeatTrack)));
+        assert!(matches!(parse_mode("rq"), Some(PlaybackMode::RepeatQueue)));
+        assert!(matches!(parse_mode("repeat_queue"), Some(PlaybackMode::RepeatQueue)));
+        assert!(matches!(parse_mode(" off "), Some(PlaybackMode::Off)));
+        assert!(matches!(parse_mode("o"), Some(PlaybackMode::Off)));
+        assert!(matches!(parse_mode("none"), Some(PlaybackMode::Off)));
+        assert!(parse_mode("s").is_none(), "shuffle is a command of its own");
+        assert!(parse_mode("").is_none());
+    }
+
+    #[test]
+    fn the_mode_usage_line_advertises_only_spellings_mode_accepts() {
+        // The usage line offered `s`, which the parser never took, so the one
+        // reply that is supposed to teach the command taught it wrong.
+        let i18n = test_i18n("en");
+        let usage = i18n.tr(0, Key::ModeUsage, &[("modes", String::new())]);
+        let listed = usage
+            .split_once('[')
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(inside, _)| inside)
+            .expect("the usage line lists the modes in brackets");
+        for spelling in listed.split('|') {
+            assert!(
+                parse_mode(spelling).is_some(),
+                "usage advertises {spelling:?}, which mode does not accept"
+            );
+        }
+    }
+
+    // -- service switching --
+
+    #[rstest]
+    // A service the bot has turned off is named as such, whichever it is, and
+    // being "already there" does not override that.
+    #[case(Service::Spotify, Service::YouTube, false, ServiceSwitch::NotEnabled)]
+    #[case(Service::YouTube, Service::Spotify, false, ServiceSwitch::NotEnabled)]
+    #[case(Service::Spotify, Service::Spotify, false, ServiceSwitch::NotEnabled)]
+    // Already the active one.
+    #[case(Service::Spotify, Service::Spotify, true, ServiceSwitch::Already)]
+    #[case(Service::YouTube, Service::YouTube, true, ServiceSwitch::Already)]
+    // The switch itself, both directions.
+    #[case(Service::Spotify, Service::YouTube, true, ServiceSwitch::Switch)]
+    #[case(Service::YouTube, Service::Spotify, true, ServiceSwitch::Switch)]
+    fn a_switch_is_refused_noted_or_made(
+        #[case] target: Service,
+        #[case] active: Service,
+        #[case] enabled: bool,
+        #[case] expected: ServiceSwitch,
+    ) {
+        assert_eq!(service_switch(target, active, enabled), expected);
+    }
+
+    #[test]
+    fn both_spellings_of_each_switch_command_name_their_service() {
+        // One arm serves all four commands by reading the service back out of
+        // the command word, so these spellings must keep resolving.
+        for c in ["sp", "spotify"] {
+            assert_eq!(Service::parse(c), Some(Service::Spotify), "{c}");
+        }
+        for c in ["yt", "youtube"] {
+            assert_eq!(Service::parse(c), Some(Service::YouTube), "{c}");
+        }
+    }
+
+    #[test]
+    fn the_library_lists_playlists_numbered_from_one() {
+        use crate::spotify::types::PlaylistEntry;
+        let playlists = vec![
+            PlaylistEntry { uri: "spotify:playlist:a".into(), name: "Road".into(), tracks: 12 },
+            PlaylistEntry { uri: "spotify:playlist:b".into(), name: "Sleep".into(), tracks: 3 },
+        ];
+        let text = format_library(
+            &playlists,
+            "Your playlists:",
+            |p| format!("{} ({})", p.name, p.tracks),
+            "Type a number",
+        );
+        assert_eq!(text, "Your playlists:\n  1: Road (12)\n  2: Sleep (3)\nType a number");
+    }
+
     // -- help_text admin gating --
 
     /// An i18n runtime over the embedded catalogs, in a scratch config dir.
@@ -979,6 +1190,7 @@ mod tests {
     #[case("es")]
     #[case("pt")]
     #[case("ru")]
+    #[case("id")]
     fn every_language_has_its_own_help(#[case] lang: &str) {
         // A missing key falls back to English, so identical output means the
         // translation is absent rather than merely similar.
@@ -1001,6 +1213,7 @@ mod tests {
     #[case("es")]
     #[case("pt")]
     #[case("ru")]
+    #[case("id")]
     fn every_language_has_per_topic_help(#[case] lang: &str) {
         let i18n = test_i18n(lang);
         let english = test_i18n("en");
@@ -1101,6 +1314,23 @@ mod tests {
     }
 
     // -- parse_seek --
+
+    #[test]
+    fn seek_to_takes_a_position_in_seconds() {
+        assert_eq!(parse_seek_to("600"), Some(SeekTo::Seconds(600)));
+        assert_eq!(parse_seek_to(" 45 "), Some(SeekTo::Seconds(45)));
+        assert_eq!(parse_seek_to("0"), Some(SeekTo::Seconds(0)));
+    }
+
+    #[test]
+    fn seek_to_rejects_anything_that_is_not_seconds() {
+        // No mm:ss: one way of saying it, and "2:30" would otherwise be read
+        // as 2 seconds by a lenient parser.
+        assert_eq!(parse_seek_to("2:30"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to("later"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to("-5"), Some(SeekTo::Usage));
+        assert_eq!(parse_seek_to(""), Some(SeekTo::Usage));
+    }
 
     #[test]
     fn seek_forms() {

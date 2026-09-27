@@ -68,6 +68,9 @@ pub struct ConfigForm {
     pub license_name: String,
     pub license_key: String,
     pub youtube_cookies_file: String,
+    /// Location and language codes; empty is YouTube's default.
+    pub youtube_country: String,
+    pub youtube_language: String,
     pub default_language: String,
     pub admin_mode_index: u32,
     pub admin_users: String,
@@ -112,6 +115,8 @@ impl ConfigForm {
             license_name: cfg.license_name.clone().unwrap_or_default(),
             license_key: cfg.license_key.clone().unwrap_or_default(),
             youtube_cookies_file: cfg.youtube_cookies_file.clone(),
+            youtube_country: cfg.youtube_country.clone(),
+            youtube_language: cfg.youtube_language.clone(),
             default_language: cfg.default_language.clone(),
             admin_mode_index: admin_mode_to_index(cfg.admin_mode),
             admin_users: cfg.admins.join(", "),
@@ -168,6 +173,10 @@ impl ConfigForm {
             .only()
             .unwrap_or_else(|| crate::services::Service::parse_or_default(&self.default_service));
         cfg.youtube_cookies_file = self.youtube_cookies_file.clone();
+        cfg.youtube_country = crate::youtube::locale::country_code(&self.youtube_country)
+            .unwrap_or_else(|| original.youtube_country.clone());
+        cfg.youtube_language = crate::youtube::locale::language_code(&self.youtube_language)
+            .unwrap_or_else(|| original.youtube_language.clone());
         // Absent, not empty: the config treats None and Some("") differently.
         cfg.license_name = non_empty(&self.license_name);
         cfg.license_key = non_empty(&self.license_key);
@@ -418,6 +427,35 @@ mod tests {
         let mut form = ConfigForm::from_config(&cfg);
         form.default_language = "  ES ".to_string();
         assert_eq!(form.apply(&cfg).default_language, "es");
+    }
+
+    #[test]
+    fn a_youtube_location_and_language_survive_a_round_trip() {
+        let cfg = BotConfig { youtube_country: "IN".into(), youtube_language: "en-GB".into(), ..base() };
+        let form = ConfigForm::from_config(&cfg);
+        assert_eq!(form.apply(&cfg), cfg);
+    }
+
+    #[test]
+    fn youtube_locale_codes_are_saved_in_youtubes_own_spelling() {
+        let cfg = base();
+        let mut form = ConfigForm::from_config(&cfg);
+        form.youtube_country = "in".into();
+        form.youtube_language = "en-gb".into();
+        let saved = form.apply(&cfg);
+        assert_eq!(saved.youtube_country, "IN");
+        assert_eq!(saved.youtube_language, "en-GB");
+    }
+
+    #[test]
+    fn a_blank_youtube_locale_is_the_default_and_an_unknown_one_keeps_the_old() {
+        let cfg = BotConfig { youtube_country: "IN".into(), youtube_language: "hi".into(), ..base() };
+        let mut form = ConfigForm::from_config(&cfg);
+        form.youtube_country = String::new();
+        form.youtube_language = "not a language".into();
+        let saved = form.apply(&cfg);
+        assert_eq!(saved.youtube_country, "");
+        assert_eq!(saved.youtube_language, "hi");
     }
 
     #[test]

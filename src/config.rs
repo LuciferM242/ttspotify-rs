@@ -247,12 +247,15 @@ pub fn list_configs_and_problems() -> (Vec<(String, PathBuf)>, Vec<String>) {
     list_configs_and_problems_in(&crate::paths::configs_dir())
 }
 
+/// JSON files that share the config directory and are not bots. "settings" is
+/// the app-global settings.json (update-check toggle), "lang_prefs" is the i18n
+/// per-user language store; the rest are auth/session artifacts. They are
+/// skipped when listing, and refused as names, because a bot saved under one of
+/// them would be invisible to every command that goes by name.
+const NON_BOT_STEMS: [&str; 5] = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
+
 fn list_configs_and_problems_in(dir: &Path) -> (Vec<(String, PathBuf)>, Vec<String>) {
-    // Non-bot JSON files that share the config directory. "settings" is the
-    // app-global settings.json (update-check toggle), "lang_prefs" is the i18n
-    // per-user language store; the rest are auth/session artifacts. None are
-    // server configs, so they must never appear as bots.
-    let skip = ["credentials", "cookies", "sessions", "settings", "lang_prefs"];
+    let skip = NON_BOT_STEMS;
     if !dir.exists() {
         return (Vec::new(), Vec::new());
     }
@@ -373,8 +376,13 @@ pub fn sanitise_config_name(name: &str) -> Option<String> {
     // restart accept for "every bot", so a bot called that could never be
     // started on its own. "tray" owns logs/tray/ on Windows, so a bot of that
     // name would share the tray's own log folder — and "delete this bot's
-    // logs" would delete the tray's.
-    if ["all", "tray"].iter().any(|r| cleaned.eq_ignore_ascii_case(r)) {
+    // logs" would delete the tray's. The rest are the files the config folder
+    // holds beside bots, which every listing skips by name.
+    if ["all", "tray"]
+        .iter()
+        .chain(NON_BOT_STEMS.iter())
+        .any(|r| cleaned.eq_ignore_ascii_case(r))
+    {
         return None;
     }
     Some(cleaned)
@@ -569,10 +577,9 @@ pub struct BotConfig {
     #[serde(default, rename = "enabledServices")]
     pub enabled_services: EnabledServices,
 
-    // YouTube: path to a Netscape-format cookies file (optional).
-    // Empty = check for `<config_dir>/cookies.txt`; if neither set nor
-    // present, yt-dlp runs cookie-less and relies on bgutil-pot only.
-    // Helps avoid 403s on rate-limited or age-restricted videos.
+    // YouTube: Netscape cookies file, used to retry a track refused without a
+    // sign-in and to read the account's liked songs. Empty = `<config_dir>/cookies.txt`
+    // when that exists.
     #[serde(default, rename = "youtubeCookiesFile")]
     pub youtube_cookies_file: String,
 
@@ -580,6 +587,12 @@ pub struct BotConfig {
     // None = stay out until started again, Some(0) = reconnect at once.
     #[serde(default, rename = "rejoinAfterKickSeconds")]
     pub rejoin_after_kick_seconds: Option<u32>,
+
+    // Locale for YouTube searches, which YouTube Music ranks by. Empty = US, English.
+    #[serde(default, rename = "youtubeCountry")]
+    pub youtube_country: String,
+    #[serde(default, rename = "youtubeLanguage")]
+    pub youtube_language: String,
 }
 
 impl Default for BotConfig {
@@ -627,6 +640,8 @@ impl Default for BotConfig {
             enabled_services: EnabledServices::default(),
             youtube_cookies_file: String::new(),
             rejoin_after_kick_seconds: None,
+            youtube_country: String::new(),
+            youtube_language: String::new(),
         }
     }
 }
@@ -686,6 +701,13 @@ impl BotConfig {
     /// and fail immediately with a clear error, so a missing config becomes a
     /// clean exit instead of a hung or crash-looping service.
     pub fn load(path: &str) -> Result<Self, BotError> {
+        Self::load_or_setup(path).map(|(config, _)| config)
+    }
+
+    /// `load`, plus the path the config was actually read from. When the
+    /// wizard runs for a missing file it saves under the name typed there, so
+    /// the caller has to carry on with that path rather than the missing one.
+    pub fn load_or_setup(path: &str) -> Result<(Self, PathBuf), BotError> {
         use std::io::IsTerminal;
         let path_ref = Path::new(path);
         if !path_ref.exists() {
@@ -714,7 +736,7 @@ impl BotConfig {
                         for warning in config.validate() {
                             tracing::warn!("Config: {warning}");
                         }
-                        return Ok(config);
+                        return Ok((config, created_path));
                     }
                 }
             }
@@ -724,7 +746,7 @@ impl BotConfig {
                 crate::hints::create_bot()
             )));
         }
-        Self::load_noninteractive(path)
+        Ok((Self::load_noninteractive(path)?, path_ref.to_path_buf()))
     }
 
     /// Clamp out-of-range fields to sane values, returning a list of the
@@ -754,6 +776,12 @@ impl BotConfig {
             let clamped = self.search_limit.clamp(1, 20);
             warnings.push(format!("search_limit {} out of 1..=20, set to {clamped}", self.search_limit));
             self.search_limit = clamped;
+        }
+        // Fed to Duration::from_secs_f32, which panics on a negative, NaN or
+        // huge value — and with panic = "abort" that takes the bot with it.
+        if !(0.0..=3600.0).contains(&self.radio_delay) {
+            warnings.push(format!("radio_delay {} out of 0..=3600, reset to 10", self.radio_delay));
+            self.radio_delay = default_radio_delay();
         }
         if self.jitter_buffer_ms > 2000 {
             warnings.push(format!("jitter_buffer_ms {} > 2000, clamped to 2000", self.jitter_buffer_ms));
@@ -927,6 +955,18 @@ mod essentials_tests {
     }
 
     #[test]
+    fn an_existing_config_is_run_from_its_own_path() {
+        let dir = scratch("ownpath");
+        let path = dir.join("home.json");
+        std::fs::write(&path, r#"{"host": "tt.example.org"}"#).unwrap();
+
+        let (cfg, used) = BotConfig::load_or_setup(&path.to_string_lossy()).unwrap();
+        assert_eq!(cfg.host, "tt.example.org");
+        assert_eq!(used, path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_real_config_still_loads() {
         let dir = scratch("good");
         let path = dir.join("good.json");
@@ -989,6 +1029,83 @@ mod store_tests {
             "{ \"host\": \"tt.exa",
             "a file that could not be parsed must be left as it is"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_writers_never_leave_a_config_unreadable() {
+        // Two bots in one tray process, each persisting volume and modes as
+        // they change. A torn write here is a config nobody can load again.
+        let dir = scratch("concurrent");
+        let path = dir.join("busy.json");
+        let cfg = BotConfig { host: "tt.example.org".to_string(), ..Default::default() };
+        cfg.save(&path).unwrap();
+        let store = std::sync::Arc::new(ConfigStore::new(path.clone(), cfg));
+
+        let readers_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (path, stop) = (path.clone(), readers_stop.clone());
+            std::thread::spawn(move || {
+                let mut reads = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if path.exists() {
+                        BotConfig::parse_file(&path).expect("a half-written config was visible");
+                        reads += 1;
+                    }
+                }
+                reads
+            })
+        };
+        let writers: Vec<_> = (0..8)
+            .map(|n| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        store.update(|c| c.volume = 10 + n);
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        readers_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(reader.join().unwrap() > 0, "the reader never saw the file");
+
+        let final_cfg = BotConfig::parse_file(&path).unwrap();
+        assert!((10..=17).contains(&final_cfg.volume), "volume {}", final_cfg.volume);
+        // Every write goes through a temp file; none may be left behind.
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "busy.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_config_folder_that_cannot_be_written_reports_instead_of_losing_the_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("readonly");
+        let path = dir.join("locked.json");
+        let cfg = BotConfig { host: "tt.example.org".to_string(), ..Default::default() };
+        cfg.save(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o500); // read and enter, no writing
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let err = BotConfig { volume: 99, ..cfg.clone() }.save(&path);
+        assert!(err.is_err(), "saving into an unwritable folder should fail");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "the old config must survive");
+
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&dir, perms).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1139,6 +1256,38 @@ mod tests {
         assert!(problems.iter().any(|p| p.starts_with("junk.json") && p.contains("not valid")));
         assert!(problems.iter().any(|p| p.starts_with("nohost.json") && p.contains("host")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_delay_a_timer_cannot_take_is_reset() {
+        // Duration::from_secs_f32 panics on these, and the radio delay is fed
+        // straight to it before every prefetch.
+        for bad in [-5.0f32, f32::NAN, 1e30, f32::INFINITY] {
+            assert!(
+                std::panic::catch_unwind(|| std::time::Duration::from_secs_f32(bad)).is_err(),
+                "{bad} was expected to be unusable as a delay"
+            );
+            let mut cfg = BotConfig { host: "h".to_string(), radio_delay: bad, ..Default::default() };
+            let warnings = cfg.validate();
+            assert_eq!(cfg.radio_delay, 10.0, "{bad}");
+            assert!(warnings.iter().any(|w| w.contains("radio_delay")), "{warnings:?}");
+        }
+        // A delay somebody chose is left alone.
+        let mut fine = BotConfig { host: "h".to_string(), radio_delay: 45.0, ..Default::default() };
+        assert!(fine.validate().iter().all(|w| !w.contains("radio_delay")));
+        assert_eq!(fine.radio_delay, 45.0);
+    }
+
+    #[test]
+    fn a_bot_cannot_take_the_name_of_a_file_the_listing_skips() {
+        // Saved happily and then missing from list, status, start and edit,
+        // because every listing skips these names.
+        for reserved in NON_BOT_STEMS {
+            assert_eq!(sanitise_config_name(reserved), None, "{reserved}");
+            assert_eq!(sanitise_config_name(&reserved.to_uppercase()), None, "{reserved}");
+        }
+        assert_eq!(sanitise_config_name("settings.json"), None);
+        assert_eq!(sanitise_config_name("mysettings"), Some("mysettings".to_string()));
     }
 
     #[test]

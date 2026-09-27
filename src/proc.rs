@@ -6,8 +6,7 @@
 ///
 /// This covers the spawned program itself and no further: a console is
 /// inherited, and this flag denies the child one, so anything *it* spawns is
-/// handed a fresh console by Windows. See `spawn_ytdlp_with_client` for where
-/// that limit actually bites.
+/// handed a fresh console by Windows.
 pub fn hide_console_window(cmd: &mut std::process::Command) {
     #[cfg(windows)]
     {

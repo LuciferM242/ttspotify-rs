@@ -10,51 +10,20 @@
 //! actually went wrong. It is indirect, but the alternative is patching
 //! librespot: the reason never reaches us any other way.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
+
+use crate::bot::identity::current_bot;
 
 /// How long after a key failure a skipped track is still blamed on it. Long
 /// enough to cover the decode attempt that follows (about 2s in practice),
 /// short enough that an unrelated skip later is not mislabelled.
 pub const BLAME_WINDOW: Duration = Duration::from_secs(15);
 
-// Which bot the current thread belongs to.
-//
-// The tray runs every bot in one process, so a single shared record of "a key
-// failed recently" let one bot's failure explain another bot's unrelated skip.
-// Each bot builds its own tokio runtime, so every thread that can log a key
-// failure or handle a skip belongs to exactly one bot, and the layer runs on
-// the thread that emitted the event. Tagging those threads keeps the two apart.
-//
-// Zero means "not tagged": the single-bot CLI, and every test.
-thread_local! {
-    static CURRENT_BOT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Hands out bot ids. Starts at 1 so it never collides with the untagged 0.
-static NEXT_BOT_ID: AtomicU64 = AtomicU64::new(1);
-
 /// The last key failure per bot. A `Vec` rather than a map because there are as
 /// many entries as configured bots - a handful, scanned rarely.
 static LAST_FAILURE: Mutex<Vec<(u64, Instant)>> = Mutex::new(Vec::new());
-
-/// Claim a fresh bot id, to be given to every thread that bot runs on.
-pub fn next_bot_id() -> u64 {
-    NEXT_BOT_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Tag this thread as belonging to `id`. Call on the bot's own thread and from
-/// its runtime's `on_thread_start`.
-pub fn set_current_bot(id: u64) {
-    CURRENT_BOT.with(|c| c.set(id));
-}
-
-/// The bot this thread belongs to, or 0 when untagged.
-pub fn current_bot() -> u64 {
-    CURRENT_BOT.with(|c| c.get())
-}
 
 /// Whether `last` is recent enough to explain something happening at `now`.
 pub fn is_recent(last: Option<Instant>, now: Instant, within: Duration) -> bool {
@@ -112,7 +81,7 @@ pub fn test_guard() -> parking_lot::MutexGuard<'static, ()> {
 #[cfg(test)]
 pub fn reset_for_test() {
     LAST_FAILURE.lock().clear();
-    set_current_bot(0);
+    crate::bot::identity::set_current_bot(0);
 }
 
 /// Whether a log line is librespot reporting a refused audio key.
@@ -142,6 +111,7 @@ pub fn skip_reason(after_key_failure: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::identity::set_current_bot;
 
     #[test]
     fn a_failure_inside_the_window_explains_a_skip() {
@@ -266,14 +236,6 @@ mod tests {
         note_failure();
         assert_eq!(LAST_FAILURE.lock().len(), 2, "a second bot adds one entry");
         reset_for_test();
-    }
-
-    #[test]
-    fn every_bot_gets_a_distinct_id_and_never_the_untagged_one() {
-        let a = next_bot_id();
-        let b = next_bot_id();
-        assert_ne!(a, b);
-        assert!(a > 0 && b > 0, "0 means untagged and must not be handed out");
     }
 
     #[test]

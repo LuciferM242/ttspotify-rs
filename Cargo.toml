@@ -2,6 +2,9 @@
 name = "tt-spotify-bot"
 version = "1.1.0"
 edition = "2021"
+# The oldest compiler the locked dependencies build with. setup.sh and
+# setup.ps1 read it from here.
+rust-version = "1.88"
 default-run = "tt-spotify-bot"
 license = "GPL-3.0-or-later"
 
@@ -14,10 +17,17 @@ teamtalk = { git = "https://github.com/LuciferM242/TeamTalkRust.git", branch = "
 # native-tls stack (OpenSSL) in favor of rustls (which the rest of the app
 # already uses), and drops librespot-playback's rodio/cpal speaker backend that
 # this bot never uses (audio goes to a custom TeamTalkSink, not local output).
-librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-metadata = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
-librespot-oauth = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-core = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-metadata = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-oauth = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false, features = ["rustls-tls-native-roots"] }
+# The batched metadata endpoint is a protobuf request librespot-metadata does
+# not build: it asks for one track per call, which is one HTTP request per
+# track. Building the batch in spotify::batch needs the protobuf types
+# directly. Both are already in the tree as librespot dependencies.
+librespot-protocol = { git = "https://github.com/librespot-org/librespot", rev = "1599145bf2c98660d35b17817b3386767a7e4b42", default-features = false }
+protobuf = "3"
+http = "1"
 
 # YouTube (rustypipe - GPL-3). Switch its default native-tls to rustls so the
 # whole app shares one TLS stack instead of compiling OpenSSL alongside rustls.
@@ -26,7 +36,7 @@ librespot-oauth = { version = "0.8", default-features = false, features = ["rust
 # panic = "abort", that killed a user's bot outright. The fix landed upstream
 # 2025-06-17 (commit 71712e4, "remove unwrap trying to fetch visitor data") but
 # was never published. Rev is repo HEAD; upstream is dead since 2025-06-18.
-rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e613038e14fe775f0d2eae889737d93", default-features = false, features = ["rustls-tls-native-roots"] }
+rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e613038e14fe775f0d2eae889737d93", default-features = false, features = ["rustls-tls-native-roots", "userdata"] }
 
 # YouTube audio: HTTP fetch + decode + resample.
 # symphonia decodes YouTube's m4a (ISO-MP4 container + AAC). default-features
@@ -36,6 +46,9 @@ rustypipe = { git = "https://codeberg.org/ThetaDev/rustypipe", rev = "6035e6db4e
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 symphonia = { version = "0.5", default-features = false, features = ["isomp4", "aac"] }
 rubato = "0.16"
+
+# Opens the Spotify pairing page. Already in the tree through librespot-oauth.
+open = "5"
 
 # Plugin zip extraction for the YouTube binaries auto-installer + Windows
 # release-archive extraction in the self-updater.
@@ -86,6 +99,11 @@ parking_lot = "0.12"
 # query so a repeated search answers from memory instead of the network.
 moka = { version = "0.12", features = ["sync"] }
 
+# A pair-code sign-in in a terminal: crossterm reads the copy key while the
+# code waits, and base64 carries the link to the terminal's clipboard (OSC 52).
+crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
+base64 = "0.22"
+
 [dev-dependencies]
 # Property tests over the queue: the index-drift class of bug that example
 # tests keep missing.
@@ -100,6 +118,11 @@ rstest = "0.23"
 mockall = "0.13"
 log = "0.4.33"
 tracing-log = "0.2.0"
+
+[profile.dev]
+# Backtraces keep file:line; dev and test builds skip full debug info, which is
+# most of their build and link time.
+debug = "line-tables-only"
 
 [profile.release]
 # Optimise for size, not speed. Measured on the Windows tray build with fat

@@ -23,7 +23,10 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 /// `unit_file_contents` changes in a way installed units should pick up;
 /// `--update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
-const UNIT_FILE_VERSION: u32 = 6;
+///
+/// 7: a refresh in 1.1.0 wrote `config/` as the working and writable
+/// directory instead of the data root, and stamped the result 6.
+const UNIT_FILE_VERSION: u32 = 7;
 
 /// Read the version stamp out of a unit file's contents (0 when absent or
 /// unparsable — always older than any current version).
@@ -82,9 +85,25 @@ pub fn installed_unit_version() -> Option<(u32, u32)> {
     installed_unit().map(|u| (unit_version_from_contents(&u), UNIT_FILE_VERSION))
 }
 
-/// The `ttspotify@` instances systemd has enabled.
+/// The `ttspotify@` instances enabled to start at login, read from their
+/// `default.target.wants` links. `list-unit-files` lists only the template,
+/// never an enabled instance, so every bot read as not enabled.
 pub fn enabled_instance_units() -> Vec<String> {
-    known_instances(&list_unit_files_output(), &[], &[])
+    let names = std::fs::read_dir(systemd_dir().join("default.target.wants"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string));
+    instances_in(names)
+}
+
+/// Our instance unit names out of a list of file names, sorted.
+fn instances_in(names: impl Iterator<Item = String>) -> Vec<String> {
+    let mut units: Vec<String> = names
+        .filter(|n| n.starts_with("ttspotify@") && n.ends_with(".service") && n != SERVICE_NAME)
+        .collect();
+    units.sort();
+    units
 }
 
 /// Whether user services survive logout. `None` when the answer cannot be
@@ -135,13 +154,21 @@ pub(crate) fn systemd_escape_instance(name: &str) -> String {
 pub fn offer_enable_instance(name: &str) {
     let instance = systemd_escape_instance(name);
     if prompt_yes_no(&format!("Enable and start ttspotify@{instance} now?")) {
-        let _ = Command::new("systemctl")
-            .args(["--user", "enable", &format!("ttspotify@{instance}")])
-            .status();
-        let _ = Command::new("systemctl")
-            .args(["--user", "start", &format!("ttspotify@{instance}")])
-            .status();
-        println!("  ttspotify@{instance} enabled and started.");
+        // One call, and its exit status believed: without a user session
+        // systemctl fails to reach the bus, and this still said "started".
+        let ok = Command::new("systemctl")
+            .args(["--user", "enable", "--now", &format!("ttspotify@{instance}")])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            println!("  ttspotify@{instance} enabled and started.");
+        } else {
+            println!(
+                "  Could not enable and start ttspotify@{instance}. To try again: {} start {name}",
+                crate::paths::program_name()
+            );
+        }
     } else {
         // The prompt above ended the output with a dangling question when the
         // answer was no (or when there was nobody to answer), unlike every
@@ -222,8 +249,17 @@ pub fn install_service() -> Result<(), BotError> {
         println!("init system (OpenRC, runit, s6).");
         return Ok(());
     }
+    // Booted under systemd is not enough: a shell without a user session
+    // cannot reload, enable or start anything, and every step below would
+    // report success regardless.
+    if !systemd_reachable() {
+        println!("{}", no_session_hint());
+        return Ok(());
+    }
 
+    let ran = installed_unit().and_then(|unit| exec_start_binary(&unit));
     let config_base = write_unit_file()?;
+    let runs = installed_unit().and_then(|unit| exec_start_binary(&unit));
 
     println!();
     println!("TTSpotify service installed.");
@@ -268,6 +304,16 @@ pub fn install_service() -> Result<(), BotError> {
         offer_enable_instance(&name);
     }
 
+    // Enabling a bot that is already running leaves it on the program it
+    // started from, so a changed binary only reaches it through a restart.
+    if let (Some(ran), Some(runs)) = (&ran, &runs) {
+        if ran != runs && !running_bot_units().is_empty() {
+            println!();
+            println!("The service now runs {runs}; running bots still run {ran} until they restart.");
+            offer_restart_running_bots();
+        }
+    }
+
     Ok(())
 }
 
@@ -277,7 +323,23 @@ pub fn install_service() -> Result<(), BotError> {
 fn write_unit_file() -> Result<PathBuf, BotError> {
     let exe_path = std::env::current_exe()
         .map_err(|e| BotError::Usage(format!("Cannot determine executable path: {e}")))?;
-    write_unit_file_for(&exe_path)
+    // The installed copy, not the running file: setup is often run from a
+    // download folder, which gets deleted, and which `update` never touches.
+    let binary = match crate::install::installed_binary() {
+        Some(installed) => {
+            if installed != exe_path && !same_contents(&installed, &exe_path) {
+                println!("The service runs the installed copy, {}.", installed.display());
+                println!("To install this version there first, run: {} install", exe_path.display());
+            }
+            installed
+        }
+        None => exe_path,
+    };
+    write_unit_file_for(&binary)
+}
+
+fn same_contents(a: &Path, b: &Path) -> bool {
+    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 /// Same, for a binary other than the running one — `--install` points the unit
@@ -396,7 +458,7 @@ fn refreshed_unit(
         _ => current_config,
     };
     let exec_start = format!("\"{}\" --config \"{}\"", escape_specifiers(&binary), config_arg);
-    Some(unit_file_contents(&exec_start, config_base, tools_dir))
+    Some(unit_file_contents(&exec_start, data_root, tools_dir))
 }
 
 /// Bring an installed unit up to the current template when it is older.
@@ -462,9 +524,8 @@ fn unescape_specifiers(path: &str) -> String {
 ///
 /// The sandbox block makes the filesystem read-only to the bot except its own
 /// dirs: the config dir (configs, logs, caches, and — via WorkingDirectory —
-/// the downloaded TeamTalk SDK), the YouTube tools dir, and ~/.cache (yt-dlp's
-/// own cache). The `-` prefix keeps a not-yet-created path from failing the
-/// unit.
+/// the downloaded TeamTalk SDK), the YouTube tools dir, and ~/.cache. The `-`
+/// prefix keeps a not-yet-created path from failing the unit.
 fn unit_file_contents(exec_start: &str, config_dir: &Path, tools_dir: Option<&Path>) -> String {
     // WorkingDirectory and ReadWritePaths are specifier-expanded as well, so a
     // `%` in any of these paths has to survive as a literal.
@@ -552,6 +613,22 @@ pub fn running_bot_units() -> Vec<String> {
     }
 }
 
+/// The program each running bot unit executes, as the kernel reports it. A
+/// file replaced after the bot started reads as `<path> (deleted)`.
+pub fn running_bot_binaries() -> Vec<String> {
+    running_bot_units()
+        .iter()
+        .filter_map(|unit| {
+            let out = Command::new("systemctl")
+                .args(["--user", "show", unit, "-p", "MainPID", "--value"])
+                .output()
+                .ok()?;
+            let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().ok().filter(|pid| *pid > 0)?;
+            std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|exe| exe.display().to_string())
+        })
+        .collect()
+}
+
 /// What systemd thinks of one instance, beyond "is it in the running list".
 ///
 /// "Running or not" was the whole answer before, and it made the commonest
@@ -568,6 +645,14 @@ pub enum UnitHealth {
     Failed,
     /// Not running because nobody asked it to run.
     Stopped,
+}
+
+impl UnitHealth {
+    /// Whether systemd is running the unit or bringing it back, so starting
+    /// the same bot anywhere else would collide with it.
+    pub fn is_up(self) -> bool {
+        matches!(self, UnitHealth::Running | UnitHealth::Restarting)
+    }
 }
 
 /// Ask systemd about one instance. Anything unreadable reads as `Stopped`,
@@ -622,25 +707,55 @@ pub fn reset_failed(unit: &str) {
 pub fn offer_restart_running_bots() {
     let units = running_bot_units();
     if units.is_empty() {
-        println!("If running as a service, restart it: systemctl --user restart ttspotify@<name>");
+        println!("No bot is running as a service, so none needs a restart.");
         return;
     }
     if !prompt_yes_no(&format!("Restart {} running bot(s) now?", units.len())) {
-        println!("Restart later with: systemctl --user restart ttspotify@<name>");
+        for unit in &units {
+            let name = instance_name(unit);
+            println!("To restart {name} later, {}", crate::hints::restart_bot(&name));
+        }
         return;
     }
     for unit in &units {
+        let name = instance_name(unit);
         let ok = Command::new("systemctl")
             .args(["--user", "restart", unit])
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            println!("  {unit} restarted.");
+            println!("  {name} restarted.");
         } else {
-            println!("  {unit} failed to restart - check: systemctl --user status {unit}");
+            println!("  {name} failed to restart. To see why, {}", crate::hints::follow_log(&name));
         }
     }
+}
+
+/// The bot name a `ttspotify@<instance>.service` unit runs, undoing
+/// `systemd_escape_instance`.
+fn instance_name(unit: &str) -> String {
+    let instance = unit.strip_prefix("ttspotify@").unwrap_or(unit);
+    let instance = instance.strip_suffix(".service").unwrap_or(instance);
+    let mut bytes = Vec::with_capacity(instance.len());
+    let mut rest = instance.as_bytes();
+    while let Some((&b, tail)) = rest.split_first() {
+        let escaped = (b == b'\\' && tail.first() == Some(&b'x'))
+            .then(|| tail.get(1..3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(byte) => {
+                bytes.push(byte);
+                rest = &tail[3..];
+            }
+            None => {
+                bytes.push(if b == b'-' { b'/' } else { b });
+                rest = tail;
+            }
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Raw `systemctl --user list-unit-files 'ttspotify@*'` output, or empty when
@@ -702,7 +817,9 @@ fn known_instances(unit_files: &str, running: &[String], config_names: &[String]
 fn stop_and_disable_instances() {
     let config_names: Vec<String> = list_configs().into_iter().map(|(name, _)| name).collect();
     let running = running_bot_units();
-    let units = known_instances(&list_unit_files_output(), &running, &config_names);
+    let mut live = running.clone();
+    live.extend(enabled_instance_units());
+    let units = known_instances(&list_unit_files_output(), &live, &config_names);
 
     for unit in units {
         let was_running = running.contains(&unit);
@@ -862,6 +979,34 @@ RestartSec=2
     }
 
     #[test]
+    fn the_refresh_keeps_the_whole_data_root_writable() {
+        let out = refreshed_unit(
+            LEGACY_UNIT,
+            Path::new("/home/u/.config/ttspotify"),
+            Path::new("/home/u/.config/ttspotify/config"),
+            None,
+        )
+        .unwrap();
+        // Logs, state, caches and the SDK sit beside config/, not inside it.
+        assert!(out.contains("WorkingDirectory=/home/u/.config/ttspotify\n"), "{out}");
+        assert!(out.contains("ReadWritePaths=-/home/u/.config/ttspotify\n"), "{out}");
+        assert!(!out.contains("WorkingDirectory=/home/u/.config/ttspotify/config"), "{out}");
+    }
+
+    #[test]
+    fn a_unit_stamped_6_is_refreshed() {
+        // 1.1.0 stamped its broken refresh 6, so 6 must count as stale.
+        let unit = LEGACY_UNIT.replace("unit-version: 2", "unit-version: 6");
+        assert!(refreshed_unit(
+            &unit,
+            Path::new("/home/u/.config/ttspotify"),
+            Path::new("/home/u/.config/ttspotify/config"),
+            None
+        )
+        .is_some());
+    }
+
+    #[test]
     fn the_refresh_keeps_the_binary_the_unit_already_ran() {
         // Never current_exe(): a refresh run from a build directory would
         // otherwise repoint a working service at a throwaway copy.
@@ -976,6 +1121,14 @@ SubState=dead
 Result=start-limit-hit
 ";
         assert_eq!(parse_unit_health(limit), UnitHealth::Failed);
+    }
+
+    #[test]
+    fn a_bot_systemd_runs_or_restarts_counts_as_up() {
+        assert!(UnitHealth::Running.is_up());
+        assert!(UnitHealth::Restarting.is_up());
+        assert!(!UnitHealth::Failed.is_up());
+        assert!(!UnitHealth::Stopped.is_up());
     }
 
     #[test]
@@ -1239,6 +1392,33 @@ Result=success
         std::fs::remove_file(&link).unwrap();
         assert!(!super::link_present(&link));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_unit_name_gives_back_the_bot_name() {
+        for name in ["home", "my-server", "two words", "a.b_c"] {
+            let unit = format!("ttspotify@{}.service", super::systemd_escape_instance(name));
+            assert_eq!(super::instance_name(&unit), name, "{unit}");
+        }
+    }
+
+    #[test]
+    fn enabled_instances_come_from_the_wants_links() {
+        let names = [
+            "ttspotify@work.service",
+            "ttspotify@.service",
+            "other@x.service",
+            r"ttspotify@my\x2dserver.service",
+            "ttspotify@home.service",
+        ];
+        assert_eq!(
+            super::instances_in(names.iter().map(|s| s.to_string())),
+            vec![
+                "ttspotify@home.service",
+                r"ttspotify@my\x2dserver.service",
+                "ttspotify@work.service",
+            ]
+        );
     }
 
     #[test]

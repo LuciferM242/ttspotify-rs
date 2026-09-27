@@ -1,5 +1,104 @@
 # Changelog
 
+## [Unreleased]
+
+**Upgrading: YouTube now plays through a small bundled helper that runs on
+Deno instead of yt-dlp. Say yes when the update offers to install the new
+YouTube tools, or install them afterwards, or YouTube stays silent.**
+
+### Added
+- Spotify sign-in with a pair code: confirm a short code at spotify.com/pair on
+  any device, such as a phone, so a bot on a machine with no browser, or one
+  reached over SSH, signs in without copying addresses back and forth. The
+  browser stays the default. `auth` asks which to use, `auth code` and
+  `auth browser` skip the question, and the tray shows the code with buttons to
+  copy it or open the page again. In a terminal the pairing link also goes on
+  your own clipboard where the terminal allows it, and c copies it again.
+- Indonesian (`lang id`), translated by Fauzan January.
+- Autoplay on YouTube: `radio` works there too, continuing through YouTube
+  Music's own autoplay, and a YouTube "start radio" or mix link plays as the
+  station it names.
+- `library` (also `lib`) lists your Spotify playlists by number.
+  `library <words>` finds one by name, forgiving a typo, and plays it straight
+  away when only one matches.
+- `liked` works on YouTube, playing your YouTube Music liked songs when the bot
+  has a signed-in cookies file.
+- `seek <seconds>` jumps to a position in the track, and a YouTube link that
+  names a time (`t=90`, `t=1m30s`, an embed's `start=`) begins there.
+- A YouTube search location and language, which YouTube Music ranks songs by.
+  They are chosen in setup, `edit` and the tray config editor by typing part of
+  a name or code, and in the terminal a match is read back to confirm.
+- Setting up a bot on Linux asks for everything it needs: an encrypted server,
+  the bot's gender, whether to rejoin after a kick, and the YouTube location
+  and language. `edit` can also change the TeamTalk license.
+
+### Changed
+- YouTube plays through the bundled helper instead of yt-dlp. A track starts in
+  about a second, a long video plays while it downloads, and seeking jumps
+  anywhere, including parts not downloaded yet. The YouTube tools are now only
+  a JavaScript runtime (Deno), and a Deno already on the system is used as it
+  is.
+- Spotify playlists, albums, liked songs and searches load in a few requests
+  instead of one per track, so a big playlist queues in seconds and stops
+  running into Spotify's rate limits. Liked songs arrive whole, in the order
+  you liked them.
+- Spotify radio tells Spotify what already played, so it stops circling back to
+  the same songs, continues from the album or playlist that was playing, and
+  starts when one runs out. It no longer announces that it is fetching
+  recommendations.
+- The YouTube cookies file is used only for a track YouTube refuses without an
+  account, such as an age-restricted video, and a file exported while signed
+  out is reported when the bot starts.
+- A YouTube request on a machine without the YouTube tools says so, and how to
+  install them, instead of announcing a track that never plays.
+- `auth` always signs in again, so it also switches accounts. `auth status`
+  checks the saved login.
+- Setting up a second bot skips Spotify sign-in when this machine is already
+  signed in, and offers the YouTube tools by default to a bot that plays
+  YouTube. `edit` skips Spotify's audio settings for a bot without Spotify,
+  asks before quitting with unsaved changes, and after saving offers what the
+  bot still needs.
+- On Windows, each bot's log holds that bot's own work instead of a few startup
+  lines, and bots in one tray no longer write into one another's files.
+
+### Removed
+- yt-dlp, bgutil-pot and the yt-dlp PO-token plugin are no longer downloaded or
+  used, and are removed from the tools folder once no bot on an older version
+  still needs them. There is no fallback to yt-dlp.
+
+### Fixed
+- On Linux, a bot set up from a downloaded copy runs as a service from the
+  installed `ttspotify`, and `update` offers to move an existing one over, so
+  updates reach it and deleting the download no longer stops it. `install`,
+  `service install` and `update` offer to restart bots still running an older
+  copy, and the first run no longer starts the new bot twice.
+- A service file refreshed from 0.7.0 or older gets write access to the whole
+  data folder again, not only `config`. The old file is kept as
+  `ttspotify@.service.bak`.
+- `status` says when a bot starts at login, enabling a bot says so when it
+  could not be started, and `doctor` stops warning about enabled bots, reports
+  a bot with a hyphen or a space in its name correctly, and checks for ALSA as
+  well as libpulse, naming the package (`libasound2t64` on Ubuntu 24.04).
+- Spotify: a song no longer fails when the first address Spotify hands out
+  answers with the wrong audio, sign-in no longer gives up on a broken IPv6
+  route, the saved login is no longer readable by every account on the machine
+  (one already written that way is warned about), and `ttspotify auth` no
+  longer crashes before it signs in.
+- A bot kicked off the server no longer logs back in for a moment before
+  leaving. A nickname set with `cn` and a gender set with `gender` stay across
+  tracks, reconnects and restarts. Pause and resume reach only the player that
+  holds the track.
+- Running with `--config` pointing at a missing file no longer asks for the
+  setup wizard a second time after it has made the bot.
+- In the Windows tray, using the icon while a window is open brings that window
+  to the front, the first-run prompt can no longer open a second configuration
+  editor, and `--setup` on a config it cannot read says so instead of opening
+  the editor on default settings, which saving wrote over the file.
+- `scripts/setup.sh` and `setup.ps1` no longer accept a Rust too old to build
+  the bot, such as Debian's: they update it or install rustup's.
+  `scripts/build.sh` works from any folder and builds the Windows binary only
+  under WSL.
+
 ## [1.1.0] - 2026-08-31
 
 ### Added

@@ -24,6 +24,14 @@ impl SpotifyTrack {
     }
 }
 
+/// One playlist in the user's library.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistEntry {
+    pub uri: String,
+    pub name: String,
+    pub tracks: u32,
+}
+
 /// Parsed Spotify URL/URI types
 #[derive(Debug, Clone)]
 pub enum SpotifyRef {
