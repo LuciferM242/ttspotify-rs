@@ -30,6 +30,7 @@ const EMBEDDED_EN: &str = include_str!("i18n/en.lang");
 /// it is the authoritative fallback and cannot be overridden.
 const EMBEDDED_LANGS: &[(&str, &str)] = &[
     ("es", include_str!("i18n/es.lang")),
+    ("id", include_str!("i18n/id.lang")),
     ("pt", include_str!("i18n/pt.lang")),
     ("ru", include_str!("i18n/ru.lang")),
 ];
@@ -920,7 +921,7 @@ mod tests {
             "Language set to English"
         );
 
-        // Availability and names. Embedded bundles (es/pt/ru) are always
+        // Availability and names. Embedded bundles (es/id/pt/ru) are always
         // present alongside English and the on-disk de file.
         assert!(i18n.is_available("de"));
         assert!(i18n.is_available("EN"));
@@ -929,7 +930,7 @@ mod tests {
         let codes: Vec<String> = i18n.available().into_iter().map(|(c, _)| c).collect();
         assert_eq!(
             codes,
-            vec!["de", "en", "es", "pt", "ru"]
+            vec!["de", "en", "es", "id", "pt", "ru"]
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>()
@@ -950,6 +951,7 @@ mod tests {
         let i18n = I18n::load(&dir, "en");
         assert!(i18n.is_available("pt"));
         assert!(i18n.is_available("es"));
+        assert!(i18n.is_available("id"));
         assert!(i18n.is_available("ru"));
         assert_eq!(
             i18n.tr_in("pt", Key::QueueCleared, &[]),

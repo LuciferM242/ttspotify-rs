@@ -1,0 +1,160 @@
+# ttspotify - Terjemahan bahasa Indonesia (lengkap)
+# Simpan kata dalam {tanda kurung kurawal} apa adanya;
+# Anda dapat memindahkannya ke posisi mana pun dalam kalimat.
+
+language_name = Bahasa Indonesia
+
+# Bahasa
+
+lang_set = Bahasa diubah ke {language}
+
+# Pemutaran
+
+searching = Mencari...
+loading_track = Memuat trek...
+nothing_to_play = Tidak ada yang dapat diputar. Gunakan: p <pencarian>
+restarting_track = Memulai ulang trek
+loading_liked = Memuat lagu yang disukai...
+nothing_playing = Tidak ada yang sedang diputar
+current_track = {track} [{index}/{total}] ({position}/{duration})\n{modes}
+search_cancelled = Pencarian dibatalkan
+
+# Volume dan posisi
+
+volume_set = Volume: {percent}%
+volume_show = Volume: {percent}% (maks: {max})
+volume_range = Volume harus 0-{max}. Diminta: {got}
+seek_forward = Maju {seconds}s
+seek_backward = Mundur {seconds}s
+seek_usage = Penggunaan: sf [detik] / sb [detik]
+
+# Antrean
+
+queue_cleared = Antrean dikosongkan
+index_starts_at_one = Indeks dimulai dari 1
+no_track_at_position = Tidak ada trek di posisi {position}
+removed = Dihapus: {name}
+queue_rm_usage = Penggunaan: queue rm <nomor>
+
+# Mode
+
+mode_repeat_track = Ulangi trek diaktifkan
+mode_repeat_queue = Ulangi antrean diaktifkan
+mode_shuffle = Mode acak diaktifkan
+mode_off = Semua mode dinonaktifkan
+shuffle_off = Acak dinonaktifkan
+shuffle_usage = Penggunaan: shuffle [on|off]
+nothing_behind = Tidak ada trek sebelumnya.
+mode_usage = {modes}\nPenggunaan: mode [r|rq|off]
+
+# Pencarian dan pemilihan
+
+search_usage = Penggunaan: search <pencarian>
+search_results_header = Hasil pencarian:
+search_results_footer = Ketik nomor untuk memutar, atau a untuk membatalkan
+pick_usage = Penggunaan: pick <nomor>
+pick_too_low = Nomor pilihan harus 1 atau lebih tinggi
+
+# Radio
+
+radio_already_on = Radio sudah aktif
+radio_enabled = Radio diaktifkan
+radio_already_off = Radio sudah nonaktif
+radio_disabled = Radio dinonaktifkan
+radio_status_on = Radio: AKTIF
+radio_status_off = Radio: NONAKTIF
+
+# Layanan
+
+already_on_service = Sudah berada di {service}
+switched_service = Beralih ke {service}
+service_not_enabled = {service} tidak diaktifkan pada bot ini
+
+# Bot
+
+nickname = Nama panggilan: {name}
+gender_set = Jenis kelamin: {gender}
+gender_usage = Penggunaan: gender [male|female|neutral]
+info = TeamTalk Spotify Bot (Rust) v{version}\nLayanan: {services}
+stats = Waktu aktif: {uptime}\nTrek diputar: {tracks}\nAntrean: {queue} trek\nVolume: {volume}%
+
+# Pesan reproduksi / pemutar
+
+spotify_unavailable = Spotify tidak tersedia: {error}
+no_results = Hasil tidak ditemukan
+now_playing = Sedang memutar: {track}
+now_playing_queued = Sedang memutar: {track} (+{count} diantrean{more})
+more_loading = , memuat lainnya
+queued_many = {count} trek ditambahkan ke antrean{upcoming}{more}
+queued_one = Diantrean: {track}{upcoming}{more}
+already_queued_loading_rest = Sudah di antrean, memuat sisanya
+already_in_queue = Sudah ada di antrean
+search_failed = Pencarian gagal: {error}
+radio_fetching = Radio: mengambil rekomendasi...
+radio_playing = Radio: {track}
+radio_no_recs = Radio: rekomendasi tidak ditemukan
+radio_failed = Radio gagal: {error}
+end_of_queue = Akhir dari antrean
+invalid_pick = Pilihan tidak valid atau tidak ada hasil pencarian
+channel_not_found = Saluran tidak ditemukan: {path}
+failed_to_start = Gagal memutar trek: {track}
+
+# Teks bantuan
+
+help_overview_playback = Pemutaran:\n  p <pencarian>  Cari dan putar trek, playlist, atau album\n  p               Beralih putar/jeda\n  s               Hentikan pemutaran dan kosongkan antrean\n  n               Trek berikutnya\n  o               Trek sebelumnya\n  replay          Mulai ulang trek saat ini\n  c               Tampilkan info trek saat ini\n\nAntrean:\n  queue           Tampilkan antrean\n  queue clear     Hapus trek mendatang\n  queue rm <N>    Hapus trek mendatang ke-N\n\nMode:\n  mode [r|rq|off]     Atur mode pengulangan\n  shuffle [on|off]    Acak trek mendatang
+
+help_overview_spotify =   radio [on|off]      Beralih radio (rekomendasi otomatis)\n  liked               Putar Lagu yang Disukai (juga: fav)
+
+help_overview_rest = \nAudio:\n  v [0-100]       Lihat atau atur volume\n  sf/sb [N]       Maju/mundur N detik\n\nPencarian:\n  search <pencarian>  Cari dan pilih dari hasil\n  <nomor>         Pilih hasil pencarian\n  a / cancel      Batalkan pencarian\n\nLayanan:\n  /sp             Beralih ke Spotify\n  /yt             Beralih ke YouTube\n\nBot:\n  link         Dapatkan URL trek saat ini\n  stats        Tampilkan waktu aktif dan statistik sesi\n  lang         Lihat atau atur bahasa Anda\n  cn <nama>    Ubah nama panggilan\n  gender       Atur jenis kelamin bot\n  info         Info bot
+
+help_overview_admin =   jc <jalur>   Masuk saluran\n  glang        Atur bahasa bawaan server\n  rs           Mulai ulang bot\n  q            Keluar
+
+help_overview_footer = \nLayanan aktif: {service}\nKetik h <perintah> untuk bantuan mendetail (contoh: h queue)
+
+help_unknown = Perintah tidak dikenal. Ketik h untuk daftar perintah.
+
+help_play = p / play\n  p <pencarian>  Cari dan putar hasil pertama.\n                 Jika sedang memutar, trek akan masuk antrean.\n                 Menerima nama trek, URL trek, URL playlist, URL album.\n  p              Beralih putar/jeda jika tidak ada pencarian.\n                 Jika dijeda: lanjutkan. Jika memutar: jeda.\nContoh:\n  p photograph\n  p spotify:track:6rqhFgbbKwnb9MLmUQDhG6
+
+help_stop = s / stop\nHentikan pemutaran dan kosongkan antrean.
+
+help_next = n / next\nLanjut ke trek berikutnya.\nJika radio aktif dan tidak ada trek tersisa, mengambil rekomendasi.
+
+help_prev = o / prev\nKembali ke trek sebelumnya.\nJika trek sudah berjalan lebih dari 3 detik, trek akan dimulai ulang dari awal - tekan lagi untuk kembali lebih jauh. Gunakan replay untuk selalu memulai ulang.
+
+help_replay = replay / rp\nMemulai ulang trek saat ini dari awal.
+
+help_current = c / current\nTampilkan trek yang sedang diputar beserta posisi, durasi, dan mode yang aktif.
+
+help_queue = queue\n  queue          Tampilkan trek saat ini dan trek mendatang.\n  queue clear    Hapus semua trek mendatang (pertahankan trek saat ini).\n  queue rm <N>   Hapus trek mendatang ke-N.\n                 N=1 adalah trek berikutnya setelah trek saat ini.\nTrek yang sudah diputar tidak akan ditampilkan.\nContoh:\n  queue rm 1     Hapus trek mendatang berikutnya\n  queue rm 3     Hapus trek mendatang ke-3\n  queue clear    Hapus semua trek setelah trek saat ini
+
+help_mode = mode [r|rq|off]\n  mode r     Ulangi trek saat ini\n  mode rq    Ulangi seluruh antrean (loop)\n  mode off   Matikan pengulangan\n  mode       Tampilkan mode yang aktif\nMode acak terpisah: lihat 'h shuffle'.
+
+help_shuffle = shuffle [on|off]\n  shuffle       Aktifkan atau matikan pengacakan\n  shuffle on    Paksa aktif\n  shuffle off   Paksa nonaktif\nMengacak trek mendatang, mempertahankan trek yang dimasukkan berdasarkan nama sesuai urutan yang Anda minta. Bekerja bersama mode pengulangan.
+
+help_volume = v / volume [0-100]\n  v          Tampilkan volume saat ini\n  v 50       Atur volume ke 50%\n  v50        Atur volume ke 50% (tanpa spasi)\n  volume 30  Atur volume ke 30%\nVolume dibatasi oleh volume maksimum yang dikonfigurasi.
+
+help_seek = sf / sb [detik]\n  sf         Maju 10 detik (bawaan)\n  sb         Mundur 10 detik (bawaan)\n  sf30       Maju 30 detik\n  sb 5       Mundur 5 detik
+
+help_search = search <pencarian>\n  Cari dan tampilkan hasil. Kemudian:\n  <nomor>    Pilih hasil untuk diputar/diantrekan\n  a / cancel Batalkan hasil pencarian\nContoh:\n  search photograph\n  2          Putar hasil ke-2
+
+help_radio = radio [on|off]\n  radio on   Aktifkan mode radio. Ketika satu trek selesai\n             dan tidak ada trek tersisa, secara otomatis mengambil\n             rekomendasi berdasarkan trek terakhir.\n             Tidak berlaku untuk playlist atau album.\n  radio off  Nonaktifkan mode radio.\n  radio      Tampilkan status radio saat ini.
+
+help_link = link / url\nDapatkan URL untuk trek yang sedang diputar.\nBuka di aplikasi layanan atau bagikan dengan orang lain.
+
+help_stats = stats\nTampilkan waktu aktif bot, trek yang diputar sesi ini, panjang antrean, dan volume.
+
+help_jc = jc <jalur>\nMasuk saluran TeamTalk berdasarkan jalur.\nContoh: jc /Ruang Musik
+
+help_lang = lang [kode]\nTampilkan bahasa yang tersedia, atau atur bahasa Anda.\nPilihan Anda diingat berdasarkan nama pengguna.\nlang clear menghapus pilihan Anda (mengikuti bawaan server).\nContoh: lang id
+
+help_glang = glang <kode>\nAtur bahasa bawaan server (admin).\nPengguna yang memilih bahasa mereka sendiri dengan lang tetap menyimpannya.
+
+help_cn = cn <nama>\nUbah nama panggilan bot.\nContoh: cn DJ Bot
+
+help_gender = gender <male|female|neutral>\nAtur jenis kelamin bot (mempengaruhi avatar TT).\nAlias: m, f, n, man, woman, nb
+
+help_service = /sp / /yt\n  /sp     Beralih layanan aktif ke Spotify.\n  /yt     Beralih layanan aktif ke YouTube.\nPerintah seperti p, search, n, o menargetkan layanan aktif.\nBeralih tidak menghentikan pemutaran. Gunakan s untuk menghentikan.
+
+help_restart = rs / restart\nMulai ulang bot. Menyimpan konfigurasi sebelum keluar.
+
+help_quit = q / quit\nMatikan bot. Menyimpan konfigurasi sebelum keluar.
