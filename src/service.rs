@@ -21,7 +21,7 @@ const SERVICE_NAME: &str = "ttspotify@.service";
 
 /// Version of the generated unit file's CONTENT. Bump whenever
 /// `unit_file_contents` changes in a way installed units should pick up;
-/// `--update` then offers to rewrite older installed units. Files without a
+/// `update` then offers to rewrite older installed units. Files without a
 /// stamp (pre-versioning installs) read as 0.
 ///
 /// 7: a refresh in 1.1.0 wrote `config/` as the working and writable

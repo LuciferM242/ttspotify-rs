@@ -68,6 +68,18 @@ pub fn update_youtube_tools() -> String {
     }
 }
 
+/// How to update the bot itself.
+pub fn update_bot() -> String {
+    #[cfg(windows)]
+    {
+        "use Check for updates in the tray menu".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        format!("run: {} update", crate::paths::program_name())
+    }
+}
+
 /// How to install the systemd service. Windows has no equivalent — the tray
 /// keeps bots running — so it says what is true there instead.
 pub fn install_service() -> String {
@@ -161,6 +173,7 @@ mod tests {
             ("sign_in_spotify_without_browser", sign_in_spotify_without_browser()),
             ("install_youtube_tools", install_youtube_tools()),
             ("update_youtube_tools", update_youtube_tools()),
+            ("update_bot", update_bot()),
             ("install_service", install_service()),
             ("install_binary", install_binary()),
             ("restart_bot", restart_bot("home")),
@@ -206,6 +219,7 @@ mod tests {
             ("sign_in_spotify_without_browser", " auth code"),
             ("install_youtube_tools", " yt install"),
             ("update_youtube_tools", " yt update"),
+            ("update_bot", " update"),
             ("install_service", " service install"),
             ("install_binary", " install"),
             ("restart_bot", " restart home"),

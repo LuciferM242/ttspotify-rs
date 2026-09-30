@@ -927,7 +927,7 @@ fn spawn_signal_watcher(signalled: Arc<std::sync::atomic::AtomicBool>, notify: A
     });
 }
 
-/// Interactive `--update`: check GitHub, show the changelog, confirm, then
+/// Interactive `update`: check GitHub, show the changelog, confirm, then
 /// download + verify + replace this binary. Refuses to run non-interactively
 /// (e.g. under systemd) since it needs a y/N answer.
 #[cfg(not(windows))]
