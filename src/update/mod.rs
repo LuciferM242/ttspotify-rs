@@ -20,6 +20,8 @@ pub enum UpdateError {
     Http(String),
     Parse(String),
     Signature,
+    /// Validly signed, but for a different version than the release claims.
+    SignedVersion,
     Hash,
     Extract(String),
     Io(String),
@@ -32,6 +34,7 @@ impl fmt::Display for UpdateError {
             UpdateError::Http(e) => write!(f, "Network error: {e}"),
             UpdateError::Parse(e) => write!(f, "Could not read release info: {e}"),
             UpdateError::Signature => write!(f, "Signature verification failed"),
+            UpdateError::SignedVersion => write!(f, "The signed version does not match the release"),
             UpdateError::Hash => write!(f, "Downloaded file failed its checksum"),
             UpdateError::Extract(e) => write!(f, "Could not extract the update: {e}"),
             UpdateError::Io(e) => write!(f, "File error: {e}"),

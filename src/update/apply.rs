@@ -108,7 +108,7 @@ pub async fn download_and_apply(
     let sig_str = String::from_utf8(sig).map_err(|_| UpdateError::Signature)?;
 
     // 2. Verify signature over the SUMS bytes. Abort before touching anything.
-    verify_signature(&sums, &sig_str)?;
+    verify_signature(&sums, &sig_str, &info.tag)?;
 
     // 3. Download the asset with progress.
     let asset = get_bytes(&client, &info.asset_url, Some(progress), cancel).await?;
