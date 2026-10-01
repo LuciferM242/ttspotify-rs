@@ -97,6 +97,15 @@ pub fn show_update_available(parent: &(impl GuiParent + 'static), info: UpdateIn
         // Later, Escape or the X: nothing happens, the caller carries on.
         return true;
     }
+    if let Err(e) = crate::update::ensure_replaceable() {
+        let exe = std::env::current_exe().unwrap_or_default();
+        let msg = format!(
+            "{e}: {}.\r\n\r\nOpen the release page?",
+            crate::hints::update_by_hand(&exe, &info.page_url())
+        );
+        offer_release_page(parent.hwnd(), &msg, &info.page_url());
+        return true;
+    }
     // The downloader relaunches on success, so reaching the end of it means
     // the update did not happen.
     run_download(parent, info)
@@ -115,6 +124,7 @@ fn run_download(parent: &(impl GuiParent + 'static), info: UpdateInfo) -> bool {
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = crossbeam_channel::unbounded::<Msg>();
     let carry_on = Rc::new(Cell::new(true));
+    let page = info.page_url();
     let started = RefCell::new(Some((info, tx.clone())));
 
     {
@@ -178,11 +188,8 @@ fn run_download(parent: &(impl GuiParent + 'static), info: UpdateInfo) -> bool {
                         // A cancel is the user's own doing, so it needs no
                         // report; anything else does.
                         if e != "Update cancelled" {
-                            let _ = dlg2.hwnd().MessageBox(
-                                &e,
-                                "Update failed",
-                                co::MB::OK | co::MB::ICONERROR,
-                            );
+                            let msg = format!("{e}\r\n\r\nOpen the release page to download it yourself?");
+                            offer_release_page(dlg2.hwnd(), &msg, &page);
                         }
                         let _ = dlg2.hwnd().EndDialog(0);
                     }
@@ -225,6 +232,16 @@ fn run_download(parent: &(impl GuiParent + 'static), info: UpdateInfo) -> bool {
         tracing::error!("Download dialog failed: {e}");
     }
     carry_on.get()
+}
+
+/// Ask whether to open the release page, and open it on Yes.
+fn offer_release_page(parent: &w::HWND, msg: &str, page: &str) {
+    let answer = parent.MessageBox(msg, "Update failed", co::MB::YESNO | co::MB::ICONERROR);
+    if answer == Ok(co::DLGID::YES) {
+        if let Err(e) = open::that_detached(page) {
+            tracing::warn!("Could not open the release page: {e}");
+        }
+    }
 }
 
 /// "You're up to date", for the manual check.

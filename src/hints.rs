@@ -80,6 +80,24 @@ pub fn update_bot() -> String {
     }
 }
 
+/// How to update when the program's folder cannot be written.
+pub fn update_by_hand(exe: &std::path::Path, page: &str) -> String {
+    #[cfg(windows)]
+    {
+        let _ = exe;
+        format!(
+            "move the bot's folder somewhere you can write to, such as Documents, and start it from there; or download the new version from {page}"
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "this user cannot write to that folder; download the new version from {page} and copy it over {} with sudo",
+            exe.display()
+        )
+    }
+}
+
 /// How to install the systemd service. Windows has no equivalent — the tray
 /// keeps bots running — so it says what is true there instead.
 pub fn install_service() -> String {
@@ -174,6 +192,7 @@ mod tests {
             ("install_youtube_tools", install_youtube_tools()),
             ("update_youtube_tools", update_youtube_tools()),
             ("update_bot", update_bot()),
+            ("update_by_hand", update_by_hand(std::path::Path::new("/usr/local/bin/ttspotify"), "https://x")),
             ("install_service", install_service()),
             ("install_binary", install_binary()),
             ("restart_bot", restart_bot("home")),

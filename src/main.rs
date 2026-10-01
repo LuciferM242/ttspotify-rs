@@ -954,6 +954,12 @@ async fn run_cli_update() -> Result<(), BotError> {
     );
     println!("\n{}\n", tt_spotify_bot::update::plain_changelog(&info.changelog));
 
+    if let Err(e) = tt_spotify_bot::update::ensure_replaceable() {
+        let exe = std::env::current_exe().unwrap_or_default();
+        eprintln!("{e}: {}.", tt_spotify_bot::hints::update_by_hand(&exe, &info.page_url()));
+        std::process::exit(1);
+    }
+
     if !std::io::stdin().is_terminal() {
         eprintln!(
             "Not a terminal; refusing to update non-interactively. Run `{} update` from a shell.",
@@ -994,6 +1000,9 @@ async fn run_cli_update() -> Result<(), BotError> {
         }
         Err(e) => {
             eprintln!("\nUpdate failed: {e}");
+            if !matches!(e, tt_spotify_bot::update::UpdateError::Cancelled) {
+                eprintln!("Download it yourself from {}", info.page_url());
+            }
             std::process::exit(1);
         }
     }

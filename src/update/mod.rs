@@ -5,7 +5,7 @@ mod apply;
 mod github;
 mod verify;
 
-pub use apply::download_and_apply;
+pub use apply::{download_and_apply, ensure_replaceable};
 pub use github::{check, current_asset_name, newer_than_current, UpdateInfo};
 pub use verify::{expected_hash, sha256_hex};
 
@@ -25,6 +25,8 @@ pub enum UpdateError {
     Hash,
     Extract(String),
     Io(String),
+    /// The program's folder cannot be written, so the binary cannot be swapped.
+    NotWritable(std::path::PathBuf),
     Cancelled,
 }
 
@@ -38,6 +40,7 @@ impl fmt::Display for UpdateError {
             UpdateError::Hash => write!(f, "Downloaded file failed its checksum"),
             UpdateError::Extract(e) => write!(f, "Could not extract the update: {e}"),
             UpdateError::Io(e) => write!(f, "File error: {e}"),
+            UpdateError::NotWritable(dir) => write!(f, "Cannot write to {}", dir.display()),
             UpdateError::Cancelled => write!(f, "Update cancelled"),
         }
     }
