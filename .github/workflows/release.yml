@@ -140,8 +140,9 @@ jobs:
           set -e
           sudo apt-get update && sudo apt-get install -y minisign
           printf '%s\n' "$MINISIGN_SECRET_KEY" > minisign.key
-          # Passwordless key: feed an empty passphrase on stdin.
-          minisign -S -s minisign.key -m dist/SHA256SUMS </dev/null
+          # Passwordless key: feed an empty passphrase on stdin. The trusted
+          # comment names the release; the updater refuses one that differs.
+          minisign -S -s minisign.key -m dist/SHA256SUMS -t "version:${GITHUB_REF_NAME}" </dev/null
           rm -f minisign.key
           test -f dist/SHA256SUMS.minisig
           echo "Signed SHA256SUMS:"; cat dist/SHA256SUMS.minisig

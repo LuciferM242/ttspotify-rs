@@ -36,12 +36,39 @@ pub fn expected_hash<'a>(sums: &'a str, asset: &str) -> Option<&'a str> {
 }
 
 /// Verify a minisign signature (`.minisig` file contents) over `signed_data`
-/// using the embedded public key.
-pub fn verify_signature(signed_data: &[u8], sig_body: &str) -> Result<(), UpdateError> {
-    let pk = PublicKey::from_base64(PUBLIC_KEY).map_err(|_| UpdateError::Signature)?;
+/// using the embedded public key, and that it was made for release `tag`.
+///
+/// The tag comes from GitHub and the signature covers only the checksums, so
+/// without the version check an old signed release published under a new tag
+/// would be installed as an update. CI signs with the trusted comment
+/// `version:<tag>`, and minisign signs that comment too.
+pub fn verify_signature(signed_data: &[u8], sig_body: &str, tag: &str) -> Result<(), UpdateError> {
+    verify_with_key(PUBLIC_KEY, signed_data, sig_body, tag)
+}
+
+fn verify_with_key(
+    public_key: &str,
+    signed_data: &[u8],
+    sig_body: &str,
+    tag: &str,
+) -> Result<(), UpdateError> {
+    let pk = PublicKey::from_base64(public_key).map_err(|_| UpdateError::Signature)?;
     let sig = Signature::decode(sig_body).map_err(|_| UpdateError::Signature)?;
     pk.verify(signed_data, &sig, false)
-        .map_err(|_| UpdateError::Signature)
+        .map_err(|_| UpdateError::Signature)?;
+    if signed_version(sig.trusted_comment()) == Some(tag.trim_start_matches('v')) {
+        Ok(())
+    } else {
+        Err(UpdateError::SignedVersion)
+    }
+}
+
+/// The version in a trusted comment like `version:v1.3.0`, without its `v`.
+fn signed_version(comment: &str) -> Option<&str> {
+    comment
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("version:"))
+        .map(|v| v.trim_start_matches('v'))
 }
 
 #[cfg(test)]
@@ -101,15 +128,55 @@ mod tests {
     const SIG_HELLO: &str = "untrusted comment: signature from minisign secret key\nRUTvwlFryO9VLtlXE3U+06tIieFzGC5dVf9j7pPIn3780QI2aAnSKuuqaxznVtxYmyftqhXYzfDk1UfRLxoyGyYFarm+xAIN5wk=\ntrusted comment: timestamp:1783802135\tfile:C:/Users/aloys/Documents/aloy/projects/python/spotifyRust/scratch_m\thashed\nN9/Si2bqNOpabMmF5rCSZmxiB6TuVNGB0yXq31SnXRGapa/0roymZAUGXP+0ZFFQB50YvNr43MJHbUAF8E78Dw==\n";
 
     #[test]
-    fn valid_signature_passes() {
-        assert!(verify_signature(b"hello\n", SIG_HELLO).is_ok());
+    fn the_release_key_verifies_but_a_signature_without_a_version_is_refused() {
+        // Signature, not SignedVersion, would mean the release key itself failed.
+        assert!(matches!(
+            verify_signature(b"hello\n", SIG_HELLO, "v1.2.0"),
+            Err(UpdateError::SignedVersion)
+        ));
     }
 
     #[test]
     fn tampered_data_fails() {
         assert!(matches!(
-            verify_signature(b"HELLO\n", SIG_HELLO),
+            verify_signature(b"HELLO\n", SIG_HELLO, "v1.2.0"),
             Err(UpdateError::Signature)
         ));
+    }
+
+    // A throwaway key, so tests never need the release key. Made with:
+    //   minisign -G -W -p test.pub -s test.key
+    //   printf 'hello\n' > m && minisign -S -s test.key -m m -t "version:v9.1.0"
+    const TEST_KEY: &str = "RWQl6IzQUmuUu+EfJ3VI/m91lMoXD201bufX6dmmxNkp7qHrgfxDMT6j";
+    const SIG_V910: &str = "untrusted comment: signature from minisign secret key\nRUQl6IzQUmuUu5MPZ+y78C07VeCh68qUKs8JBlkCRY7gM2Q0e31JvjZQwYGrkDUXfkMzUmGBpEOxh6xP6GJknQp0LW3oyB6zZAc=\ntrusted comment: version:v9.1.0\nB2ta8BSxrN0NKCD46gdEEr9G0mqAbDtKe4DWS6Qm9IwyLVYPS44ItZONJFLvQ89CM8R2MrUS7Zmhw9NEaWVkDw==\n";
+
+    #[test]
+    fn a_signature_for_the_tagged_version_passes() {
+        assert!(verify_with_key(TEST_KEY, b"hello\n", SIG_V910, "v9.1.0").is_ok());
+        assert!(verify_with_key(TEST_KEY, b"hello\n", SIG_V910, "9.1.0").is_ok());
+    }
+
+    #[test]
+    fn an_old_release_under_a_new_tag_is_refused() {
+        assert!(matches!(
+            verify_with_key(TEST_KEY, b"hello\n", SIG_V910, "v9.2.0"),
+            Err(UpdateError::SignedVersion)
+        ));
+    }
+
+    #[test]
+    fn an_edited_version_breaks_the_signature() {
+        let forged = SIG_V910.replace("version:v9.1.0", "version:v9.2.0");
+        assert!(matches!(
+            verify_with_key(TEST_KEY, b"hello\n", &forged, "v9.2.0"),
+            Err(UpdateError::Signature)
+        ));
+    }
+
+    #[test]
+    fn the_version_is_read_from_the_trusted_comment() {
+        assert_eq!(signed_version("version:v1.3.0"), Some("1.3.0"));
+        assert_eq!(signed_version("timestamp:1\tversion:1.3.0"), Some("1.3.0"));
+        assert_eq!(signed_version("timestamp:1790798489\tfile:n\thashed"), None);
     }
 }
