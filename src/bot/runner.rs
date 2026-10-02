@@ -613,11 +613,7 @@ pub async fn run_bot(
     if crate::settings::load().check_updates_on_startup {
         tokio::spawn(async {
             if let Ok(Some(info)) = crate::update::check().await {
-                tracing::info!(
-                    "Update {} available - run: {} --update",
-                    info.tag,
-                    crate::paths::program_name()
-                );
+                tracing::info!("Update {} available - {}", info.tag, crate::hints::update_bot());
             }
         });
     }

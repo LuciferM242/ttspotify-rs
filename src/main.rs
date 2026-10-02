@@ -927,7 +927,7 @@ fn spawn_signal_watcher(signalled: Arc<std::sync::atomic::AtomicBool>, notify: A
     });
 }
 
-/// Interactive `--update`: check GitHub, show the changelog, confirm, then
+/// Interactive `update`: check GitHub, show the changelog, confirm, then
 /// download + verify + replace this binary. Refuses to run non-interactively
 /// (e.g. under systemd) since it needs a y/N answer.
 #[cfg(not(windows))]
@@ -953,6 +953,12 @@ async fn run_cli_update() -> Result<(), BotError> {
         env!("CARGO_PKG_VERSION")
     );
     println!("\n{}\n", tt_spotify_bot::update::plain_changelog(&info.changelog));
+
+    if let Err(e) = tt_spotify_bot::update::ensure_replaceable() {
+        let exe = std::env::current_exe().unwrap_or_default();
+        eprintln!("{e}: {}.", tt_spotify_bot::hints::update_by_hand(&exe, &info.page_url()));
+        std::process::exit(1);
+    }
 
     if !std::io::stdin().is_terminal() {
         eprintln!(
@@ -994,6 +1000,9 @@ async fn run_cli_update() -> Result<(), BotError> {
         }
         Err(e) => {
             eprintln!("\nUpdate failed: {e}");
+            if !matches!(e, tt_spotify_bot::update::UpdateError::Cancelled) {
+                eprintln!("Download it yourself from {}", info.page_url());
+            }
             std::process::exit(1);
         }
     }

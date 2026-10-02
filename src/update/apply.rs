@@ -53,6 +53,29 @@ fn binary_name() -> &'static str {
     }
 }
 
+/// Fail early when the running binary's folder cannot be written. The swap
+/// needs it, and finding out only after the download wastes the download and
+/// ends in a bare permission error.
+pub fn ensure_replaceable() -> Result<(), UpdateError> {
+    let exe = std::env::current_exe().map_err(|e| UpdateError::Io(e.to_string()))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| UpdateError::Io("no exe dir".into()))?;
+    if can_write(dir) {
+        Ok(())
+    } else {
+        Err(UpdateError::NotWritable(dir.to_path_buf()))
+    }
+}
+
+/// Whether a file can be created in `dir`, by creating and removing one.
+fn can_write(dir: &std::path::Path) -> bool {
+    let probe = dir.join("tt-spotify-bot.write-check.tmp");
+    let ok = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    ok
+}
+
 async fn get_bytes(
     client: &reqwest::Client,
     url: &str,
@@ -100,6 +123,7 @@ pub async fn download_and_apply(
     // Stall-bounded, not a total deadline: a total timeout capped the WHOLE
     // download and failed slow-but-healthy connections partway through the
     // asset. The shared policy bounds silence between bytes instead.
+    ensure_replaceable()?;
     let client = crate::net::stall_bounded_client().map_err(|e| UpdateError::Http(e.to_string()))?;
 
     // 1. SHA256SUMS + signature (small; no progress).
@@ -108,7 +132,7 @@ pub async fn download_and_apply(
     let sig_str = String::from_utf8(sig).map_err(|_| UpdateError::Signature)?;
 
     // 2. Verify signature over the SUMS bytes. Abort before touching anything.
-    verify_signature(&sums, &sig_str)?;
+    verify_signature(&sums, &sig_str, &info.tag)?;
 
     // 3. Download the asset with progress.
     let asset = get_bytes(&client, &info.asset_url, Some(progress), cancel).await?;
@@ -172,6 +196,28 @@ pub async fn download_and_apply(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ttsb-apply-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_writable_folder_passes_and_leaves_nothing_behind() {
+        let dir = scratch("writable");
+        assert!(can_write(&dir));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_written_fails() {
+        let dir = scratch("missing");
+        assert!(!can_write(&dir.join("missing")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn extract_from_tar_gz() {

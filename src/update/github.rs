@@ -13,6 +13,13 @@ pub struct UpdateInfo {
     pub sig_url: String,
 }
 
+impl UpdateInfo {
+    /// The release's GitHub page, for downloading it by hand.
+    pub fn page_url(&self) -> String {
+        format!("https://github.com/{REPO}/releases/tag/{}", self.tag)
+    }
+}
+
 /// The release asset filename this build should download.
 pub fn current_asset_name() -> &'static str {
     if cfg!(windows) {
@@ -150,6 +157,12 @@ pub async fn check() -> Result<Option<UpdateInfo>, UpdateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_release_page_is_named_by_its_tag() {
+        let info = select_from_release(&full_release("v999.0.0", "notes")).unwrap().unwrap();
+        assert_eq!(info.page_url(), format!("https://github.com/{REPO}/releases/tag/v999.0.0"));
+    }
 
     #[test]
     fn asset_name_is_platform_specific() {
