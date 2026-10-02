@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Installing the YouTube tools on Windows failed with "checksum mismatch",
+  because Deno now publishes its Windows checksum in a different format. Both
+  formats are read.
+- Playing a YouTube video link with dubbed audio in other languages could play
+  a dub. The original audio track is played.
+- An update that cannot replace the program, because its folder is not
+  writable, stops before downloading and says how to update by hand. When an
+  update fails, the terminal prints the release page and the tray offers to
+  open it.
+- A bot that finds a newer release names the right way to install it: `update`
+  on Linux, Check for updates in the tray menu on Windows.
+
+### Security
+- The updater refuses a release whose signature was made for a different
+  version, so an older signed release published under a new version number is
+  never installed.
+
 ## [1.2.0] - 2026-09-27
 
 **Upgrading: YouTube now plays through a small bundled helper that runs on
