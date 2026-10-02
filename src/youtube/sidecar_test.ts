@@ -57,6 +57,14 @@ Deno.test("returns stream info for a plain video", async () => {
   assert(r.stderr.includes("[sidecar] client="), r.stderr);
 });
 
+Deno.test("a dubbed video plays its original audio track", async () => {
+  // 24 audio languages, the original English listed last.
+  const r = await run("0e3GPea1Tyg");
+  assertEquals(r.code, 0, r.stderr);
+  const xtags = decodeURIComponent(new URL(streamInfo(r.stdout).url).searchParams.get("xtags") ?? "");
+  assert(xtags.includes("acont=original"), `not the original track: ${xtags}`);
+});
+
 Deno.test("a '- Topic' track's url downloads completely in ranges", async () => {
   // The probe checks only the tail; this proves every byte is served.
   const r = await run(TOPIC);

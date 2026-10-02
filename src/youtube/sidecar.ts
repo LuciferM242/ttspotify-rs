@@ -121,6 +121,28 @@ export function isSignedIn(header: string): boolean {
   return /(^|;\s*)SAPISID=/.test(header);
 }
 
+type AudioFormat = {
+  itag: number;
+  mime_type?: string;
+  bitrate?: number;
+  is_original?: boolean;
+  audio_track?: { audio_is_default?: boolean };
+};
+
+/**
+ * The m4a format to play, from the original audio track. Dubbed tracks share
+ * itag 140 and are often listed before the original.
+ */
+export function pickAudioFormat<F extends AudioFormat>(audio: F[]): F | undefined {
+  const m4a = audio.filter((f) => f.itag === 140 || f.mime_type?.includes("audio/mp4"));
+  const original = m4a.filter((f) => f.is_original);
+  const byDefault = m4a.filter((f) => f.audio_track?.audio_is_default);
+  const pool = original.length ? original : byDefault.length ? byDefault : m4a;
+  // itag 140: m4a 44.1kHz stereo, what the decoder expects.
+  return pool.find((f) => f.itag === 140) ??
+    pool.toSorted((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
+}
+
 /** The file's login cookies, or "" with the reason logged. */
 async function loadCookies(path: string): Promise<string> {
   let text: string;
@@ -288,14 +310,9 @@ async function findStream(
     throw new Error(reason ? `playability ${status}: ${reason}` : `playability ${status}`);
   }
 
-  const audio = (info.streaming_data?.adaptive_formats ?? []).filter(
-    (f) => f.has_audio && !f.has_video,
+  const fmt = pickAudioFormat(
+    (info.streaming_data?.adaptive_formats ?? []).filter((f) => f.has_audio && !f.has_video),
   );
-  // itag 140: m4a 44.1kHz stereo, what the decoder expects.
-  const fmt = audio.find((f) => f.itag === 140) ??
-    audio
-      .filter((f) => f.mime_type?.includes("audio/mp4"))
-      .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
   if (!fmt) throw new Error("no m4a audio format");
 
   // The session has no token, so decipher adds no pot; set this client's own.
