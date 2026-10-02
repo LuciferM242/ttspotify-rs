@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.1] - 2026-10-02
 
 ### Fixed
 - Installing the YouTube tools on Windows failed with "checksum mismatch",

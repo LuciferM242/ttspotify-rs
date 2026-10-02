@@ -1,6 +1,6 @@
 [package]
 name = "tt-spotify-bot"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 # The oldest compiler the locked dependencies build with. setup.sh and
 # setup.ps1 read it from here.
