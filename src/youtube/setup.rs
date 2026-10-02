@@ -571,7 +571,13 @@ async fn install_deno(
     let base = format!("https://github.com/denoland/deno/releases/latest/download/{asset}");
     // Deno publishes one checksum file per asset.
     let hash = match fetch_text(client, &format!("{base}.sha256sum")).await {
-        Ok(text) => text.split_whitespace().next().map(str::to_string),
+        Ok(text) => {
+            let hash = checksum_in(&text);
+            if hash.is_none() {
+                tracing::warn!("The Deno checksum file holds no SHA-256 hash");
+            }
+            hash
+        }
         Err(e) => {
             tracing::warn!("Could not fetch the Deno checksum: {e}");
             None
@@ -589,6 +595,14 @@ async fn install_deno(
     let _ = fs::write(paths.lib_dir.join(DENO_VERSION_FILE), &version);
     progress(&format!("  Deno {version} installed."));
     Ok(())
+}
+
+/// The SHA-256 in a checksum file, lowercased. Deno writes `<hex>  <name>` for
+/// most assets but PowerShell's `Hash : <HEX>` list for Windows.
+fn checksum_in(text: &str) -> Option<String> {
+    text.split(|c: char| c.is_whitespace() || c == ':')
+        .find(|word| word.len() == 64 && word.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
 }
 
 /// Pull the one binary out of a single-file archive.
@@ -1079,6 +1093,41 @@ mod tests {
         let h = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD";
         assert!(verify_sha256(b"abc", h));
         assert!(!verify_sha256(b"abd", h));
+    }
+
+    const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn checksum_file_in_sha256sum_form() {
+        let text = format!("{ABC_SHA256}  deno-x86_64-unknown-linux-gnu.zip\n");
+        assert_eq!(checksum_in(&text).as_deref(), Some(ABC_SHA256));
+    }
+
+    #[test]
+    fn checksum_file_in_powershell_form() {
+        // Deno's Windows asset, from Get-FileHash | Format-List.
+        let text = format!(
+            "\r\nAlgorithm : SHA256\r\nHash      : {}\r\nPath      : C:\\a\\deno\\deno\\target\\release\\deno-x86_64-pc-windows-msvc.zip\r\n\r\n",
+            ABC_SHA256.to_uppercase()
+        );
+        assert_eq!(checksum_in(&text).as_deref(), Some(ABC_SHA256));
+    }
+
+    #[test]
+    fn checksum_file_without_a_hash() {
+        assert_eq!(checksum_in("Algorithm : SHA256\r\nPath : deno.zip"), None);
+        assert_eq!(checksum_in(""), None);
+        assert_eq!(checksum_in(&ABC_SHA256[1..]), None, "63 digits is not a SHA-256");
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads Deno from GitHub"]
+    async fn installs_the_latest_deno() {
+        let dir = mig_tmp("deno_install");
+        let paths = YoutubeSetupPaths { deno: dir.join(deno_name()), lib_dir: dir.clone() };
+        install_deno(&http_client().unwrap(), &paths, &|_| {}).await.unwrap();
+        assert!(deno_version_of(&paths.deno).is_some(), "the installed Deno does not run");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
